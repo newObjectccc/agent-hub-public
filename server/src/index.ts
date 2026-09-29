@@ -10,8 +10,9 @@ import fastifyCors from "@fastify/cors";
 import fastifyStatic from "@fastify/static";
 import { VERSION } from "@earendil-works/pi-coding-agent";
 import { loadHubConfig, type HubConfig } from "./config.js";
+import { DashboardService } from "./dashboard.js";
 import { KpiService } from "./kpi.js";
-import { configDir, webDistDir } from "./paths.js";
+import { configDir, dataDir, webDistDir } from "./paths.js";
 import { registerRoutes, type RouteDeps, type SessionHubLike } from "./routes.js";
 import { SessionHub } from "./sessions/hub.js";
 import { PresenceWatcher } from "./sessions/presence.js";
@@ -36,6 +37,7 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
     kpi: options.kpi,
     config: options.config,
     systemInfo: options.systemInfo,
+    dashboard: options.dashboard,
   });
 
   // 静态托管 web/dist（存在时），单进程即可服务 PWA
@@ -74,13 +76,30 @@ export async function startHub(): Promise<StartedHub> {
   }
 
   const wshub = new WsHub();
-  const emit = (sessionId: string, event: ServerEvent): void => wshub.broadcast(sessionId, event);
+  // 统一事件出口：通知聚合（settled/error + 最后输出摘要）+ WS 推送 +
+  // 全局 status 变更广播（首页运行看板实时刷新）
+  const emit = (sessionId: string, event: ServerEvent): void => {
+    dashboard.recordEvent(sessionId, event);
+    if (event.type === "status") {
+      wshub.broadcastGlobal({ type: "session_status", sessionId, status: event.status });
+    }
+    wshub.broadcast(sessionId, event);
+  };
   const hub = new SessionHub(config.sessionDir, emit);
+  const dashboard = new DashboardService({
+    sessionDir: config.sessionDir,
+    workspaceRoot: config.workspaceRoot,
+    storeFile: join(dataDir, "notifications-read.json"),
+    statusOf: (id, updatedMs) => hub.statusFor(id, updatedMs),
+    onNotification: (item) => wshub.broadcastGlobal({ type: "notification", notification: item }),
+  });
+  hub.onActivity = (sessionId, activity) => dashboard.recordActivity(sessionId, activity);
   const kpi = new KpiService({ configDir, kpiRefreshMinutes: config.kpiRefreshMinutes });
 
   const app = await createApp({
     hub,
     kpi,
+    dashboard,
     config,
     webRoot: webDistDir,
     logger: true,
@@ -89,7 +108,7 @@ export async function startHub(): Promise<StartedHub> {
   });
 
   await app.listen({ port: config.port, host: config.host });
-  const tails = new SessionTailManager((sessionId, event) => wshub.broadcast(sessionId, event));
+  const tails = new SessionTailManager((sessionId, event) => emit(sessionId, event));
   // 会话一旦由本进程接管（live），停掉文件 tail，避免双推送源产生重复气泡
   hub.onLive = (sid) => tails.detach(sid);
   wshub.attach(app.server, hub, tails);

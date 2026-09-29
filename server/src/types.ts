@@ -45,7 +45,7 @@ export interface SessionDetail {
   messages: MessageDto[];
 }
 
-/** WS server → client 事件（docs/API_CONTRACT.md §4 表格） */
+/** WS server → client 事件（docs/API_CONTRACT.md §6 表格） */
 export type ServerEvent =
   | { type: "session"; id: string; cwd: string }
   | { type: "message_start"; message: { id: string; role: MessageRole; timestamp: number } }
@@ -90,9 +90,82 @@ export interface SystemInfo {
   pi: ToolAvailability;
   tmux: ToolAvailability;
   ttyd: ToolAvailability;
+  claude: ToolAvailability;
   tailscale: TailscaleStatus;
   sessionDir: string;
   workspaceRoot: string;
+}
+
+/** GET /api/dashboard/stats：运行看板卡（工作中会话的实时进度） */
+export interface WorkingSessionCard {
+  id: string;
+  name: string | null;
+  cwd: string;
+  status: SessionStatus;
+  /** 当前 run 起点（active branch 最后一条用户消息时间） */
+  startedAt: string | null;
+  /** 当前/最近一次工具调用摘要 */
+  currentTool: string | null;
+  /** 最后输出摘要（最后一条 assistant 文本） */
+  lastOutput: string | null;
+  updatedAt: string;
+}
+
+/** GET /api/dashboard/stats：等你处理卡（agent 干完/出错的会话） */
+export interface AttentionSessionCard {
+  id: string;
+  name: string | null;
+  cwd: string;
+  status: SessionStatus;
+  /** settled=agent 干完等你输入；error=运行出错 */
+  reason: "settled" | "error";
+  summary: string | null;
+  updatedAt: string;
+}
+
+/** GET /api/dashboard/stats 响应（首页今日概览 + 分区列表，真实数据推导） */
+export interface DashboardStats {
+  working: number;
+  needAttention: number;
+  todayDone: number;
+  todayMessages: number;
+  weekCommits: number;
+  /** 连续活跃天数（截至最近活跃日；今日未活跃不渐裂） */
+  streak: number;
+  /** 本周（周一起）消息总数 */
+  weekMessages: number;
+  /** 本周完成会话数（本周内至少完成一轮的会话） */
+  weekDone: number;
+  /** 今日完成一轮及以上的会话 id（前端 tab 过滤用） */
+  todayDoneSessions: string[];
+  workingSessions: WorkingSessionCard[];
+  attentionSessions: AttentionSessionCard[];
+}
+
+/** 通知类型：settled=本轮干完；error=出错；steering=被插话；done=手动中止 */
+export type NotificationKind = "settled" | "error" | "steering" | "done";
+
+/** GET /api/notifications 通知项（从会话事件聚合） */
+export interface NotificationItem {
+  id: string;
+  sessionId: string;
+  sessionName: string | null;
+  kind: NotificationKind;
+  text: string;
+  timestamp: string;
+  read: boolean;
+}
+
+/** GET /api/notifications 响应 */
+export interface NotificationListResponse {
+  notifications: NotificationItem[];
+  unreadCount: number;
+}
+
+/** 会话运行活动（SessionHub.onActivity 上报：steering=插话/排队；done=手动中止） */
+export interface HubActivity {
+  kind: Extract<NotificationKind, "steering" | "done">;
+  text: string;
 }
 
 /** 统一错误信封 */

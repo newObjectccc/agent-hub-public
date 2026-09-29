@@ -1,9 +1,11 @@
 /**
  * 全局会话变更订阅：/ws/events
  * server 端 presence 扫描到任一会话文件变化即广播 sessions_changed，
+ * 会话完结/出错/插话等事件聚合为 notification 广播，status 变化广播 session_status；
  * 首页据此自动刷新列表（SWR）；断线指数退避重连。
  */
 import { useEffect, useRef } from "react";
+import type { NotificationItem, SessionStatus } from "../api/types";
 
 const BASE_DELAY_MS = 1000;
 const MAX_DELAY_MS = 30_000;
@@ -16,12 +18,16 @@ export function eventsUrl(): string {
 export interface UseGlobalEventsOptions {
   /** 会话列表可能变化（server presence 检测到文件落盘/删除） */
   onSessionsChanged?: () => void;
+  /** 新通知（settled/error/steering/done）：驱动横幅/震动/声音与未读角标 */
+  onNotification?: (notification: NotificationItem) => void;
+  /** 会话运行状态变化（运行看板实时刷新） */
+  onSessionStatus?: (payload: { sessionId: string; status: SessionStatus }) => void;
   onStatusChange?: (connected: boolean) => void;
 }
 
-export function useGlobalEvents({ onSessionsChanged, onStatusChange }: UseGlobalEventsOptions): void {
-  const cbs = useRef({ onSessionsChanged, onStatusChange });
-  cbs.current = { onSessionsChanged, onStatusChange };
+export function useGlobalEvents({ onSessionsChanged, onNotification, onSessionStatus, onStatusChange }: UseGlobalEventsOptions): void {
+  const cbs = useRef({ onSessionsChanged, onNotification, onSessionStatus, onStatusChange });
+  cbs.current = { onSessionsChanged, onNotification, onSessionStatus, onStatusChange };
 
   useEffect(() => {
     let ws: WebSocket | null = null;
@@ -43,8 +49,17 @@ export function useGlobalEvents({ onSessionsChanged, onStatusChange }: UseGlobal
       };
       ws.onmessage = (raw: MessageEvent<string>) => {
         try {
-          const ev = JSON.parse(raw.data) as { type?: string };
+          const ev = JSON.parse(raw.data) as {
+            type?: string;
+            notification?: NotificationItem;
+            sessionId?: string;
+            status?: SessionStatus;
+          };
           if (ev.type === "sessions_changed") cbs.current.onSessionsChanged?.();
+          else if (ev.type === "notification" && ev.notification) cbs.current.onNotification?.(ev.notification);
+          else if (ev.type === "session_status" && ev.sessionId && ev.status) {
+            cbs.current.onSessionStatus?.({ sessionId: ev.sessionId, status: ev.status });
+          }
         } catch {
           // 忽略非法消息
         }

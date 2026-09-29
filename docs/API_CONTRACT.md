@@ -83,12 +83,13 @@ Base URL: `http://<host>:<port>/api`（默认端口 7700）
   "pi":   { "available": true,  "version": "0.87.1" },
   "tmux": { "available": true,  "version": "3.4" },
   "ttyd": { "available": false, "version": null },
+  "claude": { "available": false, "version": null },
   "tailscale": { "available": true, "loggedIn": true, "hostname": "my-mac" },
   "sessionDir": "/Users/me/.pi/agent/sessions",
   "workspaceRoot": "/Users/me/Workspace"
 }
 ```
-`available:false` 不是错误——前端展示为"可选增强未安装"。
+`available:false` 不是错误——前端展示为"可选增强未安装"。`claude` 为 CLI 探测（可选增强）。
 
 ## 3. KPI（通用卡片，不与任何业务系统耦合）
 
@@ -124,7 +125,103 @@ Base URL: `http://<host>:<port>/api`（默认端口 7700）
 ```
 拉取失败时单卡片返回 `error` 字段，不影响其它卡片。server 每 5 分钟刷新缓存。
 
-## 4. WebSocket 事件流
+> **状态（2026-02 W4）**：KPI 已从首页移除（用户决策：无意义）。
+> `/api/kpi` 与 `config/kpi-sources.json` **保留**（接口契约不动，第三方可继续用），
+> 但 web 前端**不再渲染**任何 KPI 区块。
+
+## 4. 首页工作台统计（dashboard）
+
+### GET /api/dashboard/stats
+首页工作台统计：数字全部从会话扫描真实推导（无占位）。
+
+```json
+{
+  "working": 1,
+  "needAttention": 2,
+  "todayDone": 3,
+  "todayMessages": 24,
+  "weekCommits": 17,
+  "streak": 5,
+  "weekMessages": 96,
+  "weekDone": 4,
+  "todayDoneSessions": ["uuid-1"],
+  "workingSessions": [
+    {
+      "id": "uuid-1", "name": "pi-seksun-KPI", "cwd": "/Users/me/Workspace/x",
+      "status": "running",
+      "startedAt": "2026-02-18T11:30:00.000Z",
+      "currentTool": "bash: pnpm test",
+      "lastOutput": "测试全绿…（截断 120 字符）",
+      "updatedAt": "2026-02-18T11:58:00.000Z"
+    }
+  ],
+  "attentionSessions": [
+    {
+      "id": "uuid-2", "name": null, "cwd": "/Users/me/Workspace/y",
+      "status": "idle", "reason": "settled",
+      "summary": "已完成，等你确认…（截断 120 字符）",
+      "updatedAt": "2026-02-18T10:05:00.000Z"
+    }
+  ]
+}
+```
+
+字段口径（v0）：
+- `working`：`status=running` 的会话数（现有 status 机制，含文件活动推断）
+- `needAttention`：`reason=error`（无时间窗）∪ `reason=settled`（agent 干完等你输入，
+  最后一条 user/assistant 消息是 assistant，且 24h 内更新过）
+- `todayDone`：今日 `agent_settled` 次数（从消息时间推 run 边界：assistant 消息后随
+  user/custom 或为末条且会话非 running；steer 插话会把一轮切成多段，v0 按边界近似计数）
+- `todayMessages` / `weekMessages`：今日 / 本周（周一起，本地时区）的 user+assistant 消息数
+- `weekCommits`：`workspaceRoot` 下 git 仓库（自身+子孙，含 worktree）
+  `git rev-list --count --since=<本周一> HEAD` 求和；无 git/无仓库 → 0
+- `streak`：连续活跃天数（活跃 = 当天有 user/assistant 消息；以最近活跃日为终点，
+  今日未活跃不渐裂）
+- `weekDone`：本周内至少完成一轮的会话数；`todayDoneSessions`：今日完成一轮及以上的会话 id（前端 tab 过滤用）
+- `workingSessions`：运行看板卡（当前工具摘要 = 最近一次工具调用 summary；
+  `startedAt` = 当前 run 起点，即最后一条用户消息时间）
+
+列表卡片最多 20 条（数字为全量计数）。响应字段不得省略。
+
+## 5. 通知（notifications）
+
+### GET /api/notifications
+从会话事件聚合的最近 50 条通知（时间倒序）：
+
+```json
+{
+  "notifications": [
+    {
+      "id": "uuid-1:settled:2026-02-18T11:05:00.000Z",
+      "sessionId": "uuid-1",
+      "sessionName": "pi-seksun-KPI",
+      "kind": "settled",
+      "text": "已完成…（截断 120 字符）",
+      "timestamp": "2026-02-18T11:05:00.000Z",
+      "read": false
+    }
+  ],
+  "unreadCount": 1
+}
+```
+
+`kind` 语义：
+| kind | 含义 | 来源 |
+|---|---|---|
+| `settled` | agent 本轮工作结束（干完等你） | `agent_settled` 事件 / 历史扫描回填 |
+| `error` | 运行出错 | `error` 事件 / status=error 回填 |
+| `steering` | 会话被插话/排队（steer/followUp） | hub 运行活动 |
+| `done` | 手动中止本轮运行（abort） | hub 运行活动 |
+
+- 通知 id 确定性（`sessionId:kind:timestamp`）：重启后历史回填 id 不变，read 标记持久有效。
+- 同会话同 kind、时间相差 ≤5min 的条目视为同一次事件（live 与历史回填去重），保留文本更丰富的一条。
+- 历史回填：settled/error 的会话自动浮出（含最后输出摘要）。
+
+### POST /api/notifications/read
+全部已读（read 标记持久化到 JSON 文件 `data/notifications-read.json`，无 DB）。
+响应 200：`{ "ok": true, "unreadCount": 0 }`。之后新增的通知仍为未读。
+
+## 6. WebSocket 事件流
 
 ### WS /ws/sessions/:id
 连接即进入"订阅"模式：server 推送 pi 会话事件（与 pi JSON event stream 语义对齐）。
@@ -151,7 +248,23 @@ client → server（可选，替代 REST）：
 
 断线重连：client 指数退避重连；重连后通过 `GET /api/sessions/:id` 全量对账（不做增量恢复，v0 简化）。
 
-## 5. 约定
+补充：
+- 文件 tail 推断的外部会话 run 结束（静默 60s）同样发 `agent_settled` + `status:idle`
+  （"本轮工作全部结束"语义一致，供通知聚合与 UI 恢复输入框）。
+- hub 运行活动（steer/followUp 插话、abort 中止）内部上报给通知聚合，不新增 WS 事件类型。
+
+### WS /ws/events（全局频道）
+连接即订阅全局广播，首条握手 `{"type":"session","id":"events","cwd":""}`。
+
+server → client：
+| type | 字段 | 说明 |
+|---|---|---|
+| `sessions_changed` | — | 任一会话文件落盘/删除（presence 扫描） |
+| `session_status` | `sessionId, status` | 会话运行状态变化（首页运行看板实时刷新） |
+| `notification` | `notification: NotificationItem` | 新通知（横幅/震动/声音/未读角标） |
+| `pong` | — | ping 响应（保活） |
+
+## 7. 约定
 
 - 时间一律 ISO 8601 UTC（`timestamp` 毫秒为 pi 原始值）。
 - 所有列表字段缺省 `[]`，对象缺省 `null`，不得省略字段。

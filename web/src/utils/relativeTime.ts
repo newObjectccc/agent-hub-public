@@ -28,3 +28,19 @@ function formatAbsolute(t: number): string {
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
+
+/**
+ * 已运行时长（运行看板用，随 now 实时跳动）：
+ * "45秒" / "12分30秒" / "2时05分"；非法起点返回空串。
+ */
+export function elapsedDuration(startMs: number, now: number = Date.now()): string {
+  if (!Number.isFinite(startMs)) return "";
+  const diff = Math.max(0, now - startMs);
+  const totalSec = Math.floor(diff / 1000);
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  if (h > 0) return `${h}时${String(m).padStart(2, "0")}分`;
+  if (m > 0) return `${m}分${String(s).padStart(2, "0")}秒`;
+  return `${s}秒`;
+}

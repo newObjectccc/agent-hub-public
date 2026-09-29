@@ -1,10 +1,11 @@
 /**
- * REST 路由（docs/API_CONTRACT.md §1-§3）。
+ * REST 路由（docs/API_CONTRACT.md §1-§5）。
  * 统一错误信封：{ "error": { "code", "message" } }
  */
 import { timingSafeEqual } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { HubConfig } from "./config.js";
+import type { DashboardServiceLike } from "./dashboard.js";
 import { ErrorCodes, HubError, toErrorEnvelope } from "./errors.js";
 import type { KpiService } from "./kpi.js";
 import type { PromptResult } from "./sessions/hub.js";
@@ -27,6 +28,8 @@ export interface RouteDeps {
   kpi: Pick<KpiService, "getCards">;
   config: HubConfig;
   systemInfo: () => Promise<SystemInfo>;
+  /** 首页工作台统计 + 通知（docs/API_CONTRACT.md §4-§5） */
+  dashboard: DashboardServiceLike;
 }
 
 function handle(reply: FastifyReply, err: unknown): void {
@@ -48,7 +51,7 @@ function requireAbsoluteCwd(body: unknown): { cwd: string; name?: string } {
 }
 
 export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Promise<void> {
-  const { hub, kpi, config } = deps;
+  const { hub, kpi, config, dashboard } = deps;
 
   // auth.token 预留：enabled 时校验 Bearer（v0 默认关闭）
   if (config.auth.enabled && config.auth.token !== "") {
@@ -159,6 +162,34 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   app.get("/api/kpi", async (_req, reply) => {
     try {
       return reply.send({ cards: kpi.getCards() });
+    } catch (err) {
+      return handle(reply, err);
+    }
+  });
+
+  // GET /api/dashboard/stats（首页今日概览 + 工作中/等你处理分区）
+  app.get("/api/dashboard/stats", async (_req, reply) => {
+    try {
+      return reply.send(await dashboard.getStats());
+    } catch (err) {
+      return handle(reply, err);
+    }
+  });
+
+  // GET /api/notifications（最近 50 条 + 未读数）
+  app.get("/api/notifications", async (_req, reply) => {
+    try {
+      return reply.send(await dashboard.listNotifications());
+    } catch (err) {
+      return handle(reply, err);
+    }
+  });
+
+  // POST /api/notifications/read（全部已读）
+  app.post("/api/notifications/read", async (_req, reply) => {
+    try {
+      await dashboard.markAllRead();
+      return reply.send({ ok: true, unreadCount: 0 });
     } catch (err) {
       return handle(reply, err);
     }

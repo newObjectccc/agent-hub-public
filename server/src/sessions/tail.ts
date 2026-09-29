@@ -114,6 +114,9 @@ class SessionTail {
         this.pushRunning();
       } else if (this.runningPushed && Date.now() - this.lastChangeMs > IDLE_AFTER_MS) {
         this.runningPushed = false;
+        // 文件静默 = 外部会话本轮工作结束：发契约 agent_settled（UI 恢复输入框、
+        // 通知聚合出“干完等你处理”），随后 status 回 idle（与 SessionHub 顺序一致）
+        this.emit(this.sessionId, { type: "agent_settled" });
         this.emit(this.sessionId, { type: "status", status: "idle" });
       }
     } catch {

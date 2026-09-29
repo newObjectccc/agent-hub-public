@@ -101,9 +101,10 @@ export async function probeSystem(options: ProbeOptions): Promise<SystemInfo> {
   const execFileFn = options.execFileFn ?? execFile;
   const timeoutMs = options.timeoutMs ?? 5_000;
 
-  const [tmux, ttyd, tailscale, piBin] = await Promise.all([
+  const [tmux, ttyd, claude, tailscale, piBin] = await Promise.all([
     probeTool(execFileFn, "tmux", ["-V"], timeoutMs),
     probeTool(execFileFn, "ttyd", ["--version"], timeoutMs),
+    probeTool(execFileFn, "claude", ["--version"], timeoutMs),
     probeTailscale(execFileFn, timeoutMs),
     probeTool(execFileFn, "pi", ["--version"], timeoutMs),
   ]);
@@ -120,6 +121,7 @@ export async function probeSystem(options: ProbeOptions): Promise<SystemInfo> {
     pi,
     tmux,
     ttyd,
+    claude,
     tailscale,
     sessionDir: options.sessionDir,
     workspaceRoot: options.workspaceRoot,

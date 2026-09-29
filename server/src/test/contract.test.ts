@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { DEFAULT_CONFIG, type HubConfig } from "../config.js";
+import type { DashboardServiceLike } from "../dashboard.js";
 import { createApp } from "../index.js";
 import type { SessionHubLike } from "../routes.js";
 import { SessionHub } from "../sessions/hub.js";
@@ -33,6 +34,7 @@ const systemFixture: SystemInfo = {
   pi: { available: true, version: "0.87.1" },
   tmux: { available: false, version: null },
   ttyd: { available: false, version: null },
+  claude: { available: false, version: null },
   tailscale: { available: false, version: null, loggedIn: false, hostname: null },
   sessionDir: "/tmp/sessions",
   workspaceRoot: "/tmp/ws",
@@ -51,6 +53,26 @@ function makeFakeHub(promptResult: PromptResult): SessionHubLike {
   };
 }
 
+function makeFakeDashboard(): DashboardServiceLike {
+  return {
+    getStats: async () => ({
+      working: 0,
+      needAttention: 0,
+      todayDone: 0,
+      todayMessages: 0,
+      weekCommits: 0,
+      streak: 0,
+      weekMessages: 0,
+      weekDone: 0,
+      todayDoneSessions: [],
+      workingSessions: [],
+      attentionSessions: [],
+    }),
+    listNotifications: async () => ({ notifications: [], unreadCount: 0 }),
+    markAllRead: async () => undefined,
+  };
+}
+
 describe("contract: SPA history fallback", () => {
   let webRoot: string;
   let app: Awaited<ReturnType<typeof createApp>>;
@@ -64,6 +86,7 @@ describe("contract: SPA history fallback", () => {
     app = await createApp({
       hub: makeFakeHub({ accepted: true, mode: "prompt" }),
       kpi: { getCards: () => [] },
+      dashboard: makeFakeDashboard(),
       config,
       systemInfo: async () => systemFixture,
       webRoot,
@@ -118,6 +141,7 @@ describe("contract: POST prompt 409 SESSION_BUSY", () => {
     app = await createApp({
       hub: makeFakeHub({ accepted: false, mode: "prompt", busy: true }),
       kpi: { getCards: () => [] },
+      dashboard: makeFakeDashboard(),
       config: { ...DEFAULT_CONFIG },
       systemInfo: async () => systemFixture,
       webRoot: null,
@@ -147,6 +171,7 @@ describe("contract: POST prompt 409 SESSION_BUSY", () => {
     const okApp = await createApp({
       hub: makeFakeHub({ accepted: true, mode: "steer" }),
       kpi: { getCards: () => [] },
+      dashboard: makeFakeDashboard(),
       config: { ...DEFAULT_CONFIG },
       systemInfo: async () => systemFixture,
       webRoot: null,
@@ -317,6 +342,7 @@ describe("contract: 统一 404 错误信封（web/dist 缺失时也生效）", (
     app = await createApp({
       hub: makeFakeHub({ accepted: true, mode: "prompt" }),
       kpi: { getCards: () => [] },
+      dashboard: makeFakeDashboard(),
       config: { ...DEFAULT_CONFIG },
       systemInfo: async () => systemFixture,
       webRoot: null,

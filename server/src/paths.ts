@@ -10,3 +10,5 @@ export const serverRoot = resolve(here, "..");
 export const repoRoot = resolve(here, "../..");
 export const configDir = resolve(repoRoot, "config");
 export const webDistDir = resolve(repoRoot, "web", "dist");
+/** 运行时状态目录（通知 read 标记等，gitignore 覆盖） */
+export const dataDir = resolve(repoRoot, "data");

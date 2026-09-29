@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { relativeTime } from "./relativeTime";
+import { elapsedDuration, relativeTime } from "./relativeTime";
 
 const NOW = Date.parse("2026-02-18T12:00:00.000Z");
 
@@ -31,5 +31,28 @@ describe("relativeTime", () => {
   it("非法输入返回空串，未来时间返回绝对时间", () => {
     expect(relativeTime("not-a-date", NOW)).toBe("");
     expect(relativeTime(NOW + 60_000, NOW)).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
+  });
+});
+
+describe("elapsedDuration（运行时长实时格式化）", () => {
+  const NOW = Date.parse("2026-02-18T12:00:00.000Z");
+
+  it("秒级：45秒", () => {
+    expect(elapsedDuration(NOW - 45_000, NOW)).toBe("45秒");
+  });
+
+  it("分钟级：12分30秒", () => {
+    expect(elapsedDuration(NOW - 750_000, NOW)).toBe("12分30秒");
+  });
+
+  it("小时级：2时05分", () => {
+    expect(elapsedDuration(NOW - (2 * 3600 + 300) * 1000, NOW)).toBe("2时05分");
+  });
+
+  it("刚启动 0 秒与非法起点", () => {
+    expect(elapsedDuration(NOW, NOW)).toBe("0秒");
+    expect(elapsedDuration(NaN, NOW)).toBe("");
+    // 未来时间（时钟偏差）不出现负数
+    expect(elapsedDuration(NOW + 5_000, NOW)).toBe("0秒");
   });
 });

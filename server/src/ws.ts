@@ -1,5 +1,5 @@
 /**
- * WS /ws/sessions/:id：订阅 pi 会话事件流（docs/API_CONTRACT.md §4）。
+ * WS /ws/sessions/:id：订阅 pi 会话事件流（docs/API_CONTRACT.md §6）。
  * 连接即订阅；重连后客户端走 GET /api/sessions/:id 全量对账（不做增量恢复）。
  */
 import type { IncomingMessage, Server as HttpServer } from "node:http";
