@@ -1,0 +1,17 @@
+{
+  "name": "agent-hub",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Cross-platform pi agent session hub: PWA panel + chat + KPI",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "lint": "pnpm -r lint",
+    "setup": "node cli/setup.js",
+    "start": "node cli/start.js"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0"
+  }
+}

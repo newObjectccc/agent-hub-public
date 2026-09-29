@@ -1,0 +1,6 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+config/hub.config.local.json
+.env

@@ -1,0 +1,21 @@
+{
+  "sources": [
+    {
+      "id": "example-http",
+      "title": "示例：HTTP JSON 指标",
+      "type": "http-json",
+      "url": "https://example.com/api/metric",
+      "headers": { "Authorization": "Bearer ${MY_TOKEN}" },
+      "jsonPath": "$.data.value",
+      "unit": "%",
+      "link": "https://example.com/dashboard"
+    },
+    {
+      "id": "example-static",
+      "title": "示例：静态值",
+      "type": "static",
+      "value": "OK",
+      "trend": "flat"
+    }
+  ]
+}

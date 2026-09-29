@@ -1,0 +1,11 @@
+{
+  "port": 7700,
+  "host": "127.0.0.1",
+  "sessionDir": "~/.pi/agent/sessions",
+  "workspaceRoot": "~/Workspace",
+  "kpiRefreshMinutes": 5,
+  "auth": {
+    "enabled": false,
+    "token": ""
+  }
+}

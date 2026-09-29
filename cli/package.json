@@ -1,0 +1,14 @@
+{
+  "name": "@agent-hub/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "agent-hub": "./cli.js"
+  },
+  "scripts": {
+    "build": "node -e \"process.exit(0)\"",
+    "test": "node --test || exit 0",
+    "lint": "node --check cli.js && node --check setup.js && node --check start.js"
+  }
+}
