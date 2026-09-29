@@ -14,7 +14,7 @@ import { createApp } from "../index.js";
 import type { SessionHubLike } from "../routes.js";
 import { SessionHub } from "../sessions/hub.js";
 import type { PromptResult } from "../sessions/hub.js";
-import type { MessageDto, ServerEvent, SessionListItem, SystemInfo } from "../types.js";
+import type { MessageDto, SearchResultDto, ServerEvent, SessionListItem, SessionTreeDto, SystemInfo } from "../types.js";
 
 const sessionFixture: SessionListItem = {
   id: "sess-1",
@@ -38,16 +38,19 @@ const systemFixture: SystemInfo = {
   workspaceRoot: "/tmp/ws",
 };
 
-function makeFakeHub(promptResult: PromptResult): SessionHubLike {
+function makeFakeHub(promptResult: PromptResult, overrides: Partial<SessionHubLike> = {}): SessionHubLike {
   return {
     getStatus: () => "idle",
     listSessions: async () => [sessionFixture],
     findSession: async (id: string) => (id === "sess-1" ? sessionFixture : null),
     loadMessages: async (): Promise<MessageDto[]> => [],
+    search: async (): Promise<SearchResultDto[]> => [],
+    loadTree: async (): Promise<SessionTreeDto | null> => ({ entries: [], activePath: [] }),
     createSession: async () => sessionFixture,
     prompt: async () => promptResult,
     abort: async () => undefined,
     compact: async () => undefined,
+    ...overrides,
   };
 }
 
@@ -108,6 +111,95 @@ describe("contract: SPA history fallback", () => {
     const res = await app.inject({ method: "GET", url: "/api/kpi" });
     assert.equal(res.statusCode, 200);
     assert.deepEqual(res.json(), { cards: [] });
+  });
+});
+
+describe("contract: GET /api/search 与 GET /api/sessions/:id/tree", () => {
+  const searchFixture: SearchResultDto[] = [
+    {
+      sessionId: "sess-1",
+      sessionName: "pi-demo",
+      messageId: "e2",
+      role: "assistant",
+      snippet: "先查 [[KPI]] 口径",
+      timestamp: 1733234402000,
+    },
+  ];
+  const treeFixture: SessionTreeDto = {
+    entries: [
+      { id: "e1", parentId: null, role: "user", text: "帮我检查 KPI", timestamp: 1733234401000, hasChildren: true },
+      { id: "e2", parentId: "e1", role: "assistant", text: "好的", timestamp: 1733234402000, hasChildren: false },
+    ],
+    activePath: ["e1", "e2"],
+  };
+
+  async function makeApp(hub: SessionHubLike): Promise<Awaited<ReturnType<typeof createApp>>> {
+    return createApp({
+      hub,
+      kpi: { getCards: () => [] },
+      config: { ...DEFAULT_CONFIG },
+      systemInfo: async () => systemFixture,
+      webRoot: null,
+    });
+  }
+
+  it("GET /api/search 返回 {results:[...]}，字段名严格按契约", async () => {
+    const app = await makeApp(makeFakeHub({ accepted: true, mode: "prompt" }, { search: async () => searchFixture }));
+    const res = await app.inject({ method: "GET", url: "/api/search?q=KPI" });
+    assert.equal(res.statusCode, 200);
+    const body = res.json() as { results: SearchResultDto[] };
+    assert.deepEqual(Object.keys(body), ["results"]);
+    assert.equal(body.results.length, 1);
+    assert.deepEqual(Object.keys(body.results[0]).sort(), ["messageId", "role", "sessionId", "sessionName", "snippet", "timestamp"]);
+    await app.close();
+  });
+
+  it("GET /api/search 缺 q / 空 q → 400 INVALID_REQUEST", async () => {
+    const app = await makeApp(makeFakeHub({ accepted: true, mode: "prompt" }));
+    for (const url of ["/api/search", "/api/search?q=%20%20"]) {
+      const res = await app.inject({ method: "GET", url });
+      assert.equal(res.statusCode, 400, url);
+      const body = res.json() as { error: { code: string } };
+      assert.equal(body.error.code, "INVALID_REQUEST");
+    }
+    await app.close();
+  });
+
+  it("GET /api/search limit 透传（非数字回退默认）", async () => {
+    const calls: Array<{ query: string; limit: number | undefined }> = [];
+    const app = await makeApp(
+      makeFakeHub(
+        { accepted: true, mode: "prompt" },
+        {
+          search: async (query: string, limit?: number) => {
+            calls.push({ query, limit });
+            return [];
+          },
+        },
+      ),
+    );
+    assert.equal((await app.inject({ method: "GET", url: "/api/search?q=a&limit=5" })).statusCode, 200);
+    assert.deepEqual(calls[0], { query: "a", limit: 5 });
+    assert.equal((await app.inject({ method: "GET", url: "/api/search?q=a&limit=oops" })).statusCode, 200);
+    assert.deepEqual(calls[1], { query: "a", limit: undefined });
+    await app.close();
+  });
+
+  it("GET /api/sessions/:id/tree 返回 {entries,activePath}", async () => {
+    const app = await makeApp(makeFakeHub({ accepted: true, mode: "prompt" }, { loadTree: async () => treeFixture }));
+    const res = await app.inject({ method: "GET", url: "/api/sessions/sess-1/tree" });
+    assert.equal(res.statusCode, 200);
+    assert.deepEqual(res.json(), treeFixture);
+    await app.close();
+  });
+
+  it("GET /api/sessions/:id/tree 会话不存在 → 404 SESSION_NOT_FOUND", async () => {
+    const app = await makeApp(makeFakeHub({ accepted: true, mode: "prompt" }, { loadTree: async () => null }));
+    const res = await app.inject({ method: "GET", url: "/api/sessions/nope/tree" });
+    assert.equal(res.statusCode, 404);
+    const body = res.json() as { error: { code: string; message: string } };
+    assert.equal(body.error.code, "SESSION_NOT_FOUND");
+    await app.close();
   });
 });
 

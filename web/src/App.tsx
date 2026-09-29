@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { HomePage } from "./pages/HomePage";
 import { ChatPage } from "./pages/ChatPage";
+import { TreePage } from "./pages/TreePage";
 import { onRouteChange, parseRoute, type Route } from "./utils/router";
 
 export function App() {
@@ -10,6 +11,9 @@ export function App() {
 
   if (route.name === "chat") {
     return <ChatPage key={route.id} sessionId={route.id} />;
+  }
+  if (route.name === "tree") {
+    return <TreePage key={route.id} sessionId={route.id} />;
   }
   return <HomePage />;
 }

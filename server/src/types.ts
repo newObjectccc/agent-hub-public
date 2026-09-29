@@ -30,6 +30,39 @@ export interface ToolCallDto {
 
 export type MessageRole = "user" | "assistant" | "toolResult" | "custom";
 
+/** GET /api/sessions/:id/tree 的节点 role（树含全部 entry，比 MessageRole 多 system/other） */
+export type TreeRole = "user" | "assistant" | "toolResult" | "custom" | "system" | "other";
+
+/** GET /api/search 结果项（snippet 中命中词以 [[...]] 包裹） */
+export interface SearchResultDto {
+  sessionId: string;
+  sessionName: string | null;
+  /** 命中消息的 entry id（chat 页精确锚点） */
+  messageId: string;
+  role: MessageRole;
+  snippet: string;
+  /** 毫秒时间戳（pi 原始值） */
+  timestamp: number;
+}
+
+/** GET /api/sessions/:id/tree 节点（先序 DFS 顺序） */
+export interface TreeNodeDto {
+  id: string;
+  parentId: string | null;
+  role: TreeRole;
+  /** 摘要文本（TREE_SUMMARY_LIMIT 截断） */
+  text: string;
+  /** 毫秒时间戳（pi 原始值） */
+  timestamp: number;
+  hasChildren: boolean;
+}
+
+/** GET /api/sessions/:id/tree 响应；activePath 为活跃分支 root→leaf 的 id 路径 */
+export interface SessionTreeDto {
+  entries: TreeNodeDto[];
+  activePath: string[];
+}
+
 /** GET /api/sessions/:id 与 WS message_end 的消息结构 */
 export interface MessageDto {
   id: string;

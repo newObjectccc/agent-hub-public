@@ -8,7 +8,14 @@ import type { HubConfig } from "./config.js";
 import { ErrorCodes, HubError, toErrorEnvelope } from "./errors.js";
 import type { KpiService } from "./kpi.js";
 import type { PromptResult } from "./sessions/hub.js";
-import type { MessageDto, SessionListItem, SessionStatus, SystemInfo } from "./types.js";
+import type {
+  MessageDto,
+  SearchResultDto,
+  SessionListItem,
+  SessionStatus,
+  SessionTreeDto,
+  SystemInfo,
+} from "./types.js";
 
 /** SessionHub 的结构接口（测试可注入 fake） */
 export interface SessionHubLike {
@@ -16,6 +23,8 @@ export interface SessionHubLike {
   listSessions(): Promise<SessionListItem[]>;
   findSession(id: string): Promise<SessionListItem | null>;
   loadMessages(id: string): Promise<MessageDto[] | null>;
+  search(query: string, limit?: number): Promise<SearchResultDto[]>;
+  loadTree(id: string): Promise<SessionTreeDto | null>;
   createSession(cwd: string, name?: string): Promise<SessionListItem>;
   prompt(id: string, text: unknown, modeRaw: unknown): Promise<PromptResult>;
   abort(id: string): Promise<void>;
@@ -87,6 +96,36 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
       }
       const messages = (await hub.loadMessages(req.params.id)) ?? [];
       return reply.send({ session, messages });
+    } catch (err) {
+      return handle(reply, err);
+    }
+  });
+
+  // GET /api/search?q=&limit=
+  app.get<{ Querystring: { q?: string; limit?: string } }>("/api/search", async (req, reply) => {
+    try {
+      const q = typeof req.query.q === "string" ? req.query.q : "";
+      if (q.trim() === "") {
+        throw new HubError(ErrorCodes.INVALID_REQUEST, "缺少搜索关键词 q");
+      }
+      const rawLimit = req.query.limit;
+      const parsedLimit = rawLimit !== undefined ? Number(rawLimit) : NaN;
+      const limit = Number.isFinite(parsedLimit) ? Math.floor(parsedLimit) : undefined;
+      const results = await hub.search(q, limit);
+      return reply.send({ results });
+    } catch (err) {
+      return handle(reply, err);
+    }
+  });
+
+  // GET /api/sessions/:id/tree
+  app.get<{ Params: { id: string } }>("/api/sessions/:id/tree", async (req, reply) => {
+    try {
+      const tree = await hub.loadTree(req.params.id);
+      if (!tree) {
+        throw new HubError(ErrorCodes.SESSION_NOT_FOUND, `会话不存在: ${req.params.id}`, 404);
+      }
+      return reply.send(tree);
     } catch (err) {
       return handle(reply, err);
     }

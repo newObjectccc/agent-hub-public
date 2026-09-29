@@ -74,6 +74,56 @@ Base URL: `http://<host>:<port>/api`（默认端口 7700）
 ### POST /api/sessions/:id/compact
 手动压缩上下文。响应 200：`{ "ok": true }`。
 
+### GET /api/search
+跨全部会话搜消息文本（大小写不敏感子串匹配，无需全文索引）。
+查询参数：`q`（必填非空，否则 400 `INVALID_REQUEST`）、`limit`（可选，默认 50，钳制到 1..100）。
+
+```json
+{
+  "results": [
+    {
+      "sessionId": "uuid-or-slug",
+      "sessionName": "pi-seksun-KPI",
+      "messageId": "entry-id",
+      "role": "user | assistant | toolResult | custom",
+      "snippet": "…前文[[命中词]]后文…",
+      "timestamp": 1733234401000
+    }
+  ]
+}
+```
+说明：
+- 搜索范围 = 各会话 **active branch** 消息文本（与 `GET /api/sessions/:id` 的 `messages` 一致，保证点击直达可定位）；toolResult 已折叠进 assistant 的 `toolCalls`，不参与文本搜索。
+- `snippet` 为命中词前后各 ~60 字符的摘要，**命中词以 `[[`…`]]` 包裹**（多处命中全部标记；前端渲染为高亮），截断处加 `…`。
+- `messageId` 为命中消息的 entry id（chat 页精确锚点，配合 `?q=` 使用）。
+- `timestamp` 毫秒为 pi 原始值；结果按 `timestamp` 倒序，最多 100 条。
+- server 侧内存索引缓存：会话文件变更（presence 回调）或 TTL 60s 后重建。
+
+### GET /api/sessions/:id/tree
+会话分支树（从 JSONL entry 的 `id`/`parentId` 构树，pi `/tree` 语义）。会话不存在 → 404 `SESSION_NOT_FOUND`。
+
+```json
+{
+  "entries": [
+    {
+      "id": "entry-id",
+      "parentId": "parent-entry-id | null",
+      "role": "user | assistant | toolResult | custom | system | other",
+      "text": "摘要文本（80 字符截断）",
+      "timestamp": 1733234401000,
+      "hasChildren": true
+    }
+  ],
+  "activePath": ["entry-id", "…"]
+}
+```
+说明：
+- `entries` 含**全部** entry（toolResult/usage 等也是真实树节点，跳过会断开父子链），按**先序 DFS**排列（同级按 `timestamp` 升序），前端按顺序渲染缩进树。
+- `role`：`message` entry 取 `message.role`（含 `system`）；`custom_message` → `custom`；其余 entry 类型 → `other`。
+- `text`：消息文本摘要；无文本的 assistant 用 `[tool] <工具摘要>` 占位；compaction/branch_summary/model_change/usage 等带 `[类型]` 前缀。
+- `activePath` = 当前活跃分支到根的 id 路径，**root→leaf 顺序**（与 `messages` 顺序一致）。
+- 防御：v1 线性文件（无 `id`/`parentId`）按顺序补 `anon-<i>` 成链；悬空 `parentId` 的节点视为根。
+
 ## 2. 系统状态（system）
 
 ### GET /api/system

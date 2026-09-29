@@ -5,8 +5,10 @@
 import type {
   KpiResponse,
   PromptResult,
+  SearchResponse,
   SessionDetail,
   SessionSummary,
+  SessionTree,
   SystemStatus,
   ApiErrorBody,
 } from "./types";
@@ -49,6 +51,18 @@ export const api = {
 
   getSession(id: string): Promise<SessionDetail> {
     return request(`/api/sessions/${encodeURIComponent(id)}`);
+  },
+
+  /** 跨会话搜索（GET /api/search?q=&limit=） */
+  search(q: string, limit?: number): Promise<SearchResponse> {
+    const params = new URLSearchParams({ q });
+    if (limit !== undefined) params.set("limit", String(limit));
+    return request(`/api/search?${params.toString()}`);
+  },
+
+  /** 会话分支树（GET /api/sessions/:id/tree） */
+  getSessionTree(id: string): Promise<SessionTree> {
+    return request(`/api/sessions/${encodeURIComponent(id)}/tree`);
   },
 
   createSession(cwd: string, name?: string): Promise<{ session: SessionSummary }> {

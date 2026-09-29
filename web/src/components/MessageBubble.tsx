@@ -9,10 +9,11 @@ function timeLabel(ts: number): string {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-/** 消息气泡：user 右侧，assistant 左侧（markdown 渲染），toolCalls 为折叠卡片 */
-export function MessageBubble({ message }: { message: SessionMessage }) {
+/** 消息气泡：user 右侧，assistant 左侧（markdown 渲染），toolCalls 为折叠卡片。
+ *  highlight=true 时高亮（搜索定位 ?q= 跳转命中消息）。 */
+export function MessageBubble({ message, highlight }: { message: SessionMessage; highlight?: boolean }) {
   return (
-    <div className={`msg-row ${message.role}`}>
+    <div id={`msg-${message.id}`} className={`msg-row ${message.role}${highlight ? " search-hit" : ""}`}>
       <div>
         <div className="bubble">
           {message.role === "assistant" ? (
