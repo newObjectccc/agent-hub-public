@@ -62,6 +62,14 @@ export class PiAdapter implements SessionAdapter {
     this.hub.invalidateSearch();
   }
 
+  markLiveFeed(id: string): void {
+    this.hub.markLiveFeed(id);
+  }
+
+  isSdkLive(id: string): boolean {
+    return this.hub.isSdkLive(id);
+  }
+
   disposeAll(): void {
     this.hub.disposeAll();
   }

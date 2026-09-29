@@ -16,7 +16,7 @@ export const ErrorCodes = {
   INVALID_FILE: "INVALID_FILE",
   FILE_NOT_FOUND: "FILE_NOT_FOUND",
   GIT_FAILED: "GIT_FAILED",
-} as const;
+  UNAUTHORIZED: "UNAUTHORIZED",} as const;
 
 export type ErrorCode = (typeof ErrorCodes)[keyof typeof ErrorCodes];
 

@@ -67,6 +67,22 @@ export function contentToText(content: unknown): string {
   return "";
 }
 
+/** content（string | (TextContent|ImageContent)[]）→ 思维链文本（thinking 块拼接，无则 null） */
+export function contentToThinking(content: unknown): string | null {
+  if (!Array.isArray(content)) return null;
+  const parts = content
+    .filter((block): block is { type: "thinking"; thinking: string } => {
+      return (
+        typeof block === "object" &&
+        block !== null &&
+        (block as { type?: unknown }).type === "thinking" &&
+        typeof (block as { thinking?: unknown }).thinking === "string"
+      );
+    })
+    .map((block) => block.thinking);
+  return parts.length > 0 ? parts.join("\n") : null;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
@@ -170,8 +186,8 @@ function entryTimestampMs(entry: RawEntry, message?: Record<string, unknown>): n
   return 0;
 }
 
-function toDto(id: string, role: MessageRole, timestamp: number, text: string, toolCalls: ToolCallDto[] = []): MessageDto {
-  return { id, role, timestamp, text, toolCalls };
+function toDto(id: string, role: MessageRole, timestamp: number, text: string, toolCalls: ToolCallDto[] = [], thinking: string | null = null): MessageDto {
+  return { id, role, timestamp, text, thinking, toolCalls };
 }
 
 /**
@@ -222,7 +238,7 @@ export function buildMessages(entries: RawEntry[]): MessageDto[] {
       case "assistant": {
         const { toolCalls, byCallId } = assistantToolCalls(message);
         for (const [callId, ref] of byCallId) toolCallOwners.set(callId, ref.dto);
-        messages.push(toDto(entryId, "assistant", timestamp, contentToText(message.content), toolCalls));
+        messages.push(toDto(entryId, "assistant", timestamp, contentToText(message.content), toolCalls, contentToThinking(message.content)));
         break;
       }
       case "toolResult": {

@@ -23,6 +23,7 @@ import { loadSessionTree } from "./tree.js";
 import {
   assistantToolCalls,
   contentToText,
+  contentToThinking,
   encodeCwdDirName,
   findSessionById,
   RESULT_PREVIEW_LIMIT,
@@ -40,6 +41,8 @@ interface LiveSession {
   unsubscribe: () => void;
   /** 当前流式 assistant 消息的流内 id（message_start 分配） */
   currentMessageId: string | null;
+  /** 最近一条 message_start 的消息 id（工具执行发生在 assistant message_end 之后，归属它） */
+  lastMessageId: string | null;
   currentMessageStartTs: number | null;
   /** toolCallId → 结果（折叠进 assistant message_end 的 toolCalls） */
   toolResults: Map<string, { isError: boolean; text: string }>;
@@ -75,9 +78,13 @@ export class SessionHub {
   private readonly live = new Map<string, LiveSession>();
   private readonly statuses = new Map<string, SessionStatus>();
   private readonly searchService: SearchService;
-  private disposed = false;
+  /** 扩展 live-feed 推送过的会话：id → 最后事件时间（10 分钟内视为 live，防文件 tail 双推送） */
+  private readonly feedSessions = new Map<string, number>();  private disposed = false;
   /** 会话转 live 时回调（用于停掉文件 tail，保持单一推送源，防重复气泡） */
   onLive?: (id: string) => void;
+
+  /** live-feed 活跃窗口：超过此时长无事件则重新允许文件 tail（pi 退出后自愈） */
+  static readonly FEED_TTL_MS = 10 * 60_000;
 
   constructor(sessionDir: string, emit: EmitFn) {
     this.sessionDir = sessionDir;
@@ -89,9 +96,28 @@ export class SessionHub {
     return this.statuses.get(id) ?? "idle";
   }
 
-  /** 是否有本进程持有的 live AgentSession（有则事件由 SDK 推送，无需文件 tail） */
-  isLive(id: string): boolean {
+  /** 是否有任一 live 推送源（本进程 SDK 或扩展 live-feed，有则无需文件 tail） */
+  isLive(id: string, nowMs = Date.now()): boolean {
+    if (this.live.has(id)) return true;
+    const lastFeed = this.feedSessions.get(id);
+    return lastFeed !== undefined && nowMs - lastFeed <= SessionHub.FEED_TTL_MS;
+  }
+
+  /** 仅本进程 SDK 持有（此时扩展 live 事件应丢弃，SDK 流是权威源） */
+  isSdkLive(id: string): boolean {
     return this.live.has(id);
+  }
+
+  /**
+   * 扩展 live-feed 事件到达（每批调用，刷新活跃时间）。
+   * 首次（或 TTL 过期后重新）标记时触发 onLive 停掉文件 tail，防止双推送。
+   */
+  markLiveFeed(id: string, nowMs = Date.now()): void {
+    const last = this.feedSessions.get(id);
+    this.feedSessions.set(id, nowMs);
+    if (last === undefined || nowMs - last > SessionHub.FEED_TTL_MS) {
+      this.onLive?.(id);
+    }
   }
 
   /** 本进程运行态优先，否则按文件活动推断外部 running */
@@ -214,6 +240,7 @@ export class SessionHub {
     const liveSession: LiveSession = {
       session,
       currentMessageId: null,
+      lastMessageId: null,
       currentMessageStartTs: null,
       toolResults: new Map(),
       seq: 0,
@@ -310,6 +337,7 @@ export class SessionHub {
         if (role === null || role === "toolResult") break;
         live.seq += 1;
         live.currentMessageId = `live-${live.seq}-${Date.now()}`;
+        live.lastMessageId = live.currentMessageId;
         live.currentMessageStartTs = typeof message.timestamp === "number" ? message.timestamp : Date.now();
         live.toolResults.clear();
         this.emit(id, {
@@ -320,13 +348,17 @@ export class SessionHub {
       }
       case "message_update": {
         const ame = event.assistantMessageEvent as { type: string; delta?: string };
-        if (ame && ame.type === "text_delta" && typeof ame.delta === "string" && live.currentMessageId) {
+        if (!live.currentMessageId || typeof ame?.delta !== "string") break;
+        if (ame.type === "text_delta") {
           this.emit(id, { type: "text_delta", messageId: live.currentMessageId, delta: ame.delta });
+        } else if (ame.type === "thinking_delta") {
+          this.emit(id, { type: "thinking_delta", messageId: live.currentMessageId, delta: ame.delta });
         }
         break;
       }
       case "tool_execution_start": {
-        const messageId = live.currentMessageId ?? `live-${live.seq}`;
+        // 工具执行发生在携带 toolCall 的 assistant message_end 之后：归属最近一条消息
+        const messageId = live.currentMessageId ?? live.lastMessageId ?? `live-${live.seq}`;
         this.emit(id, {
           type: "tool_start",
           messageId,
@@ -338,7 +370,7 @@ export class SessionHub {
         break;
       }
       case "tool_execution_end": {
-        const messageId = live.currentMessageId ?? `live-${live.seq}`;
+        const messageId = live.currentMessageId ?? live.lastMessageId ?? `live-${live.seq}`;
         const result = event.result as { content?: unknown } | undefined;
         const preview = truncateText(contentToText(result?.content), RESULT_PREVIEW_LIMIT);
         live.toolResults.set(event.toolCallId, { isError: event.isError === true, text: preview });
@@ -390,8 +422,9 @@ export class SessionHub {
   private buildMessageDto(live: LiveSession, fallbackId: string, role: MessageRole, message: Record<string, unknown>): MessageDto {
     const timestamp = typeof message.timestamp === "number" ? message.timestamp : (live.currentMessageStartTs ?? Date.now());
     const text = contentToText(message.content);
+    const thinking = contentToThinking(message.content);
     if (role !== "assistant") {
-      return { id: fallbackId, role, timestamp, text, toolCalls: [] };
+      return { id: fallbackId, role, timestamp, text, thinking, toolCalls: [] };
     }
     const { toolCalls, byCallId } = assistantToolCalls(message);
     for (const [callId, ref] of byCallId) {
@@ -401,7 +434,7 @@ export class SessionHub {
         ref.dto.resultPreview = result.text === "" ? null : result.text;
       }
     }
-    return { id: fallbackId, role, timestamp, text, toolCalls };
+    return { id: fallbackId, role, timestamp, text, thinking, toolCalls };
   }
 
   /** 从已持久化 entries 中按消息对象 identity / 时间戳解析 entry id */

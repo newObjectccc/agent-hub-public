@@ -8,6 +8,7 @@ import type { HubConfig } from "./config.js";
 import { ErrorCodes, HubError, toErrorEnvelope } from "./errors.js";
 import { createGitApi, type GitApi } from "./git.js";
 import type { KpiService } from "./kpi.js";
+import type { LiveIngestLike } from "./live.js";
 import type { PromptResult } from "./sessions/hub.js";
 import { fullPage, paginateMessages, parseLimit } from "./sessions/paginate.js";
 import type {
@@ -40,7 +41,14 @@ export interface RouteDeps {
   systemInfo: () => Promise<SystemInfo>;
   /** 只读 git/文件 API（可注入 mock；缺省用真实实现） */
   git?: GitApi;
+  /** pi 扩展 live-feed 接入（可选，缺省时 /api/live 返回 503） */
+  live?: LiveIngestLike;
 }
+
+function tokenMatches(headerValue: string, expected: string): boolean {
+  const a = Buffer.from(headerValue);
+  const b = Buffer.from(expected);
+  return a.length === b.length && timingSafeEqual(a, b);}
 
 function handle(reply: FastifyReply, err: unknown): void {
   const { statusCode, body } = toErrorEnvelope(err);
@@ -69,9 +77,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
     app.addHook("onRequest", async (req: FastifyRequest, reply: FastifyReply) => {
       const header = req.headers.authorization ?? "";
       const expected = `Bearer ${config.auth.token}`;
-      const a = Buffer.from(header);
-      const b = Buffer.from(expected);
-      const ok = a.length === b.length && timingSafeEqual(a, b);
+      const ok = tokenMatches(header, expected);
       if (!ok) {
         return reply.status(401).send({ error: { code: "UNAUTHORIZED", message: "invalid or missing bearer token" } });
       }
@@ -198,6 +204,30 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
       }
       await hub.compact(req.params.id);
       return reply.send({ ok: true });
+    } catch (err) {
+      return handle(reply, err);
+    }
+  });
+
+  // POST /api/live/:sessionId：pi 扩展 live-feed 事件接入（契约 §6，fire-and-forget）
+  // 共享密钥：config auth.token 非空则校验 Bearer，空则放行（tailnet 场景）
+  app.post<{ Params: { sessionId: string } }>("/api/live/:sessionId", async (req, reply) => {
+    try {
+      if (config.auth.token !== "") {
+        const header = req.headers.authorization ?? "";
+        if (!tokenMatches(header, `Bearer ${config.auth.token}`)) {
+          throw new HubError(ErrorCodes.UNAUTHORIZED, "invalid or missing shared token", 401);
+        }
+      }
+      const sessionId = req.params.sessionId;
+      if (typeof sessionId !== "string" || sessionId === "" || sessionId.length > 256) {
+        throw new HubError(ErrorCodes.INVALID_REQUEST, "sessionId 非法");
+      }
+      if (!deps.live) {
+        throw new HubError(ErrorCodes.INTERNAL, "live 接入未启用", 503);
+      }
+      const { accepted } = deps.live.ingest(sessionId, req.body);
+      return reply.status(202).send({ accepted });
     } catch (err) {
       return handle(reply, err);
     }

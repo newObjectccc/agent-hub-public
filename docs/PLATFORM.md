@@ -13,6 +13,19 @@
 > 所有步骤均可用 `--dry-run` 预演（不写盘、不安装、不启动）；
 > `node cli/cli.js check` 为只读环境检测报告。
 
+## pi 实时旁观（live-feed 扩展，可选）
+
+安装一行（CLI setup 未来会自动做这一步）：
+
+```bash
+cp integrations/pi-live-feed/live-feed.ts ~/.pi/agent/extensions/live-feed.ts
+```
+
+之后任意终端里跑的 pi 会话都会把思维链/流式回复/工具执行实时推给 agent-hub
+（手机 chat 页 token 级旁观）。可选环境变量：`AGENT_HUB_LIVE_URL`（覆盖推送地址，
+默认 `http://127.0.0.1:7700`）、`AGENT_HUB_LIVE_TOKEN`（与 `hub.config.json` 的
+`auth.token` 对齐的共享密钥，为空则不带鉴权）。扩展故障静默、不阻塞 pi。
+
 ## macOS
 
 ```bash

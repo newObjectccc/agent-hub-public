@@ -146,6 +146,14 @@ export class SessionRegistry {
     this.claude.invalidateSearch?.();
   }
 
+  markLiveFeed(id: string): void {
+    void this.resolve(id).then((a) => a?.markLiveFeed?.(id));
+  }
+
+  isSdkLive(id: string): boolean {
+    return this.pi.isSdkLive?.(id) === true || this.claude.isSdkLive?.(id) === true;
+  }
+
   disposeAll(): void {
     this.pi.disposeAll();
     this.claude.disposeAll();

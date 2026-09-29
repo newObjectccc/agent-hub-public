@@ -16,6 +16,7 @@ import { PiAdapter } from "./adapters/pi.js";
 import { SessionRegistry } from "./adapters/registry.js";
 import { loadHubConfig, type HubConfig } from "./config.js";
 import { KpiService } from "./kpi.js";
+import { LiveIngest } from "./live.js";
 import { configDir, webDistDir } from "./paths.js";
 import { registerRoutes, type RouteDeps, type SessionHubLike } from "./routes.js";
 import { SessionHub } from "./sessions/hub.js";
@@ -43,7 +44,7 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
     config: options.config,
     systemInfo: options.systemInfo,
     git: options.git,
-  });
+    live: options.live,  });
 
   // 静态托管 web/dist（存在时），单进程即可服务 PWA
   const root = options.webRoot ?? null;
@@ -89,11 +90,20 @@ export async function startHub(): Promise<StartedHub> {
   const claudeAdapter = new ClaudeAdapter({ projectsDir: claudeProjectsDir, historyFile: claudeHistoryFile, emit });
   const hub = new SessionRegistry(new PiAdapter(piHub), claudeAdapter);
   const kpi = new KpiService({ configDir, kpiRefreshMinutes: config.kpiRefreshMinutes });
+  // pi 扩展 live-feed 接入：终端 pi 会话的 token 级实时流（契约 §6）
+  const liveIngest = new LiveIngest({
+    emit,
+    // 首个 live 事件标记会话转 live：触发 hub.onLive 停文件 tail，防双推送
+    onLive: (sid) => hub.markLiveFeed(sid),
+    // 本进程 SDK 流是权威源：接管中的会话丢弃扩展推送
+    isSdkLive: (sid) => hub.isSdkLive(sid),
+  });
 
   const app = await createApp({
     hub,
     kpi,
     config,
+    live: liveIngest,
     webRoot: webDistDir,
     logger: true,
     systemInfo: () =>
@@ -126,6 +136,7 @@ export async function startHub(): Promise<StartedHub> {
     closed = true;
     kpi.stop();
     presence.stop();
+    liveIngest.close();
     hub.disposeAll();
     // 先掐掉全部 WS 连接再关 HTTP，否则在线 WS 客户端会让 app.close() 永不 resolve
     wshub.closeAll();

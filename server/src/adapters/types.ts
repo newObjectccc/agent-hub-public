@@ -35,6 +35,9 @@ export interface SessionAdapter {
   loadTree?(id: string): Promise<SessionTreeDto | null>;
   /** 文件变更后失效搜索缓存 */
   invalidateSearch?(): void;
+  /** live-feed 标记：扩展推送过事件的会话（10 分钟窗口，防文件 tail 双推送） */
+  markLiveFeed?(id: string): void;
+  isSdkLive?(id: string): boolean;
   /** 进程退出时回收（pi：dispose SDK 实例；claude：杀掉 spawn 的子进程） */
   disposeAll(): void;
 }

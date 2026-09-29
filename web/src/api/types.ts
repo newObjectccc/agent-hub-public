@@ -70,6 +70,8 @@ export interface SessionMessage {
   role: MessageRole;
   timestamp: number; // pi 原始毫秒时间戳
   text: string;
+  /** 思维链全文（thinking 块）；无思维链为 null。server 始终下发，缺省视为无 */
+  thinking?: string | null;
   toolCalls: ToolCall[];
 }
 
