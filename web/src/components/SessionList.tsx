@@ -1,8 +1,9 @@
 import type { MutableRefObject } from "react";
 import type { SessionSummary } from "../api/types";
 import { useFirstSeen } from "../hooks/useFirstSeen";
+import { useNowTicker } from "../hooks/useNowTicker";
 import { sessionTitle, shortPath } from "../utils/display";
-import { relativeTime } from "../utils/relativeTime";
+import { elapsedMinutesLabel, relativeTime } from "../utils/relativeTime";
 import { GitStatusBadge } from "./GitStatusBadge";
 import { SourceBadge } from "./SourceBadge";
 import { StatusBadge } from "./StatusBadge";
@@ -27,14 +28,39 @@ export interface SessionListProps {
   onScrollTop?: (top: number) => void;
   /** 跨卸载持久的 seen 容器（空分类 tab 往返不重播进场动画，AC3-b） */
   seenIds?: Set<string>;
+  /** 排序优先级注入（等你处理 > 工作中 > 其他），不传保持纯 updatedAt 倒序 */
+  priority?: SessionSortPriority;
+  /** 运行中会话起点毫秒时间戳（id → startedAt），提供时行内显示“已运行 X 分钟”实时标记 */
+  runningSince?: ReadonlyMap<string, number>;
 }
 
 /**
- * 按 updatedAt 倒序排列（与契约一致），非法时间排最后。
- * 同时间用 id 升序确定性 tiebreaker：无论输入顺序，输出顺序唯一，刷新绝不重排（AC3-a）。
+ * 排序优先级注入（参考 filterSessionsByTab 的 id 集合传递方式）：
+ * 等你处理（attentionIds）> 工作中（isRunning）> 其他。
  */
-export function sortSessions(sessions: SessionSummary[]): SessionSummary[] {
+export interface SessionSortPriority {
+  /** 等你处理会话 id（来自 dashboard stats 的 attentionSessions） */
+  attentionIds?: ReadonlySet<string>;
+  /** 运行中判定注入（HomePage 注入 s.status === "running"） */
+  isRunning?: (s: SessionSummary) => boolean;
+}
+
+function priorityRank(s: SessionSummary, priority: SessionSortPriority): number {
+  if (priority.attentionIds?.has(s.id)) return 0;
+  if (priority.isRunning?.(s)) return 1;
+  return 2;
+}
+
+/**
+ * 按优先级（等你处理 > 工作中 > 其他）分组，组内 updatedAt 倒序（与契约一致），非法时间排最后。
+ * 同时间用 id 升序确定性 tiebreaker：无论输入顺序，输出顺序唯一，刷新绝不重排（AC3-a）。
+ * 不传 priority 时退化为纯 updatedAt 倒序（旧行为保持不变）。
+ */
+export function sortSessions(sessions: SessionSummary[], priority: SessionSortPriority = {}): SessionSummary[] {
   return sessions.slice().sort((a, b) => {
+    const ra = priorityRank(a, priority);
+    const rb = priorityRank(b, priority);
+    if (ra !== rb) return ra - rb;
     const ta = Date.parse(a.updatedAt);
     const tb = Date.parse(b.updatedAt);
     const va = Number.isNaN(ta) ? -Infinity : ta;
@@ -61,9 +87,15 @@ export function SessionList({
   initialScrollTop,
   onScrollTop,
   seenIds,
+  priority,
+  runningSince,
 }: SessionListProps) {
-  const sorted = sortSessions(sessions);
+  const sorted = sortSessions(sessions, priority);
   const newIds = useFirstSeen(sorted.map((s) => s.id), seenIds);
+  // “已运行 X 分钟”实时标记：存在带起点的运行中会话才挂滴答（刷新不重排不闪，仅文字跳动）
+  const hasRunning = sorted.some((s) => s.status === "running" && runningSince?.has(s.id));
+  const tickNow = useNowTicker(now === undefined && hasRunning);
+  const nowMs = now ?? tickNow;
   return (
     <VirtualList
       items={sorted}
@@ -91,7 +123,10 @@ export function SessionList({
               </span>
               <SourceBadge source={s.source} />
               <StatusBadge status={s.status} />
-              <span className="session-time">{relativeTime(s.updatedAt, now)}</span>
+              {s.status === "running" && runningSince?.has(s.id) && (
+                <span className="session-elapsed">已运行 {elapsedMinutesLabel(runningSince.get(s.id)!, nowMs)}</span>
+              )}
+              <span className="session-time">{relativeTime(s.updatedAt, nowMs)}</span>
             </div>
             <div className="session-cwd" title={s.cwd}>
               {shortPath(s.cwd)}

@@ -33,6 +33,21 @@ function formatAbsolute(t: number): string {
  * 已运行时长（运行看板用，随 now 实时跳动）：
  * "45秒" / "12分30秒" / "2时05分"；非法起点返回空串。
  */
+/**
+ * 已运行时长（分钟粒度，会话行内实时标记）：
+ * "不到1分钟" / "12分钟" / "2时05分"；非法起点返回空串。
+ */
+export function elapsedMinutesLabel(startMs: number, now: number = Date.now()): string {
+  if (!Number.isFinite(startMs)) return "";
+  const diff = Math.max(0, now - startMs);
+  const totalMin = Math.floor(diff / MINUTE);
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  if (h > 0) return `${h}时${String(m).padStart(2, "0")}分`;
+  if (totalMin > 0) return `${totalMin}分钟`;
+  return "不到1分钟";
+}
+
 export function elapsedDuration(startMs: number, now: number = Date.now()): string {
   if (!Number.isFinite(startMs)) return "";
   const diff = Math.max(0, now - startMs);

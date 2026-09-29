@@ -3,24 +3,14 @@
  * 数据来自 /api/dashboard/stats 的 workingSessions（running 状态 + WS status 事件驱动刷新），
  * 已运行时长用本地时钟实时跳动。
  */
-import { useEffect, useRef, useState } from "react";
 import type { WorkingSessionCard } from "../api/types";
 import { useFirstSeen } from "../hooks/useFirstSeen";
+import { useNowTicker } from "../hooks/useNowTicker";
 import { sessionTitle, shortPath } from "../utils/display";
 import { elapsedDuration, relativeTime } from "../utils/relativeTime";
 import { Button } from "./ui/button";
 import { cn } from "@/lib/utils";
 
-/** 每秒滴答一次的“现在”（仅挂载时启用，驱动已运行时长跳动） */
-function useNowTicker(active: boolean): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (!active) return;
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, [active]);
-  return now;
-}
 
 export function WorkingCard({
   card,

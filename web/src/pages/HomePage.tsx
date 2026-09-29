@@ -2,14 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useGlobalEvents } from "../hooks/useGlobalEvents";
 import { api } from "../api/client";
 import type {
-  AttentionSessionCard,
   DashboardStats,
   NotificationItem,
   SessionSummary,
   SystemStatus,
-  WorkingSessionCard,
 } from "../api/types";
-import { AttentionList } from "../components/AttentionList";
+import { CollapsibleSection } from "../components/CollapsibleSection";
 import { NewSessionForm } from "../components/NewSessionForm";
 import { NotificationCenter } from "../components/NotificationCenter";
 import { OverviewBar } from "../components/OverviewBar";
@@ -21,7 +19,6 @@ import { SessionListSkeleton } from "../components/Skeletons";
 import { SettingsMenu } from "../components/SettingsMenu";
 import { SystemStatusBar } from "../components/SystemStatus";
 import { WeekStatsCard } from "../components/WeekStatsCard";
-import { WorkingBoard } from "../components/WorkingBoard";
 import { RefreshIcon, SearchIcon } from "../components/icons";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
@@ -29,26 +26,16 @@ import { filterSessionsByTab, type SessionTab } from "../utils/sessionTabs";
 import { peekListScrollTop, saveListScrollTop } from "../utils/scrollMemory";
 import { chatPath, navigate } from "../utils/router";
 
-/** 通用小节骨架（野兽派斜纹条） */
-function SectionSkeleton({ bars = 2 }: { bars?: number }) {
-  return (
-    <div className="session-list" role="status" aria-label="加载中">
-      {Array.from({ length: bars }, (_, i) => (
-        <div key={i} className="skeleton session-item" aria-hidden>
-          <div className="skeleton-bar w-1/2" />
-          <div className="skeleton-bar w-full" />
-        </div>
-      ))}
-    </div>
-  );
-}
-
 /** 刷新超过此时长才显示顶部进度条（快速静默刷新保持视觉安静） */
 const PROGRESS_REVEAL_MS = 400;
 
+/** 今日概览折叠状态 localStorage 键（"1" 展开 / "0" 收起，默认展开） */
+const OVERVIEW_OPEN_KEY = "agent-hub.home.overview-open";
+
 /**
  * 首页 = 按注意力组织的个人 vibe coding 工作台：
- * 今日概览条 + 本周统计卡 → 🔥工作中 → ⚠️等你处理 → 🕓最近会话（tab 过滤）→ 🖥系统状态。
+ * 今日概览条（可折叠）+ 本周统计卡 → 🕓最近会话（tab 过滤，优先级排序：
+ * 等你处理 > 工作中 > 其他，工作中行内“已运行 X 分钟”实时标记）→ 🖥系统状态。
  * 数据全部真实推导（/api/dashboard/stats + /api/sessions + WS 实时事件）。
  * 刷新安静：key 稳定、进场动画一次性（seen 提升跨 tab 持久）、进度条仅慢刷新显示。
  */
@@ -126,13 +113,26 @@ export function HomePage() {
     }
   }, []);
 
-  const working: WorkingSessionCard[] = stats?.workingSessions ?? [];
-  const attention: AttentionSessionCard[] = stats?.attentionSessions ?? [];
+  const working = useMemo(() => stats?.workingSessions ?? [], [stats]);
   const attentionIds = useMemo(
     () => new Set((stats?.attentionSessions ?? []).map((a) => a.id)),
     [stats],
   );
   const doneIds = useMemo(() => new Set(stats?.todayDoneSessions ?? []), [stats]);
+  /** 排序优先级：等你处理 > 工作中 > 其他（组内 updatedAt 倒序，sortSessions 内保证） */
+  const listPriority = useMemo(
+    () => ({ attentionIds, isRunning: (s: SessionSummary) => s.status === "running" }),
+    [attentionIds],
+  );
+  /** 运行中会话起点（替代原进度卡关键信息：行内“已运行 X 分钟”） */
+  const runningSince = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const card of working) {
+      const t = card.startedAt ? Date.parse(card.startedAt) : NaN;
+      if (Number.isFinite(t)) map.set(card.id, t);
+    }
+    return map;
+  }, [working]);
   const tabSessions = useMemo(
     () => filterSessionsByTab(sessions, tab, { attentionIds, doneIds }),
     [sessions, tab, attentionIds, doneIds],
@@ -185,33 +185,10 @@ export function HomePage() {
         </Button>
       </header>
 
-      <h2 className="section-title">今日概览</h2>
-      <OverviewBar stats={stats} loaded={loaded} />
-      <WeekStatsCard stats={stats} loaded={loaded} />
-
-      <h2 className="section-title">
-        🔥 工作中
-        <span className="hint-text">（{stats ? stats.working : "…"}）</span>
-      </h2>
-      {!loaded ? (
-        <SectionSkeleton bars={1} />
-      ) : working.length === 0 ? (
-        <Card className="card empty">当前没有运行中的会话</Card>
-      ) : (
-        <WorkingBoard sessions={working} onSelect={(id) => navigate(chatPath(id))} />
-      )}
-
-      <h2 className="section-title">
-        ⚠️ 等你处理
-        <span className="hint-text">（{stats ? stats.needAttention : "…"}）</span>
-      </h2>
-      {!loaded ? (
-        <SectionSkeleton bars={1} />
-      ) : attention.length === 0 ? (
-        <Card className="card empty">没有待处理的会话 🎉</Card>
-      ) : (
-        <AttentionList sessions={attention} onSelect={(id) => navigate(chatPath(id))} />
-      )}
+      <CollapsibleSection title="今日概览" storageKey={OVERVIEW_OPEN_KEY}>
+        <OverviewBar stats={stats} loaded={loaded} />
+        <WeekStatsCard stats={stats} loaded={loaded} />
+      </CollapsibleSection>
 
       <h2 className="section-title">
         🕓 最近会话
@@ -237,6 +214,8 @@ export function HomePage() {
         ) : (
           <SessionList
             sessions={tabSessions}
+            priority={listPriority}
+            runningSince={runningSince}
             scrollRef={listScrollRef}
             initialScrollTop={peekListScrollTop()}
             onScrollTop={saveListScrollTop}

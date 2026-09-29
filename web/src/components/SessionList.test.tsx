@@ -188,4 +188,84 @@ describe("sortSessions", () => {
     expect(sorted.map((s) => s.id)).toEqual(["2", "3", "1"]);
     expect(input.map((s) => s.id)).toEqual(snapshot);
   });
+
+  it("优先级：等你处理 > 工作中 > 其他，组内 updatedAt 倒序 + id tiebreaker", () => {
+    const iso = (offsetMin: number) => new Date(NOW - offsetMin * 60_000).toISOString();
+    const input = [
+      makeSession({ id: "other-new", status: "idle", updatedAt: iso(1) }),
+      makeSession({ id: "run-old", status: "running", updatedAt: iso(30) }),
+      makeSession({ id: "attn-old", status: "idle", updatedAt: iso(60) }),
+      makeSession({ id: "run-new", status: "running", updatedAt: iso(5) }),
+      makeSession({ id: "attn-new", status: "error", updatedAt: iso(10) }),
+      makeSession({ id: "other-old", status: "idle", updatedAt: iso(90) }),
+    ];
+    const attentionIds = new Set(["attn-old", "attn-new"]);
+    const sorted = sortSessions(input, {
+      attentionIds,
+      isRunning: (s) => s.status === "running",
+    });
+    // 等你处理组（组内时间倒序）→ 工作中组 → 其他组
+    expect(sorted.map((s) => s.id)).toEqual([
+      "attn-new",
+      "attn-old",
+      "run-new",
+      "run-old",
+      "other-new",
+      "other-old",
+    ]);
+    // 同优先级同时间：id 升序 tiebreaker（与旧逻辑一致）
+    const tie = [
+      makeSession({ id: "b", status: "idle", updatedAt: iso(5) }),
+      makeSession({ id: "a", status: "idle", updatedAt: iso(5) }),
+    ];
+    expect(
+      sortSessions(tie, { attentionIds, isRunning: (s) => s.status === "running" }).map((s) => s.id),
+    ).toEqual(["a", "b"]);
+  });
+
+  it("不传 priority 时保持纯 updatedAt 倒序（running 不提前）", () => {
+    const iso = (offsetMin: number) => new Date(NOW - offsetMin * 60_000).toISOString();
+    const input = [
+      makeSession({ id: "running-old", status: "running", updatedAt: iso(30) }),
+      makeSession({ id: "idle-new", status: "idle", updatedAt: iso(1) }),
+    ];
+    expect(sortSessions(input).map((s) => s.id)).toEqual(["idle-new", "running-old"]);
+  });
+});
+
+describe("SessionList 行内已运行标记与优先级渲染", () => {
+  it("运行中会话行内显示「已运行 X 分钟」实时标记（注入起点时）", () => {
+    const sessions = [
+      makeSession({ id: "r1", name: "运行中会话", status: "running", updatedAt: new Date(NOW - 60_000).toISOString() }),
+      makeSession({ id: "i1", name: "空闲会话", status: "idle", updatedAt: new Date(NOW - 2 * 60_000).toISOString() }),
+    ];
+    const runningSince = new Map([["r1", NOW - 30 * 60_000]]);
+    const el = render(
+      <SessionList sessions={sessions} onSelect={() => {}} now={NOW} runningSince={runningSince} />,
+    );
+    // 实时标记（替代原进度卡关键信息），只标运行中且有起点的行
+    expect(el.querySelectorAll(".session-elapsed")).toHaveLength(1);
+    expect(el.textContent).toContain("已运行 30分钟");
+    // 相对时间不减（语义不减）
+    expect(el.textContent).toContain("2分钟前");
+  });
+
+  it("注入 priority 后列表按 等你处理 > 工作中 > 其他 渲染", () => {
+    const iso = (offsetMin: number) => new Date(NOW - offsetMin * 60_000).toISOString();
+    const sessions = [
+      makeSession({ id: "o", name: "其他会话", status: "idle", updatedAt: iso(1) }),
+      makeSession({ id: "r", name: "工作中会话", status: "running", updatedAt: iso(2) }),
+      makeSession({ id: "a", name: "等你处理会话", status: "idle", updatedAt: iso(3) }),
+    ];
+    const el = render(
+      <SessionList
+        sessions={sessions}
+        onSelect={() => {}}
+        now={NOW}
+        priority={{ attentionIds: new Set(["a"]), isRunning: (s) => s.status === "running" }}
+      />,
+    );
+    const names = Array.from(el.querySelectorAll(".session-name")).map((n) => n.textContent);
+    expect(names).toEqual(["等你处理会话", "工作中会话", "其他会话"]);
+  });
 });
