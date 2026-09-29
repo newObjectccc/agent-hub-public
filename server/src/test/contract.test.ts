@@ -16,7 +16,8 @@ import { createApp } from "../index.js";
 import type { SessionHubLike } from "../routes.js";
 import { SessionHub } from "../sessions/hub.js";
 import type { PromptResult } from "../sessions/hub.js";
-import type { MessageDto, SearchResultDto, ServerEvent, SessionListItem, SessionTreeDto, SystemInfo } from "../types.js";
+import type { MessageDto, SearchResultDto, ServerEvent, SessionListItem, SessionSource, SessionTreeDto, SystemInfo } from "../types.js";
+import { ErrorCodes, HubError } from "../errors.js";
 
 const sessionFixture: SessionListItem = {
   id: "sess-1",
@@ -51,6 +52,7 @@ function makeFakeHub(promptResult: PromptResult, overrides: Partial<SessionHubLi
     search: async (): Promise<SearchResultDto[]> => [],
     loadTree: async (): Promise<SessionTreeDto | null> => ({ entries: [], activePath: [] }),
     createSession: async () => sessionFixture,
+    forkSession: async () => sessionFixture,
     prompt: async () => promptResult,
     abort: async () => undefined,
     compact: async () => undefined,
@@ -206,6 +208,118 @@ describe("contract: GET /api/search 与 GET /api/sessions/:id/tree", () => {
     assert.equal(res.statusCode, 404);
     const body = res.json() as { error: { code: string; message: string } };
     assert.equal(body.error.code, "SESSION_NOT_FOUND");
+    await app.close();
+  });
+});
+
+describe("contract: POST /api/sessions（source 分发）与 POST /api/sessions/:id/fork", () => {
+  async function makeApp(hub: SessionHubLike): Promise<Awaited<ReturnType<typeof createApp>>> {
+    return createApp({
+      hub,
+      dashboard: makeFakeDashboard(),
+      kpi: { getCards: () => [] },
+      config: { ...DEFAULT_CONFIG },
+      systemInfo: async () => systemFixture,
+      webRoot: null,
+    });
+  }
+
+  it("缺省 source → pi；显式 pi/claude 原样透传到 hub.createSession", async () => {
+    const calls: Array<{ cwd: string; name?: string; source?: SessionSource }> = [];
+    const app = await makeApp(
+      makeFakeHub(
+        { accepted: true, mode: "prompt" },
+        {
+          createSession: async (cwd: string, name?: string, source?: SessionSource) => {
+            calls.push({ cwd, name, source });
+            return sessionFixture;
+          },
+        },
+      ),
+    );
+    const r1 = await app.inject({ method: "POST", url: "/api/sessions", payload: { cwd: "/tmp/demo" } });
+    assert.equal(r1.statusCode, 201);
+    assert.deepEqual(r1.json(), { session: sessionFixture });
+
+    const r2 = await app.inject({
+      method: "POST",
+      url: "/api/sessions",
+      payload: { cwd: "/tmp/demo", name: "新会话", source: "claude" },
+    });
+    assert.equal(r2.statusCode, 201);
+    assert.deepEqual(calls, [
+      { cwd: "/tmp/demo", name: undefined, source: "pi" },
+      { cwd: "/tmp/demo", name: "新会话", source: "claude" },
+    ]);
+    await app.close();
+  });
+
+  it("非法 source → 400 INVALID_REQUEST（不落任何会话）", async () => {
+    const calls: unknown[] = [];
+    const app = await makeApp(
+      makeFakeHub(
+        { accepted: true, mode: "prompt" },
+        {
+          createSession: async (cwd: string, name?: string, source?: SessionSource) => {
+            calls.push({ cwd, name, source });
+            return sessionFixture;
+          },
+        },
+      ),
+    );
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/sessions",
+      payload: { cwd: "/tmp/demo", source: "gpt" },
+    });
+    assert.equal(res.statusCode, 400);
+    assert.equal((res.json() as { error: { code: string } }).error.code, "INVALID_REQUEST");
+    assert.equal(calls.length, 0);
+    await app.close();
+  });
+
+  it("cwd 非绝对路径 → 400 INVALID_CWD", async () => {
+    const app = await makeApp(makeFakeHub({ accepted: true, mode: "prompt" }));
+    const res = await app.inject({ method: "POST", url: "/api/sessions", payload: { cwd: "relative/path" } });
+    assert.equal(res.statusCode, 400);
+    assert.equal((res.json() as { error: { code: string } }).error.code, "INVALID_CWD");
+    await app.close();
+  });
+
+  it("POST /api/sessions/:id/fork → 201 {session}", async () => {
+    const calls: string[] = [];
+    const app = await makeApp(
+      makeFakeHub(
+        { accepted: true, mode: "prompt" },
+        {
+          forkSession: async (id: string) => {
+            calls.push(id);
+            return { ...sessionFixture, id: "sess-1-fork" };
+          },
+        },
+      ),
+    );
+    const res = await app.inject({ method: "POST", url: "/api/sessions/sess-1/fork" });
+    assert.equal(res.statusCode, 201);
+    assert.deepEqual((res.json() as { session: SessionListItem }).session.id, "sess-1-fork");
+    assert.deepEqual(calls, ["sess-1"]);
+    await app.close();
+  });
+
+  it("fork 会话不存在 → 404 SESSION_NOT_FOUND", async () => {
+    const app = await makeApp(
+      makeFakeHub(
+        { accepted: true, mode: "prompt" },
+        {
+          forkSession: async (id: string) => {
+            throw new HubError(ErrorCodes.SESSION_NOT_FOUND, `会话不存在: ${id}`, 404);
+          },
+        },
+      ),
+    );
+    const res = await app.inject({ method: "POST", url: "/api/sessions/nope/fork" });
+    assert.equal(res.statusCode, 404);
+    assert.equal((res.json() as { error: { code: string } }).error.code, "SESSION_NOT_FOUND");
     await app.close();
   });
 });

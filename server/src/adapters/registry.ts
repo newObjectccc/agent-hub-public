@@ -4,7 +4,9 @@
  * - GET /api/sessions：pi + claude 两源合并，按 updatedAt 倒序（同刻按 id 稳定排序）
  * - 其余操作按 id 归属分发：先查 claude（UUID 命名空间），未命中走 pi；
  *   两边都未命中 → SESSION_NOT_FOUND
- * - createSession 仅支持 pi（claude 会话由 Claude Code CLI 自己创建，v0 不做新建）
+ * - createSession 按 source 分发（缺省 pi）：pi 落盘 JSONL header；
+ *   claude 写空白 transcript 会话文件（调研结论见 ClaudeAdapter.createSession）
+ * - forkSession 按 id 归属分发（pi：SDK createBranchedSession；claude：复制 transcript）
  * - compact 仅支持 pi（claude 的上下文压缩由其自身 autocompact 管理）
  *
  * id 冲突（理论上不可能：pi 为 32-hex、claude 为 UUID v4）时 claude 优先，按源缓存消歧。
@@ -82,12 +84,22 @@ export class SessionRegistry {
     return adapter.loadMessages(id);
   }
 
-  /** 新建会话固定走 pi（claude 会话由 Claude Code CLI 创建） */
-  createSession(cwd: string, name?: string): Promise<SessionListItem> {
-    if (!this.pi.createSession) {
-      throw new HubError(ErrorCodes.INVALID_REQUEST, "pi 会话来源未启用，无法新建会话", 400);
+  /** 新建会话按 source 分发（缺省 pi；非法 source 由 routes 层拦截） */
+  createSession(cwd: string, name?: string, source: SessionSource = "pi"): Promise<SessionListItem> {
+    const adapter = source === "claude" ? this.claude : this.pi;
+    if (!adapter.createSession) {
+      throw new HubError(ErrorCodes.INVALID_REQUEST, `来源 ${source} 不支持新建会话`, 400);
     }
-    return this.pi.createSession(cwd, name);
+    return adapter.createSession(cwd, name);
+  }
+
+  /** 复制会话（fork）按 id 归属分发 */
+  async forkSession(id: string): Promise<SessionListItem> {
+    const adapter = await this.resolve(id);
+    if (!adapter) {
+      throw new HubError(ErrorCodes.SESSION_NOT_FOUND, `会话不存在: ${id}`, 404);
+    }
+    return adapter.forkSession(id);
   }
 
   async prompt(id: string, text: unknown, modeRaw: unknown): Promise<PromptResult> {

@@ -16,6 +16,7 @@ import type {
   MessageDto,
   SearchResultDto,
   SessionListItem,
+  SessionSource,
   SessionStatus,
   SessionTreeDto,
   SystemInfo,
@@ -29,7 +30,8 @@ export interface SessionHubLike {
   loadMessages(id: string): Promise<MessageDto[] | null>;
   search(query: string, limit?: number): Promise<SearchResultDto[]>;
   loadTree(id: string): Promise<SessionTreeDto | null>;
-  createSession(cwd: string, name?: string): Promise<SessionListItem>;
+  createSession(cwd: string, name?: string, source?: SessionSource): Promise<SessionListItem>;
+  forkSession(id: string): Promise<SessionListItem>;
   prompt(id: string, text: unknown, modeRaw: unknown): Promise<PromptResult>;
   abort(id: string): Promise<void>;
   compact(id: string): Promise<void>;
@@ -157,11 +159,27 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
     }
   });
 
-  // POST /api/sessions
+  // POST /api/sessions（body.source: "pi"|"claude"，缺省 pi）
   app.post("/api/sessions", async (req, reply) => {
     try {
       const { cwd, name } = requireAbsoluteCwd(req.body);
-      const session = await hub.createSession(cwd, name);
+      const body = (typeof req.body === "object" && req.body !== null ? req.body : {}) as { source?: unknown };
+      const sourceRaw = body.source;
+      const source = sourceRaw === undefined || sourceRaw === null || sourceRaw === "" ? "pi" : sourceRaw;
+      if (source !== "pi" && source !== "claude") {
+        throw new HubError(ErrorCodes.INVALID_REQUEST, "source 必须是 pi|claude 之一");
+      }
+      const session = await hub.createSession(cwd, name, source);
+      return reply.status(201).send({ session });
+    } catch (err) {
+      return handle(reply, err);
+    }
+  });
+
+  // POST /api/sessions/:id/fork：基于完整上下文复制为独立新会话（原会话只读不受影响）
+  app.post<{ Params: { id: string } }>("/api/sessions/:id/fork", async (req, reply) => {
+    try {
+      const session = await hub.forkSession(req.params.id);
       return reply.status(201).send({ session });
     } catch (err) {
       return handle(reply, err);

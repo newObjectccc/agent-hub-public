@@ -4,7 +4,7 @@
  */
 import { strict as assert } from "node:assert";
 import { EventEmitter } from "node:events";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, beforeEach, describe, it } from "node:test";
@@ -274,6 +274,90 @@ describe("claude adapter: prompt → spawn 安全参数 + 事件广播", () => {
       assert.equal(sessions[0].cwd, CWD);
       assert.equal(sessions[0].lastUserMessage, "帮我检查周报 KPI 口径");
       assert.equal(sessions[0].lastAssistantMessage, "好的");
+    } finally {
+      adapter.disposeAll();
+    }
+  });
+});
+
+describe("claude adapter: createSession 空白 transcript + forkSession 复制会话", () => {
+  it("createSession 落盘带 isMeta 占位行的空白会话（消息数 0）+ ai-title 名称", async () => {
+    const adapter = makeAdapter(() => undefined);
+    try {
+      const created = await adapter.createSession(root, "我的 claude 会话");
+      assert.equal(created.source, "claude");
+      assert.equal(created.cwd, root);
+      assert.equal(created.name, "我的 claude 会话");
+      assert.equal(created.messageCount, 0);
+      assert.ok(created.sessionFile && created.sessionFile.endsWith(`${created.id}.jsonl`));
+      // 文件真实存在且只有占位行（isMeta）+ ai-title 行，解析后消息数 0
+      const raw = await readFile(created.sessionFile!, "utf8");
+      const rows = raw.trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
+      assert.equal(rows.length, 2);
+      assert.equal(rows[0].isMeta, true);
+      assert.equal(rows[0].sessionId, created.id);
+      assert.equal(rows[1].type, "ai-title");
+      // 扫描口径：消息数 0、名称/cwd 正确、可被 findSession 命中
+      const found = await adapter.findSession(created.id);
+      assert.ok(found);
+      assert.equal(found.messageCount, 0);
+      assert.equal(found.name, "我的 claude 会话");
+    } finally {
+      adapter.disposeAll();
+    }
+  });
+
+  it("createSession cwd 不存在 → INVALID_CWD，不落盘", async () => {
+    const adapter = makeAdapter(() => undefined);
+    try {
+      await assert.rejects(
+        () => adapter.createSession("/no/such/dir-xyz", "x"),
+        (err: unknown) => (err as { code?: string }).code === "INVALID_CWD",
+      );
+    } finally {
+      adapter.disposeAll();
+    }
+  });
+
+  it("forkSession 复制为新 id：消息数相同、sessionId 已替换、原文件字节不变", async () => {
+    const adapter = makeAdapter(() => undefined);
+    try {
+      const before = await readFile(join(projectsDir, "-Users-me-Workspace-demo", `${SID}.jsonl`), "utf8");
+      const forked = await adapter.forkSession(SID);
+      assert.notEqual(forked.id, SID);
+      assert.equal(forked.source, "claude");
+      assert.equal(forked.cwd, CWD);
+      // 消息历史完整继承（与原会话同数）
+      const original = await adapter.findSession(SID);
+      assert.ok(original);
+      assert.equal(forked.messageCount, original.messageCount);
+      assert.equal(forked.lastUserMessage, original.lastUserMessage);
+      assert.equal(forked.lastAssistantMessage, original.lastAssistantMessage);
+      // 新文件每行 sessionId 都是新 id；uuid/parentUuid 消息链原样保留
+      const raw = await readFile(forked.sessionFile!, "utf8");
+      const rows = raw.trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
+      assert.ok(rows.length > 0);
+      for (const row of rows) assert.equal(row.sessionId, forked.id);
+      const origRows = before.trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
+      assert.deepEqual(
+        rows.map((r) => r.uuid),
+        origRows.map((r) => r.uuid),
+      );
+      // 原会话文件字节不变（只读硬约束）
+      const after = await readFile(join(projectsDir, "-Users-me-Workspace-demo", `${SID}.jsonl`), "utf8");
+      assert.equal(after, before);
+    } finally {
+      adapter.disposeAll();
+    }
+  });
+
+  it("forkSession 会话不存在 → SESSION_NOT_FOUND", async () => {
+    const adapter = makeAdapter(() => undefined);
+    try {
+      await assert.rejects(
+        () => adapter.forkSession("11111111-2222-3333-4444-555555555555"),
+        (err: unknown) => (err as { code?: string }).code === "SESSION_NOT_FOUND",
+      );
     } finally {
       adapter.disposeAll();
     }

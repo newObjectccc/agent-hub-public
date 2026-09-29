@@ -5,6 +5,8 @@
  * - prompt：本地 spawn `claude -p <text> --resume <session-id> --output-format stream-json …`，
  *   解析 stdout 流事件 → 契约 WS 广播（claude-stream.ts）
  * - abort：杀掉本进程 spawn 的子进程（SIGTERM → 宽限后 SIGKILL），幂等
+ * - createSession：写空白 transcript 会话文件（调研结论见方法注释）
+ * - forkSession：复制 transcript 为新 UUID 会话文件（行内 sessionId 同步替换，原文件只读）
  *
  * ── 安全约束（硬规则）─────────────────────────────────────────────────────
  * 1. 只走本地 spawn，不引入任何远程 SDK / 网络驱动；不读取、不记录、不回显任何凭据
@@ -16,7 +18,9 @@
  * ─────────────────────────────────────────────────────────────────────────
  */
 import { spawn, type ChildProcess } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { ErrorCodes, HubError } from "../errors.js";
 import type { PromptResult } from "../sessions/hub.js";
 import { decidePromptAction, parsePromptMode } from "../sessions/prompt-policy.js";
@@ -25,6 +29,7 @@ import type { MessageDto, ServerEvent, SessionListItem, SessionStatus } from "..
 import { ClaudeStreamTranslator } from "./claude-stream.js";
 import {
   claudeSummaries,
+  encodeClaudeProjectDir,
   loadClaudeHistoryIndex,
   loadClaudeSessionMessages,
   scanClaudeSessions,
@@ -129,6 +134,113 @@ export class ClaudeAdapter implements SessionAdapter {
     const found = await this.findSession(id);
     if (!found) return null;
     return loadClaudeSessionMessages(found.sessionFile);
+  }
+
+  /**
+   * 新建 claude 会话：写空白 transcript 会话文件（新 UUID + 一条 isMeta 占位行）。
+   *
+   * ── 调研结论（2026-09-29 实测 claude 2.1.267）──────────────────────────────
+   * claude CLI 没有「预创建会话」命令；新会话原生语义是 `claude -p <text>`（不带
+   * --resume）由 CLI 自己生成 session id，server 无法预先得知 id（列表/跳转需要）。
+   * 对合成文件的 resume 实测：
+   * - 空文件 + `--resume <id>` → `No conversation found with session ID`（失败）
+   * - 含一条 isMeta user 占位行的 transcript + `--resume <id>` → 成功，后续消息
+   *   append 到同一文件（13 行实测），与 CLI 自建会话行为一致。
+   * 故「新建」= 落盘带 isMeta 占位行的空白 transcript（解析后消息数 0，chat 显示
+   * 空会话），首条消息走既有 `claude -p --resume <id>` 流程，无需特例。
+   * ─────────────────────────────────────────────────────────────────────────
+   */
+  async createSession(cwd: string, name?: string): Promise<SessionListItem> {
+    if (typeof cwd !== "string" || cwd.trim() === "") {
+      throw new HubError(ErrorCodes.INVALID_CWD, "cwd 必须是非空绝对路径");
+    }
+    let isDir = false;
+    try {
+      isDir = (await stat(cwd)).isDirectory();
+    } catch {
+      isDir = false;
+    }
+    if (!isDir) {
+      throw new HubError(ErrorCodes.INVALID_CWD, `cwd 不存在或不是目录: ${cwd}`);
+    }
+    const trimmedName = typeof name === "string" ? name.trim() : "";
+    const sessionId = randomUUID();
+    const timestamp = new Date().toISOString();
+    const dir = join(this.projectsDir, encodeClaudeProjectDir(cwd));
+    await mkdir(dir, { recursive: true });
+    const file = join(dir, `${sessionId}.jsonl`);
+    const lines: string[] = [
+      JSON.stringify({
+        type: "user",
+        message: { role: "user", content: "(new session)" },
+        uuid: randomUUID(),
+        parentUuid: null,
+        sessionId,
+        timestamp,
+        cwd,
+        isMeta: true,
+        userType: "external",
+      }),
+    ];
+    if (trimmedName !== "") {
+      lines.push(JSON.stringify({ type: "ai-title", aiTitle: trimmedName, sessionId, cwd, timestamp }));
+    }
+    await writeFile(file, `${lines.join("\n")}\n`, { flag: "wx" });
+    return {
+      id: sessionId,
+      source: "claude",
+      name: trimmedName === "" ? null : trimmedName,
+      cwd,
+      updatedAt: timestamp,
+      messageCount: 0,
+      status: "idle",
+      lastUserMessage: null,
+      lastAssistantMessage: null,
+      sessionFile: file,
+    };
+  }
+
+  /**
+   * 复制会话（fork）：把 transcript 复制为新 UUID 的独立会话文件，消息历史/
+   * cwd/name 全部继承；行内 `sessionId` 同步替换为新 id（uuid/parentUuid 消息链
+   * 保留原值，保证历史可解析）。
+   *
+   * 实测（claude 2.1.267）：复制 + sessionId 替换后 `claude -p --resume <new-id>`
+   * 成功且后续消息 append 到新文件，原文件字节不变（hash 对比）。
+   * 原会话文件只读不写；新文件 `wx` 写入（防覆盖）。
+   */
+  async forkSession(id: string): Promise<SessionListItem> {
+    const found = await this.findSession(id);
+    if (!found) {
+      throw new HubError(ErrorCodes.SESSION_NOT_FOUND, `会话不存在: ${id}`, 404);
+    }
+    const newId = randomUUID();
+    const content = await readFile(found.sessionFile, "utf8");
+    const outLines: string[] = [];
+    for (const line of content.split("\n")) {
+      const trimmed = line.trim();
+      if (trimmed === "") continue;
+      let row: Record<string, unknown> | null = null;
+      try {
+        const parsed: unknown = JSON.parse(trimmed);
+        if (typeof parsed === "object" && parsed !== null) row = parsed as Record<string, unknown>;
+      } catch {
+        row = null;
+      }
+      if (row === null) {
+        outLines.push(trimmed); // 损坏行原样保留（解析层本就跳过）
+        continue;
+      }
+      if (typeof row.sessionId === "string") row.sessionId = newId;
+      outLines.push(JSON.stringify(row));
+    }
+    const file = join(dirname(found.sessionFile), `${newId}.jsonl`);
+    await writeFile(file, `${outLines.join("\n")}\n`, { flag: "wx" });
+    const created = await this.findSession(newId);
+    if (!created) {
+      throw new HubError(ErrorCodes.INTERNAL, "会话复制后未能读回新会话", 500);
+    }
+    return created;
   }
 
   /**

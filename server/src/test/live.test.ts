@@ -49,6 +49,7 @@ function makeFakeHub(): SessionHubLike {
     findSession: async (id: string) => (id === "sess-1" ? sessionFixture : null),
     loadMessages: async (): Promise<MessageDto[]> => [],
     createSession: async () => sessionFixture,
+    forkSession: async () => sessionFixture,
     prompt: async () => ({ accepted: true, mode: "prompt" as const }),
     abort: async () => undefined,
     compact: async () => undefined,

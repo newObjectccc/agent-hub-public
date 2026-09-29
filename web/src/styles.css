@@ -231,7 +231,9 @@ a {
 .app-header {
   display: flex;
   align-items: center;
-  gap: 12px;
+  /* 窄屏（≤380px）按钮多时整体换行，绝不横向溢出 */
+  flex-wrap: wrap;
+  gap: clamp(8px, 2vw, 12px);
   margin-bottom: 16px;
 }
 
@@ -239,11 +241,15 @@ a {
   font-family: var(--nb-font-head);
   /* 中文回落字形用最重字模拟野兽派厚重感 */
   font-weight: 900;
-  font-size: 22px;
+  font-size: clamp(1.05rem, 3vw + 0.65rem, 1.375rem);
   line-height: 1.15;
   letter-spacing: 0.01em;
   margin: 0;
-  flex: 1;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   padding: 8px 12px;
   background: var(--primary);
   color: var(--primary-foreground);
@@ -2248,6 +2254,178 @@ button.git-bar:active {  transform: translate(2px, 2px);
 .sheet-foot {
   border-top: 3px solid var(--border);
   padding: 10px 12px calc(10px + var(--safe-bottom));
+}
+
+/* 弹层底部 safe-area：无 footer 时由 body 兼底（有 footer 时多余 padding 无害） */
+.sheet-body {
+  padding-bottom: calc(12px + var(--safe-bottom));
+}
+
+/* ≥768px：bottom sheet → 居中 modal（大屏弹窗更合理；小屏保持底部弹层） */
+@media (min-width: 768px) {
+  .sheet-overlay {
+    align-items: center;
+    padding: 24px;
+  }
+
+  .sheet {
+    width: min(560px, 100%);
+    max-height: min(84dvh, 720px);
+    border-bottom: 3px solid var(--border);
+    box-shadow: 8px 8px 0 0 var(--border);
+    animation: nb-modal-in 180ms ease-out;
+  }
+}
+
+@keyframes nb-modal-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* ---------- 新建会话表单（sheet 内容，fluid 字号/间距 + 触控 ≥44px） ---------- */
+.field {
+  margin-bottom: clamp(12px, 2.5vw, 18px);
+}
+
+.field-label {
+  font-family: var(--nb-font-head);
+  font-weight: 900;
+  font-size: clamp(0.8rem, 1.2vw + 0.65rem, 1rem);
+  margin-bottom: 6px;
+}
+
+/* source 分段按钮（pi / claude 单选，野兽派） */
+.segment {
+  display: flex;
+  border: 3px solid var(--border);
+  box-shadow: var(--shadow-card, 4px 4px 0 0 var(--border));
+}
+
+.segment-item {
+  flex: 1;
+  min-width: 0;
+  min-height: 44px;
+  padding: 8px clamp(8px, 2vw, 14px);
+  font-family: var(--nb-font-head);
+  font-weight: 900;
+  font-size: clamp(0.85rem, 1.4vw + 0.7rem, 1.05rem);
+  background: var(--card);
+  color: var(--card-foreground);
+  border: none;
+  border-right: 3px solid var(--border);
+  cursor: pointer;
+}
+
+.segment-item:last-child {
+  border-right: none;
+}
+
+.segment-item.active {
+  background: var(--primary);
+  color: var(--primary-foreground);
+}
+
+.segment-item:active {
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+
+/* cwd 输入行 + 最近使用目录下拉 */
+.cwd-row {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.cwd-row > :first-child {
+  flex: 1;
+  min-width: 0;
+}
+
+.cwd-recent {
+  margin-top: 8px;
+  border: 3px solid var(--border);
+  background: var(--card);
+  max-height: min(40dvh, 260px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.cwd-recent-item {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 12px;
+  text-align: left;
+  background: var(--card);
+  color: var(--card-foreground);
+  border: none;
+  border-bottom: 2px solid var(--border);
+  cursor: pointer;
+}
+
+.cwd-recent-item:last-child {
+  border-bottom: none;
+}
+
+.cwd-recent-item:hover,
+.cwd-recent-item:active {
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+
+.cwd-recent-path {
+  display: block;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: clamp(0.72rem, 1vw + 0.6rem, 0.9rem);
+  /* 320px 窄屏长路径折行，绝不横向溢出 */
+  overflow-wrap: anywhere;
+}
+
+/* ---------- 会话操作菜单（chat 顶栏 ⋯） ---------- */
+.action-menu-wrap {
+  position: relative;
+}
+
+.action-menu {
+  /* fixed 右上弹出：任何视口/按钮位置都不横向溢出（320px 实测绝对定位会超左缘） */
+  position: fixed;
+  top: calc(var(--safe-top, 0px) + 68px);
+  right: max(8px, env(safe-area-inset-right, 0px));
+  z-index: 60;
+  min-width: min(220px, calc(100vw - 16px));
+  border: 3px solid var(--border);
+  background: var(--card);
+  color: var(--card-foreground);
+  box-shadow: var(--shadow-card, 4px 4px 0 0 var(--border));
+}
+
+.action-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 12px;
+  font-family: var(--nb-font-head);
+  font-weight: 900;
+  font-size: clamp(0.85rem, 1.2vw + 0.65rem, 1rem);
+  background: var(--card);
+  color: var(--card-foreground);
+  border: none;
+  cursor: pointer;
+  text-align: left;
+}
+
+.action-menu-item:hover,
+.action-menu-item:active {
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+
+.action-menu-item:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 /* git 面板 tabs */

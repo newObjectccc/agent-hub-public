@@ -8,6 +8,7 @@ import type {
   PromptResult,
   SearchResponse,
   SessionDetail,
+  SessionSource,
   SessionSummary,
   SessionTree,
   SystemStatus,
@@ -76,10 +77,18 @@ export const api = {
     return request(`/api/sessions/${encodeURIComponent(id)}/tree`);
   },
 
-  createSession(cwd: string, name?: string): Promise<{ session: SessionSummary }> {
+  createSession(cwd: string, name?: string, source?: SessionSource): Promise<{ session: SessionSummary }> {
     return request("/api/sessions", {
       method: "POST",
-      body: JSON.stringify({ cwd, name }),
+      body: JSON.stringify({ cwd, name, source }),
+    });
+  },
+
+  /** 复制会话（fork）：基于完整上下文生成独立新会话（契约 §1） */
+  forkSession(id: string): Promise<{ session: SessionSummary }> {
+    return request(`/api/sessions/${encodeURIComponent(id)}/fork`, {
+      method: "POST",
+      body: JSON.stringify({}),
     });
   },
 

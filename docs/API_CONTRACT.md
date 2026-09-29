@@ -82,9 +82,30 @@ claude 会话（`source: "claude"`）返回同构映射后的消息：transcript
 `ai-title` 行作为 `name`；不识别的行/块优雅跳过。
 `thinking` 服务端保证不省略（无思维链为 `null`）；客户端兼容旧数据缺省（视为无思维链）。
 ### POST /api/sessions
-新建会话（仅 `source: "pi"`；claude 会话由 Claude Code CLI 自己创建）。
-请求：`{ "cwd": "/abs/path", "name": "可选" }`
+新建会话。请求：`{ "cwd": "/abs/path", "name": "可选", "source": "pi | claude（可选，缺省 pi）" }`
 响应 201：`{ "session": { ...列表项... } }`
+
+- `source` 缺省/空 → `"pi"`；非法值 → 400 `INVALID_REQUEST`。registry 按 source 分发到对应适配器。
+- `source: "pi"`：落盘 session-format v3 JSONL header（原 v0 行为）。
+- `source: "claude"`：**创建空白 transcript 会话文件**（新 UUID，`~/.claude/projects/<encoded-cwd>/<uuid>.jsonl`，
+  含一条 `isMeta` 占位行 + 可选 `ai-title` 行；解析后消息数 0，chat 显示空会话）。
+  首条消息走既有 `claude -p --resume <id>` 流程。
+  > 实测（claude 2.1.267）：空文件 `--resume` 报 `No conversation found`；含 isMeta 占位行的合成
+  > transcript 可正常 resume 并向同一文件 append。故“新建”= 合成空白会话文件，而非“引导首条消息才建会话”。
+- `cwd` 必须是绝对路径（否则 400 `INVALID_CWD`），且必须存在（否则 400 `INVALID_CWD`）。
+
+### POST /api/sessions/:id/fork
+复制会话（fork）：基于某会话的**完整上下文**生成独立新会话（新 id/新文件，继承 source、
+cwd、消息历史；**原会话文件只读，完全不受影响**，新旧会话可各自独立继续工作）。请求体忽略（留空 `{}`）。
+响应 201：`{ "session": { ...列表项（新会话）... } }`；会话不存在 → 404 `SESSION_NOT_FOUND`。
+
+- `source: "pi"`：pi SDK `SessionManager.createBranchedSession(leafId)`（与 pi `/fork` 命令同一实现），
+  从 **active branch 末尾** fork 新 JSONL 文件：header 带 `parentSession` 血缘指向原文件，
+  root→leaf 消息链完整重链（id/parentId 保留）；无 assistant 消息的分支由 server 兑底立即写盘。
+- `source: "claude"`：server 侧把 transcript 文件复制为**新 UUID** 的会话文件（行内 `sessionId`
+  同步替换为新 id，消息 `uuid/parentUuid` 链原样保留），后续 prompt 走 `claude -p --resume <new-id>`。
+  实测：fork 后新会话独立 append，原文件字节不变。
+- 名称随上下文继承（pi 的 `session_info` / claude 的 `ai-title` 均在复制范围内）。
 
 ### POST /api/sessions/:id/prompt
 发送消息。`mode` 语义与 pi SDK 一致：

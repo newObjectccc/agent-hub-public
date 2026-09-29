@@ -22,7 +22,7 @@ import { SettingsMenu } from "../components/SettingsMenu";
 import { SystemStatusBar } from "../components/SystemStatus";
 import { WeekStatsCard } from "../components/WeekStatsCard";
 import { WorkingBoard } from "../components/WorkingBoard";
-import { RefreshIcon, SearchIcon } from "../components/icons";
+import { RefreshIcon, SearchIcon, PlusIcon } from "../components/icons";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { filterSessionsByTab, type SessionTab } from "../utils/sessionTabs";
@@ -64,6 +64,7 @@ export function HomePage() {
   const [loaded, setLoaded] = useState(false);
   const [tab, setTab] = useState<SessionTab>("all");
   const [searchOpen, setSearchOpen] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
   const progressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** 会话虚拟列表滚动容器（列表 scrollTop 记忆 + 下拉刷新到顶判定） */
   const listScrollRef = useRef<HTMLDivElement | null>(null);
@@ -76,19 +77,28 @@ export function HomePage() {
     // 慢刷新才露出进度条：连续快速刷新视觉上零变化（不闪不跳）
     if (progressTimer.current) clearTimeout(progressTimer.current);
     progressTimer.current = setTimeout(() => setProgressVisible(true), PROGRESS_REVEAL_MS);
-    const [sessionRes, sysRes, statsRes, notifRes] = await Promise.allSettled([
-      api.listSessions(),
+    // 会话列表独立先回：不被 dashboard（git 全仓扫描，可能数分钟）拖住——
+    // 新建 sheet 的“最近使用目录”与会话列表都依赖它，首屏可用性优先
+    const sessionsPromise = api.listSessions().then(
+      (res) => {
+        setSessions(res.sessions ?? []);
+        setListError(null);
+      },
+      (err: unknown) => {
+        setListError(err instanceof Error ? err.message : "会话列表加载失败");
+      },
+    );
+    const [sysRes, statsRes, notifRes] = await Promise.allSettled([
       api.getSystem(),
       api.getDashboardStats(),
       api.getNotifications(),
     ]);
+    await sessionsPromise;
     if (progressTimer.current) {
       clearTimeout(progressTimer.current);
       progressTimer.current = null;
     }
     setProgressVisible(false);
-    if (sessionRes.status === "fulfilled") setSessions(sessionRes.value.sessions ?? []);
-    else setListError(sessionRes.reason instanceof Error ? sessionRes.reason.message : "会话列表加载失败");
     if (sysRes.status === "fulfilled") setSystem(sysRes.value);
     // system 失败不阻塞面板：保持 null，组件显示"加载中"
     if (statsRes.status === "fulfilled") setStats(statsRes.value);
@@ -137,6 +147,11 @@ export function HomePage() {
     () => filterSessionsByTab(sessions, tab, { attentionIds, doneIds }),
     [sessions, tab, attentionIds, doneIds],
   );
+  /** 最近使用工作目录：按会话更新时间倒序去重（新建 sheet 的 cwd 下拉用） */
+  const recentCwds = useMemo(() => {
+    const sorted = [...sessions].sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+    return sorted.map((s) => s.cwd).filter((c) => c.trim() !== "");
+  }, [sessions]);
   const tabCounts = useMemo(
     () => ({
       all: sessions.length,
@@ -153,6 +168,15 @@ export function HomePage() {
       {progressVisible && loaded && <div className="refresh-bar" role="progressbar" aria-label="刷新中" />}
       <header className="app-header">
         <h1 className="app-title">Agent Hub</h1>
+        <Button
+          type="button"
+          size="icon"
+          className="min-h-[44px] min-w-[44px]"
+          onClick={() => setCreateOpen(true)}
+          aria-label="新建会话"
+        >
+          <PlusIcon />
+        </Button>
         <Button
           type="button"
           variant="secondary"
@@ -252,9 +276,12 @@ export function HomePage() {
       <h2 className="section-title">🖥 系统状态</h2>
       <SystemStatusBar system={system} />
 
-      <h2 className="section-title">新建</h2>
       <NewSessionForm
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        recentCwds={recentCwds}
         onCreated={(session) => {
+          setCreateOpen(false);
           void refresh();
           navigate(chatPath(session.id));
         }}
