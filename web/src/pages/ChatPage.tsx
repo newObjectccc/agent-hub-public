@@ -1,0 +1,247 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import { api } from "../api/client";
+import { sendPromptWithFallback } from "../api/prompt";
+import type { SessionMessage, SessionStatus, SessionSummary } from "../api/types";
+import { applyWsEvent, type WsEvent } from "../chat/messageStream";
+import { useSessionSocket } from "../hooks/useSessionSocket";
+import { MessageBubble } from "../components/MessageBubble";
+import { StatusBadge } from "../components/StatusBadge";
+import { BackIcon } from "../components/icons";
+import { navigate } from "../utils/router";
+
+/**
+ * 合并"权威消息"（message_end / 全量对账）：
+ * - 按 id 覆盖
+ * - 找不到 id 时，若为 user 消息则替换本地乐观占位（id 以 "local-" 开头、text 相同）
+ */
+export function mergeAuthoritative(messages: SessionMessage[], incoming: SessionMessage): SessionMessage[] {
+  const idx = messages.findIndex((m) => m.id === incoming.id);
+  if (idx >= 0) {
+    const next = messages.slice();
+    next[idx] = incoming;
+    return next;
+  }
+  if (incoming.role === "user") {
+    const localIdx = messages.findIndex(
+      (m) => m.id.startsWith("local-") && m.role === "user" && m.text === incoming.text,
+    );
+    if (localIdx >= 0) {
+      const next = messages.slice();
+      next[localIdx] = incoming;
+      return next;
+    }
+  }
+  return [...messages, incoming];
+}
+
+export function ChatPage({ sessionId }: { sessionId: string }) {
+  const [session, setSession] = useState<SessionSummary | null>(null);
+  const [messages, setMessages] = useState<SessionMessage[]>([]);
+  const [status, setStatus] = useState<SessionStatus>("idle");
+  const [connected, setConnected] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [input, setInput] = useState("");
+  const [sending, setSending] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const bottomRef = useRef<HTMLDivElement | null>(null);
+
+  /** GET /api/sessions/:id 全量对账（首屏加载 + WS 重连后） */
+  const loadSession = useCallback(async () => {
+    try {
+      const detail = await api.getSession(sessionId);
+      setSession(detail.session);
+      setMessages(detail.messages ?? []);
+      setStatus(detail.session.status);
+      setLoadError(null);
+    } catch (e) {
+      setLoadError(e instanceof Error ? e.message : "会话加载失败");
+    } finally {
+      setLoading(false);
+    }
+  }, [sessionId]);
+
+  useEffect(() => {
+    setLoading(true);
+    void loadSession();
+  }, [loadSession]);
+
+  useEffect(() => {
+    if (!notice) return;
+    const timer = setTimeout(() => setNotice(null), 6000);
+    return () => clearTimeout(timer);
+  }, [notice]);
+
+  // 自动滚动到底部
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [messages]);
+
+  const handleEvent = useCallback(
+    (event: WsEvent) => {
+      switch (event.type) {
+        case "message_start":
+        case "text_delta":
+        case "tool_start":
+        case "tool_end":
+          setMessages((prev) => applyWsEvent(prev, event));
+          break;
+        case "message_end": {
+          if (event.message?.id) {
+            const authoritative: SessionMessage = {
+              id: event.message.id,
+              role: event.message.role ?? "assistant",
+              timestamp: event.message.timestamp ?? Date.now(),
+              text: event.message.text ?? "",
+              toolCalls: event.message.toolCalls ?? [],
+            };
+            setMessages((prev) => mergeAuthoritative(prev, authoritative));
+          }
+          break;
+        }
+        case "status": {
+          const s = (event.status ?? "idle") as SessionStatus;
+          setStatus(s);
+          if (s !== "running") setSending(false);
+          break;
+        }
+        case "agent_settled":
+          // 本轮工作全部结束：恢复输入
+          setStatus("idle");
+          setSending(false);
+          break;
+        case "error":
+          setNotice(event.message ? String(event.message) : `${event.code ?? "错误"}：运行期错误`);
+          setSending(false);
+          break;
+        default:
+          break;
+      }
+    },
+    [],
+  );
+
+  useSessionSocket({
+    sessionId,
+    onEvent: handleEvent,
+    onReconnect: () => void loadSession(),
+    onStatusChange: setConnected,
+  });
+
+  const doSend = async () => {
+    const text = input.trim();
+    if (!text || sending) return;
+    setSending(true);
+    setNotice(null);
+    const localId = `local-${Date.now()}`;
+    setMessages((prev) => [
+      ...prev,
+      { id: localId, role: "user", timestamp: Date.now(), text, toolCalls: [] },
+    ]);
+    setInput("");
+    try {
+      const outcome = await sendPromptWithFallback(sessionId, text, {
+        sendPrompt: api.sendPrompt,
+        onNotice: setNotice,
+      });
+      setStatus("running");
+      if (!outcome.result.accepted) {
+        setNotice("消息未被接受，请稍后重试");
+        setSending(false);
+      }
+      // accepted：等待 agent_settled / status 事件恢复输入
+    } catch (e) {
+      setNotice(e instanceof Error ? e.message : "发送失败");
+      setSending(false);
+    }
+  };
+
+  const doAbort = async () => {
+    try {
+      await api.abortSession(sessionId);
+      setNotice("已发送中止请求");
+      setSending(false);
+      setStatus("idle");
+    } catch (e) {
+      setNotice(e instanceof Error ? e.message : "中止失败");
+    }
+  };
+
+  return (
+    <div className="chat-page">
+      <header className="chat-header">
+        <button
+          type="button"
+          className="back"
+          onClick={() => navigate("/")}
+          aria-label="返回面板"
+        >
+          <BackIcon />
+        </button>
+        <div className="chat-title">
+          <div className="name">{session?.name ?? sessionId}</div>
+          <div className="cwd">{session?.cwd ?? ""}</div>
+        </div>
+        <StatusBadge status={status} />
+      </header>
+
+      {notice && <div className="chat-notice">{notice}</div>}
+
+      <div className="chat-messages" role="log" aria-label="对话消息">
+        {loading && messages.length === 0 && <div className="empty">加载中…</div>}
+        {loadError && (
+          <div className="error-banner">
+            <span>{loadError}</span>
+            <button type="button" className="ghost" onClick={() => void loadSession()}>
+              重试
+            </button>
+          </div>
+        )}
+        {!loading && !loadError && messages.length === 0 && (
+          <div className="empty">还没有消息，发送第一条吧</div>
+        )}
+        {messages.map((m) => (
+          <MessageBubble key={m.id} message={m} />
+        ))}
+        <div ref={bottomRef} />
+      </div>
+
+      <footer className="chat-input">
+        {status === "running" && (
+          <div className="typing-indicator">
+            <span className="spinner" />
+            <span>agent 运行中…</span>
+            {!connected && <span>（连接断开，重连中）</span>}
+          </div>
+        )}
+        {status !== "running" && !connected && (
+          <div className="typing-indicator">连接断开，重连中…（历史消息不会丢）</div>
+        )}
+        <div className="chat-input-row">
+          <textarea
+            placeholder="输入消息…（Enter 发送，Shift+Enter 换行）"
+            value={input}
+            rows={1}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                e.preventDefault();
+                void doSend();
+              }
+            }}
+            aria-label="消息输入框"
+          />
+          {status === "running" ? (
+            <button type="button" className="danger" onClick={() => void doAbort()}>
+              中止
+            </button>
+          ) : (
+            <button type="button" onClick={() => void doSend()} disabled={sending || !input.trim()}>
+              发送
+            </button>
+          )}
+        </div>
+      </footer>
+    </div>
+  );
+}

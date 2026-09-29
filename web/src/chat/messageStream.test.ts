@@ -1,0 +1,60 @@
+import { describe, expect, it } from "vitest";
+import type { SessionMessage } from "../api/types";
+import { applyWsEvent } from "./messageStream";
+
+const base = (): SessionMessage[] => [];
+
+describe("applyWsEvent（WS 流式事件）", () => {
+  it("message_start 建占位，text_delta 做打字机追加", () => {
+    let msgs = applyWsEvent(base(), {
+      type: "message_start",
+      message: { id: "m1", role: "assistant", timestamp: 1000 },
+    });
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0].text).toBe("");
+
+    msgs = applyWsEvent(msgs, { type: "text_delta", messageId: "m1", delta: "你好" });
+    msgs = applyWsEvent(msgs, { type: "text_delta", messageId: "m1", delta: "，世界" });
+    expect(msgs[0].text).toBe("你好，世界");
+  });
+
+  it("message_end 用权威消息整体替换", () => {
+    let msgs = applyWsEvent(base(), {
+      type: "message_start",
+      message: { id: "m1", role: "assistant", timestamp: 1000 },
+    });
+    msgs = applyWsEvent(msgs, { type: "text_delta", messageId: "m1", delta: "中间态" });
+    msgs = applyWsEvent(msgs, {
+      type: "message_end",
+      message: { id: "m1", role: "assistant", timestamp: 1000, text: "最终权威文本", toolCalls: [] },
+    });
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0].text).toBe("最终权威文本");
+  });
+
+  it("tool_start / tool_end 更新 toolCalls", () => {
+    let msgs = applyWsEvent(base(), {
+      type: "message_start",
+      message: { id: "m1", role: "assistant", timestamp: 1 },
+    });
+    msgs = applyWsEvent(msgs, {
+      type: "tool_start",
+      messageId: "m1",
+      toolCall: { name: "bash", summary: "ls -la" },
+    });
+    msgs = applyWsEvent(msgs, {
+      type: "tool_end",
+      messageId: "m1",
+      toolCall: { name: "bash", summary: "ls -la", status: "done", resultPreview: "total 0" },
+    });
+    expect(msgs[0].toolCalls).toEqual([
+      { name: "bash", summary: "ls -la", status: "done", resultPreview: "total 0" },
+    ]);
+  });
+
+  it("未知事件与未知 messageId 不改变状态", () => {
+    const msgs = base();
+    expect(applyWsEvent(msgs, { type: "agent_settled" })).toBe(msgs);
+    expect(applyWsEvent(msgs, { type: "text_delta", messageId: "nope", delta: "x" })).toBe(msgs);
+  });
+});
