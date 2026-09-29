@@ -101,4 +101,42 @@ describe("message_end 内容级去重兜底（重复气泡防御）", () => {
     expect(next).toHaveLength(2);
     expect(next.map((m) => m.id)).toEqual(["a", "b"]);
   });
+
+  it("同 role+同 text、时间接近、但中间隔有其它消息 → 不合并（占位形态 id）", () => {
+    const msgs: SessionMessage[] = [
+      { id: "live-1", role: "user", timestamp: 0, text: "同样的内容", toolCalls: [] },
+      { id: "b", role: "assistant", timestamp: 5, text: "中间的回复", toolCalls: [] },
+    ];
+    const next = applyWsEvent(msgs, {
+      type: "message_end",
+      message: { id: "authoritative-2", role: "user", timestamp: 10, text: "同样的内容", toolCalls: [] },
+    });
+    expect(next).toHaveLength(3);
+    expect(next.map((m) => m.id)).toEqual(["live-1", "b", "authoritative-2"]);
+  });
+
+  it("相邻且占位形态 id 但 text 不同 → 不合并", () => {
+    const msgs: SessionMessage[] = [
+      { id: "live-9", role: "assistant", timestamp: 0, text: "第一版回复", toolCalls: [] },
+    ];
+    const next = applyWsEvent(msgs, {
+      type: "message_end",
+      message: { id: "authoritative-3", role: "assistant", timestamp: 1, text: "不一样的内容", toolCalls: [] },
+    });
+    expect(next).toHaveLength(2);
+    expect(next.map((m) => m.id)).toEqual(["live-9", "authoritative-3"]);
+  });
+
+  it("user 乐观占位（local-）被权威消息回填，保留权威 id 且只留 1 条", () => {
+    const msgs: SessionMessage[] = [
+      { id: "local-17", role: "user", timestamp: 0, text: "hi", toolCalls: [] },
+    ];
+    const next = applyWsEvent(msgs, {
+      type: "message_end",
+      message: { id: "authoritative-user", role: "user", timestamp: 2, text: "hi", toolCalls: [] },
+    });
+    expect(next).toHaveLength(1);
+    expect(next[0].id).toBe("authoritative-user");
+    expect(next[0].text).toBe("hi");
+  });
 });

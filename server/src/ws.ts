@@ -21,7 +21,7 @@ interface ClientMessage {
 export class WsHub {
   private readonly clients = new Map<string, Set<WebSocket>>();
   private wss: WebSocketServer | null = null;
-  private tails: SessionTailManager | null = null;;
+  private tails: SessionTailManager | null = null;
 
   /** hub 广播出口（构造 SessionHub 时注入） */
   broadcast(sessionId: string, event: ServerEvent): void {

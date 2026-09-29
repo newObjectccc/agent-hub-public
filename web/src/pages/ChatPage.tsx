@@ -1,3 +1,4 @@
+import { ChatSkeleton } from "../components/Skeletons";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
 import { sendPromptWithFallback } from "../api/prompt";
@@ -12,30 +13,10 @@ import { Textarea } from "../components/ui/textarea";
 import { navigate } from "../utils/router";
 
 /**
- * 合并"权威消息"（message_end / 全量对账）：
- * - 按 id 覆盖
- * - 找不到 id 时，若为 user 消息则替换本地乐观占位（id 以 "local-" 开头、text 相同）
+ * 权威消息合并已并入 messageStream.applyWsEvent 的 message_end 分支：
+ * 同 id 覆盖 → 尾部占位（流式 live-/stream-、user 乐观 local-）合并 → 追加。
+ * 所有 WS 事件统一经 applyWsEvent 处理，避免双路由绕过去重兜底。
  */
-export function mergeAuthoritative(messages: SessionMessage[], incoming: SessionMessage): SessionMessage[] {
-  const idx = messages.findIndex((m) => m.id === incoming.id);
-  if (idx >= 0) {
-    const next = messages.slice();
-    next[idx] = incoming;
-    return next;
-  }
-  if (incoming.role === "user") {
-    const localIdx = messages.findIndex(
-      (m) => m.id.startsWith("local-") && m.role === "user" && m.text === incoming.text,
-    );
-    if (localIdx >= 0) {
-      const next = messages.slice();
-      next[localIdx] = incoming;
-      return next;
-    }
-  }
-  return [...messages, incoming];
-}
-
 export function ChatPage({ sessionId }: { sessionId: string }) {
   const [session, setSession] = useState<SessionSummary | null>(null);
   const [messages, setMessages] = useState<SessionMessage[]>([]);
@@ -86,21 +67,10 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
         case "text_delta":
         case "tool_start":
         case "tool_end":
+        case "message_end":
+          // 全部消息流事件统一走 applyWsEvent（含 message_end 去重兜底与占位回填）
           setMessages((prev) => applyWsEvent(prev, event));
           break;
-        case "message_end": {
-          if (event.message?.id) {
-            const authoritative: SessionMessage = {
-              id: event.message.id,
-              role: event.message.role ?? "assistant",
-              timestamp: event.message.timestamp ?? Date.now(),
-              text: event.message.text ?? "",
-              toolCalls: event.message.toolCalls ?? [],
-            };
-            setMessages((prev) => mergeAuthoritative(prev, authoritative));
-          }
-          break;
-        }
         case "status": {
           const s = (event.status ?? "idle") as SessionStatus;
           setStatus(s);
@@ -192,7 +162,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
       {notice && <div className="chat-notice">{notice}</div>}
 
       <div className="chat-messages" role="log" aria-label="对话消息">
-        {loading && messages.length === 0 && <div className="empty">加载中…</div>}
+        {loading && messages.length === 0 && <ChatSkeleton count={4} />}
         {loadError && (
           <div className="error-banner">
             <span>{loadError}</span>

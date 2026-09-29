@@ -4,7 +4,7 @@
  * diff 出新增消息后按契约推送 `message_end`（前端 reducer 同 id 覆盖、新 id 追加，零改动兼容），
  * 并推断运行态：文件持续写入 → status:"running"，静默 → status:"idle"。
  */
-import { loadSessionMessages, readSessionFile, parseSessionJsonl } from "./scan.js";
+import { loadSessionMessages } from "./scan.js";
 import type { EmitFn } from "./hub.js";
 
 /** 文件静默多久后推断为 idle */
@@ -135,8 +135,6 @@ export function inferExternalStatus(updatedMs: number, nowMs = Date.now()): "run
 
 /** 供测试/诊断：解析当前文件已知消息 id 数 */
 export async function peekMessageIds(file: string): Promise<string[]> {
-  const parsed = parseSessionJsonl(await readSessionFile(file));
-  void parsed;
   const messages = await loadSessionMessages(file);
   return messages.map((m) => m.id);
 }

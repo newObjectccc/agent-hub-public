@@ -12,6 +12,8 @@ const SHELL = [
   "/",
   "/index.html",
   "/manifest.json",
+  "/fonts/archivo-black-400-latin.woff2",
+  "/fonts/space-grotesk-latin.woff2",
   "/icons/icon-192.png",
   "/icons/icon-512.png",
   "/icons/icon-maskable-512.png",

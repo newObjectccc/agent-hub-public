@@ -45,3 +45,23 @@ export function SessionListSkeleton({ count = 3 }: { count?: number }) {
     </div>
   );
 }
+
+/** chat 页消息区骨架（加载历史时） */
+export function ChatSkeleton({ count = 4 }: { count?: number }) {
+  return (
+    <div className="skeleton-list" aria-hidden="true">
+      {Array.from({ length: count }, (_, i) => (
+        <div
+          key={i}
+          className="skeleton-block nb-stripe"
+          style={{
+            height: 56,
+            maxWidth: i % 2 === 0 ? "72%" : "58%",
+            marginLeft: i % 2 === 0 ? 0 : "auto",
+            animationDelay: `${i * 0.08}s`,
+          }}
+        />
+      ))}
+    </div>
+  );
+}
