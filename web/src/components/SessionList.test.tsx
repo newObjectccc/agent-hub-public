@@ -2,7 +2,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SessionSummary } from "../api/types";
-import { SessionList, sortSessions } from "./SessionList";
+import { SessionList, SESSION_ITEM_HEIGHT, sortSessions } from "./SessionList";
 
 declare global {
   // eslint-disable-next-line no-var
@@ -114,6 +114,46 @@ describe("SessionList 渲染", () => {
       />,
     );
     expect(el.textContent).toContain("暂无对话内容");
+  });
+});
+
+describe("SessionList 虚拟滚动（几百会话流畅）", () => {
+  function makeMany(count: number): SessionSummary[] {
+    return Array.from({ length: count }, (_, i) =>
+      makeSession({ id: `s${i}`, name: `会话 ${i}`, updatedAt: new Date(NOW - i * 60_000).toISOString() }),
+    );
+  }
+
+  it("300 条会话只渲染视口附近的行（DOM 节点数恒定）", () => {
+    const el = render(<SessionList sessions={makeMany(300)} onSelect={() => {}} now={NOW} viewportHeight={600} />);
+    const rendered = el.querySelectorAll(".session-item");
+    expect(rendered.length).toBeGreaterThan(0);
+    expect(rendered.length).toBeLessThan(20); // 远小于 300
+    // 上下占位撑起总高度，滚动条位置稳定
+    const inner = el.querySelector(".session-list") as HTMLElement;
+    expect(inner.style.paddingBottom).not.toBe("");
+  });
+
+  it("滚动后窗口平移渲染其它行", () => {
+    const el = render(<SessionList sessions={makeMany(300)} onSelect={() => {}} now={NOW} viewportHeight={600} />);
+    const scroller = el.querySelector(".virtual-scroll") as HTMLElement;
+    const before = Array.from(el.querySelectorAll(".session-name")).map((n) => n.textContent);
+    act(() => {
+      scroller.scrollTop = SESSION_ITEM_HEIGHT * 100;
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+    const after = Array.from(el.querySelectorAll(".session-name")).map((n) => n.textContent);
+    expect(after).not.toEqual(before);
+    expect(after[0]).toContain("会话 ");
+    expect(el.querySelectorAll(".session-item").length).toBeLessThan(20);
+  });
+
+  it("列表 scrollTop 记忆：initialScrollTop 恢复滚动位置", () => {
+    const el = render(
+      <SessionList sessions={makeMany(300)} onSelect={() => {}} now={NOW} viewportHeight={600} initialScrollTop={SESSION_ITEM_HEIGHT * 40} />,
+    );
+    const scroller = el.querySelector(".virtual-scroll") as HTMLElement;
+    expect(scroller.scrollTop).toBe(SESSION_ITEM_HEIGHT * 40);
   });
 });
 

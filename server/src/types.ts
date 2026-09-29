@@ -43,6 +43,10 @@ export interface MessageDto {
 export interface SessionDetail {
   session: SessionListItem;
   messages: MessageDto[];
+  /** 本页之前是否还有更早消息（分页查询时有效；全量返回恒 false） */
+  hasMore: boolean;
+  /** 下一页 before 游标（本页最早一条消息 id）；无更早消息为 null */
+  nextBefore: string | null;
 }
 
 /** WS server → client 事件（docs/API_CONTRACT.md §4 表格） */

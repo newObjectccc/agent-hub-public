@@ -111,6 +111,69 @@ describe("contract: SPA history fallback", () => {
   });
 });
 
+describe("contract: GET /api/sessions/:id 消息分页（?before=&limit=）", () => {
+  const pageMessages: MessageDto[] = Array.from({ length: 5 }, (_, i) => ({
+    id: `m${i + 1}`,
+    role: i % 2 === 0 ? "user" : "assistant",
+    timestamp: 1000 + i,
+    text: `t${i + 1}`,
+    toolCalls: [],
+  }));
+
+  let app: Awaited<ReturnType<typeof createApp>>;
+
+  before(async () => {
+    const base = makeFakeHub({ accepted: true, mode: "prompt" });
+    app = await createApp({
+      hub: { ...base, loadMessages: async () => pageMessages } as SessionHubLike,
+      kpi: { getCards: () => [] },
+      config: { ...DEFAULT_CONFIG },
+      systemInfo: async () => systemFixture,
+      webRoot: null,
+    });
+  });
+
+  after(async () => {
+    await app.close();
+  });
+
+  it("不带查询参数：v0 全量行为 + hasMore:false/nextBefore:null", async () => {
+    const res = await app.inject({ method: "GET", url: "/api/sessions/sess-1" });
+    assert.equal(res.statusCode, 200);
+    const body = res.json() as { messages: MessageDto[]; hasMore: boolean; nextBefore: string | null };
+    assert.equal(body.messages.length, 5);
+    assert.equal(body.hasMore, false);
+    assert.equal(body.nextBefore, null);
+  });
+
+  it("?limit=2 返回尾部窗口与游标", async () => {
+    const res = await app.inject({ method: "GET", url: "/api/sessions/sess-1?limit=2" });
+    assert.equal(res.statusCode, 200);
+    const body = res.json() as { messages: MessageDto[]; hasMore: boolean; nextBefore: string | null };
+    assert.deepEqual(body.messages.map((m) => m.id), ["m4", "m5"]);
+    assert.equal(body.hasMore, true);
+    assert.equal(body.nextBefore, "m4");
+  });
+
+  it("?before=&limit= 返回更早一页", async () => {
+    const res = await app.inject({ method: "GET", url: "/api/sessions/sess-1?before=m4&limit=2" });
+    assert.equal(res.statusCode, 200);
+    const body = res.json() as { messages: MessageDto[]; hasMore: boolean; nextBefore: string | null };
+    assert.deepEqual(body.messages.map((m) => m.id), ["m2", "m3"]);
+    assert.equal(body.hasMore, true);
+    assert.equal(body.nextBefore, "m2");
+  });
+
+  it("非法 limit 返回 400 INVALID_REQUEST", async () => {
+    for (const url of ["/api/sessions/sess-1?limit=0", "/api/sessions/sess-1?limit=abc", "/api/sessions/sess-1?limit=9999"]) {
+      const res = await app.inject({ method: "GET", url });
+      assert.equal(res.statusCode, 400, url);
+      const body = res.json() as { error: { code: string } };
+      assert.equal(body.error.code, "INVALID_REQUEST", url);
+    }
+  });
+});
+
 describe("contract: POST prompt 409 SESSION_BUSY", () => {
   let app: Awaited<ReturnType<typeof createApp>>;
 

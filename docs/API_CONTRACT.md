@@ -34,6 +34,18 @@ Base URL: `http://<host>:<port>/api`（默认端口 7700）
 ### GET /api/sessions/:id
 会话详情 + **active branch** 的消息历史（渲染 chat 用）。
 
+**分页查询参数（v0 契约补充，chat 消息懒加载用）：**
+
+| 参数 | 说明 |
+|---|---|
+| `limit` | 页大小（整数 1..500，缺省 50）。带 `before` 或 `limit` 任一即进入分页模式 |
+| `before` | 游标 = 上一页最早一条消息 `id`；返回该 id **之前（不含）** 的最近 `limit` 条 |
+
+- **不带任何查询参数**：保持 v0 行为，返回 active branch 全量消息（`hasMore=false`、`nextBefore=null`）
+- `?limit=50`：返回尾部 50 条（首屏）；`?before=<id>&limit=50`：上滑加载更早一页
+- `before` 游标不存在时退化为尾部窗口（客户端按 id 去重合并，幂等安全）
+- `limit` 非法（非整数 / <1 / >500）→ 400 `INVALID_REQUEST`
+
 ```json
 {
   "session": { "...同列表项..." },
@@ -47,11 +59,15 @@ Base URL: `http://<host>:<port>/api`（默认端口 7700）
         { "name": "bash", "summary": "ls -la", "status": "pending|running|done|error", "resultPreview": "…" }
       ]
     }
-  ]
+  ],
+  "hasMore": false,
+  "nextBefore": null
 }
 ```
 说明：`role` 与 pi session-format v3 对齐；toolResult 消息折叠进产生它的 assistant 消息的 `toolCalls[]`。
 `messages` 仅含 active branch（树结构选活跃叶到根的路径）。
+`hasMore` = 本页之前是否还有更早消息；`nextBefore` = 下一页 `before` 游标（本页最早一条消息 id），
+无更早消息时为 `null`。
 
 ### POST /api/sessions
 新建会话。

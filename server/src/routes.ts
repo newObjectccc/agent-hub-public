@@ -8,6 +8,7 @@ import type { HubConfig } from "./config.js";
 import { ErrorCodes, HubError, toErrorEnvelope } from "./errors.js";
 import type { KpiService } from "./kpi.js";
 import type { PromptResult } from "./sessions/hub.js";
+import { fullPage, paginateMessages, parseLimit } from "./sessions/paginate.js";
 import type { MessageDto, SessionListItem, SessionStatus, SystemInfo } from "./types.js";
 
 /** SessionHub 的结构接口（测试可注入 fake） */
@@ -78,19 +79,33 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
     }
   });
 
-  // GET /api/sessions/:id
-  app.get<{ Params: { id: string } }>("/api/sessions/:id", async (req, reply) => {
-    try {
-      const session = await hub.findSession(req.params.id);
-      if (!session) {
-        throw new HubError(ErrorCodes.SESSION_NOT_FOUND, `会话不存在: ${req.params.id}`, 404);
+  // GET /api/sessions/:id（支持 ?before=<messageId>&limit=<n> 消息分页，契约 §1）
+  app.get<{ Params: { id: string }; Querystring: { before?: string; limit?: string } }>(
+    "/api/sessions/:id",
+    async (req, reply) => {
+      try {
+        const session = await hub.findSession(req.params.id);
+        if (!session) {
+          throw new HubError(ErrorCodes.SESSION_NOT_FOUND, `会话不存在: ${req.params.id}`, 404);
+        }
+        const query = (req.query ?? {}) as { before?: unknown; limit?: unknown };
+        const limit = parseLimit(query.limit);
+        if (limit === null) {
+          throw new HubError(ErrorCodes.INVALID_REQUEST, "limit 必须是 1..500 的整数");
+        }
+        const before = typeof query.before === "string" && query.before !== "" ? query.before : undefined;
+        if (query.before !== undefined && before === undefined) {
+          throw new HubError(ErrorCodes.INVALID_REQUEST, "before 必须是非空消息 id");
+        }
+        const all = (await hub.loadMessages(req.params.id)) ?? [];
+        // 不带分页查询：保持 v0 全量行为（hasMore=false / nextBefore=null）
+        const page = limit === undefined && before === undefined ? fullPage(all) : paginateMessages(all, { before, limit });
+        return reply.send({ session, messages: page.messages, hasMore: page.hasMore, nextBefore: page.nextBefore });
+      } catch (err) {
+        return handle(reply, err);
       }
-      const messages = (await hub.loadMessages(req.params.id)) ?? [];
-      return reply.send({ session, messages });
-    } catch (err) {
-      return handle(reply, err);
-    }
-  });
+    },
+  );
 
   // POST /api/sessions
   app.post("/api/sessions", async (req, reply) => {
