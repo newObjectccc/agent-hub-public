@@ -58,3 +58,47 @@ describe("applyWsEvent（WS 流式事件）", () => {
     expect(applyWsEvent(msgs, { type: "text_delta", messageId: "nope", delta: "x" })).toBe(msgs);
   });
 });
+
+describe("message_end 内容级去重兜底（重复气泡防御）", () => {
+  it("不同 id 但同 role+同 text 且时间接近时合并为一条，保留权威 id", () => {
+    // 流式占位（旧 bug：占位 id 与权威 id 不一致）
+    let msgs = applyWsEvent(base(), {
+      type: "message_start",
+      message: { id: "stream-1", role: "assistant", timestamp: 1_000 },
+    });
+    msgs = applyWsEvent(msgs, { type: "text_delta", messageId: "stream-1", delta: "最终回复内容" });
+    // 权威投递 id 不同但内容一致（时间接近）
+    msgs = applyWsEvent(msgs, {
+      type: "message_end",
+      message: { id: "authoritative-9", role: "assistant", timestamp: 2_000, text: "最终回复内容", toolCalls: [] },
+    });
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0].id).toBe("authoritative-9");
+    expect(msgs[0].text).toBe("最终回复内容");
+  });
+
+  it("同 role+同 text 但时间相隔久远且不相邻时不去重（保留合法重复）", () => {
+    const msgs: SessionMessage[] = [
+      { id: "a", role: "user", timestamp: 0, text: "同样的内容", toolCalls: [] },
+      { id: "b", role: "assistant", timestamp: 10, text: "占位", toolCalls: [] },
+    ];
+    const next = applyWsEvent(msgs, {
+      type: "message_end",
+      message: { id: "c", role: "user", timestamp: 3_600_000, text: "同样的内容", toolCalls: [] },
+    });
+    expect(next).toHaveLength(3);
+    expect(next.map((m) => m.id)).toEqual(["a", "b", "c"]);
+  });
+
+  it("相邻但 text 为空的多条消息不去重（工具卡占位安全）", () => {
+    const msgs: SessionMessage[] = [
+      { id: "a", role: "assistant", timestamp: 0, text: "", toolCalls: [{ name: "bash", summary: "x", status: "done", resultPreview: null }] },
+    ];
+    const next = applyWsEvent(msgs, {
+      type: "message_end",
+      message: { id: "b", role: "assistant", timestamp: 1, text: "", toolCalls: [] },
+    });
+    expect(next).toHaveLength(2);
+    expect(next.map((m) => m.id)).toEqual(["a", "b"]);
+  });
+});

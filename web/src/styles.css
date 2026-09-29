@@ -860,6 +860,154 @@ a {
   .error-banner { color: var(--destructive-foreground); }
 }
 
+/* ---------- 交互动画（短促硬朗 150-250ms，野兽派气质） ---------- */
+@keyframes nb-fade-up {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes nb-slide-in-right {
+  from { opacity: 0; transform: translateX(18px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes nb-slide-in-left {
+  from { opacity: 0; transform: translateX(-18px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes nb-page-in {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes nb-stripe {
+  from { background-position: 0 0; }
+  to { background-position: 32px 0; }
+}
+
+@keyframes nb-progress {
+  from { transform: translateX(-110%); }
+  to { transform: translateX(320%); }
+}
+
+/* 页面切换过渡（首页 ↔ chat，组件重挂载时播放一次） */
+.app,
+.chat-page {
+  animation: nb-page-in 200ms ease-out backwards;
+}
+
+/* 列表项进场 stagger（backwards：不干扰 hover/active 的按压 transform） */
+.kpi-card,
+.session-item {
+  animation: nb-fade-up 220ms ease-out backwards;
+}
+
+.kpi-card:nth-child(1), .session-item:nth-child(1) { animation-delay: 0ms; }
+.kpi-card:nth-child(2), .session-item:nth-child(2) { animation-delay: 35ms; }
+.kpi-card:nth-child(3), .session-item:nth-child(3) { animation-delay: 70ms; }
+.kpi-card:nth-child(4), .session-item:nth-child(4) { animation-delay: 105ms; }
+.kpi-card:nth-child(5), .session-item:nth-child(5) { animation-delay: 140ms; }
+.kpi-card:nth-child(6), .session-item:nth-child(6) { animation-delay: 175ms; }
+.kpi-card:nth-child(n + 7), .session-item:nth-child(n + 7) { animation-delay: 210ms; }
+
+/* 气泡进场：user 从右滑入，assistant/工具结果从左滑入 */
+.msg-row {
+  animation: nb-slide-in-left 200ms ease-out backwards;
+}
+
+.msg-row.user {
+  animation-name: nb-slide-in-right;
+}
+
+/* 骨架屏：粗边框块 + 斜纹滑光微动效 */
+.skeleton {
+  pointer-events: none;
+}
+
+.skeleton-bar {
+  height: 12px;
+  border: 2px solid var(--border);
+  background: repeating-linear-gradient(
+    45deg,
+    var(--muted) 0 8px,
+    var(--accent) 8px 16px
+  );
+  animation: nb-stripe 900ms linear infinite;
+}
+
+.skeleton-bar-lg {
+  height: 24px;
+}
+
+.skeleton.session-item {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.skeleton.kpi-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: var(--card);
+  color: transparent;
+}
+
+/* stale-while-revalidate 顶部细进度条 */
+.refresh-bar {
+  position: fixed;
+  top: var(--safe-top);
+  left: 0;
+  right: 0;
+  height: 5px;
+  background: var(--border);
+  overflow: hidden;
+  z-index: 50;
+}
+
+.refresh-bar::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 34%;
+  background: var(--primary);
+  border-left: 2px solid var(--border);
+  border-right: 2px solid var(--border);
+  animation: nb-progress 900ms ease-in-out infinite;
+}
+
+/* 下拉刷新回弹：拖动跟手，松手弹性归位 */
+.ptr-content {
+  transition: transform 220ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.ptr-content.dragging {
+  transition: none;
+}
+
+.ptr-indicator {
+  transition: height 220ms cubic-bezier(0.34, 1.56, 0.64, 1), opacity 160ms ease-out;
+}
+
+.ptr-indicator.dragging {
+  transition: opacity 160ms ease-out;
+}
+
+/* 尊重系统「减少动态效果」偏好 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
 @media (min-width: 720px) {
   .msg-row > div { max-width: 72%; }
   .app { padding-top: 24px; }

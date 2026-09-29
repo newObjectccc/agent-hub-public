@@ -1,0 +1,47 @@
+import { Card } from "./ui/card";
+
+/**
+ * 野兽派骨架屏：粗黑边框块 + 斜纹滑光微动效。
+ * 仅在「无旧数据」的首屏加载时出现；有旧数据时走 stale-while-revalidate
+ * （保留旧数据 + 顶部细进度条），不闪烁。
+ */
+
+function KpiBlock() {
+  return (
+    <Card className="card skeleton kpi-card" aria-hidden>
+      <div className="skeleton-bar w-2/3" />
+      <div className="skeleton-bar skeleton-bar-lg w-1/2" />
+      <div className="skeleton-bar w-1/3" />
+    </Card>
+  );
+}
+
+function SessionBlock() {
+  return (
+    <div className="skeleton session-item" aria-hidden>
+      <div className="skeleton-bar w-1/2" />
+      <div className="skeleton-bar w-full" />
+      <div className="skeleton-bar w-2/3" />
+    </div>
+  );
+}
+
+export function KpiSkeleton({ count = 4 }: { count?: number }) {
+  return (
+    <div className="kpi-grid" role="status" aria-label="KPI 加载中">
+      {Array.from({ length: count }, (_, i) => (
+        <KpiBlock key={i} />
+      ))}
+    </div>
+  );
+}
+
+export function SessionListSkeleton({ count = 3 }: { count?: number }) {
+  return (
+    <div className="session-list" role="status" aria-label="会话列表加载中">
+      {Array.from({ length: count }, (_, i) => (
+        <SessionBlock key={i} />
+      ))}
+    </div>
+  );
+}

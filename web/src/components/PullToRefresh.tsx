@@ -13,6 +13,7 @@ export interface PullToRefreshProps {
  */
 export function PullToRefresh({ onRefresh, refreshing, children, thresholdPx = 72 }: PullToRefreshProps) {
   const [pull, setPull] = useState(0);
+  const [dragging, setDragging] = useState(false);
   const startY = useRef<number | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
 
@@ -29,7 +30,10 @@ export function PullToRefresh({ onRefresh, refreshing, children, thresholdPx = 7
 
   const onTouchStart = (e: React.TouchEvent) => {
     if (refreshing) return;
-    if (e.touches.length === 1 && isAtTop()) startY.current = e.touches[0].clientY;
+    if (e.touches.length === 1 && isAtTop()) {
+      startY.current = e.touches[0].clientY;
+      setDragging(true);
+    }
   };
 
   const onTouchMove = (e: React.TouchEvent) => {
@@ -43,6 +47,7 @@ export function PullToRefresh({ onRefresh, refreshing, children, thresholdPx = 7
       void onRefresh();
     }
     startY.current = null;
+    setDragging(false);
     setPull(0);
   };
 
@@ -55,10 +60,18 @@ export function PullToRefresh({ onRefresh, refreshing, children, thresholdPx = 7
       onTouchEnd={onTouchEnd}
       onTouchCancel={onTouchEnd}
     >
-      <div className="ptr-indicator" style={{ height: pull, opacity: refreshing ? 1 : pull / thresholdPx }}>
+      <div
+        className={`ptr-indicator${dragging ? " dragging" : ""}`}
+        style={{ height: pull, opacity: refreshing ? 1 : pull / thresholdPx }}
+      >
         <span className="ptr-pill">{refreshing ? "刷新中…" : pull >= thresholdPx ? "松开刷新" : "下拉刷新"}</span>
       </div>
-      <div style={{ transform: refreshing ? undefined : `translateY(${pull}px)` }}>{children}</div>
+      <div
+        className={`ptr-content${dragging ? " dragging" : ""}`}
+        style={{ transform: refreshing ? undefined : `translateY(${pull}px)` }}
+      >
+        {children}
+      </div>
     </div>
   );
 }

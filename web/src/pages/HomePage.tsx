@@ -5,6 +5,7 @@ import { KpiCard } from "../components/KpiCard";
 import { NewSessionForm } from "../components/NewSessionForm";
 import { PullToRefresh } from "../components/PullToRefresh";
 import { SessionList } from "../components/SessionList";
+import { KpiSkeleton, SessionListSkeleton } from "../components/Skeletons";
 import { SystemStatusBar } from "../components/SystemStatus";
 import { RefreshIcon } from "../components/icons";
 import { Button } from "../components/ui/button";
@@ -45,6 +46,8 @@ export function HomePage() {
 
   return (
     <div className="app">
+      {/* stale-while-revalidate：有旧数据时保留旧数据，顶部细进度条提示刷新 */}
+      {refreshing && loaded && <div className="refresh-bar" role="progressbar" aria-label="刷新中" />}
       <header className="app-header">
         <h1 className="app-title">Agent Hub</h1>
         <Button
@@ -71,7 +74,11 @@ export function HomePage() {
           </Button>
         </div>
       ) : cards.length === 0 ? (
-        <Card className="card empty">{loaded ? "暂无 KPI 卡片" : "加载中…"}</Card>
+        loaded ? (
+          <Card className="card empty">暂无 KPI 卡片</Card>
+        ) : (
+          <KpiSkeleton />
+        )
       ) : (
         <div className="kpi-grid">
           {cards.map((card) => (
@@ -93,7 +100,11 @@ export function HomePage() {
             </Button>
           </div>
         ) : sessions.length === 0 ? (
-          <Card className="card empty">{loaded ? "暂无会话，点击下方新建" : "加载中…"}</Card>
+          loaded ? (
+            <Card className="card empty">暂无会话，点击下方新建</Card>
+          ) : (
+            <SessionListSkeleton />
+          )
         ) : (
           <SessionList sessions={sessions} onSelect={(s) => navigate(chatPath(s.id))} />
         )}

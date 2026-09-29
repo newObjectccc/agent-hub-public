@@ -42,6 +42,30 @@ function updateMessage(
   return next;
 }
 
+/** message_end 内容级去重的时间接近阈值（占位开始 vs 权威结束的合理时间差） */
+const DEDUP_TIME_WINDOW_MS = 5 * 60_000;
+
+/**
+ * message_end 防御性去重（重复气泡 bug 的内容级兜底）：
+ * 权威 id 找不到时，若已有「相同 role + 相同非空 text + （位置相邻 或 时间接近）」
+ * 的另一条消息（不同 id，典型为流式占位），则就地合并为一条并保留权威 id/字段，
+ * 不再 append 造成重复气泡。
+ */
+function findContentDuplicate(
+  messages: SessionMessage[],
+  authoritative: SessionMessage,
+): number {
+  return messages.findIndex((m, i) => {
+    if (m.role !== authoritative.role) return false;
+    if (!m.text || m.text !== authoritative.text) return false;
+    // 「相邻」：候选是列表最后一条（权威消息 append 后与它紧邻）；
+    // 或「时间接近」：两条消息时间戳差在阈值内。
+    const nearTail = i === messages.length - 1;
+    const nearTime = Math.abs(m.timestamp - authoritative.timestamp) <= DEDUP_TIME_WINDOW_MS;
+    return nearTail || nearTime;
+  });
+}
+
 export function applyWsEvent(messages: SessionMessage[], event: WsEvent): SessionMessage[] {
   switch (event.type) {
     case "message_start": {
@@ -92,10 +116,19 @@ export function applyWsEvent(messages: SessionMessage[], event: WsEvent): Sessio
       if (!event.message?.id) return messages;
       const authoritative = normalizeMessage(event.message);
       const idx = messages.findIndex((m) => m.id === authoritative.id);
-      if (idx === -1) return [...messages, authoritative];
-      const next = messages.slice();
-      next[idx] = authoritative;
-      return next;
+      if (idx >= 0) {
+        const next = messages.slice();
+        next[idx] = authoritative;
+        return next;
+      }
+      // 内容级去重兜底：id 不一致但内容一致的重复投递 → 合并为一条（保留权威 id）
+      const dupIdx = findContentDuplicate(messages, authoritative);
+      if (dupIdx >= 0) {
+        const next = messages.slice();
+        next[dupIdx] = authoritative;
+        return next;
+      }
+      return [...messages, authoritative];
     }
     default:
       return messages;
