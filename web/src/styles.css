@@ -1596,6 +1596,7 @@ a {
 }
 
 .notif-group-head {
+  position: relative; /* 组内未读角标锚定行内，不逃逸到面板右上角 */
   width: 100%;
   min-height: 44px;
   display: flex;

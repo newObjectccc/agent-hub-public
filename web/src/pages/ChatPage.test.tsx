@@ -247,6 +247,29 @@ describe("ChatPage 中止按钮生命周期（回复完成即消失）", () => {
     expect(abortButton(el)).not.toBeNull();
   });
 
+  it("5s 待定误翻 idle 后，新流事件自愈恢复 running（中止按钮回来）", async () => {
+    vi.useFakeTimers();
+    const el = await render();
+    act(() => {
+      wsEvent?.({ type: "status", status: "running" });
+      wsEvent?.({
+        type: "message_end",
+        message: { id: "b1", role: "assistant", timestamp: 1, text: "第一段", toolCalls: [] },
+      });
+    });
+    // 超过 5s 待定窗口：误翻 idle，按钮消失
+    act(() => {
+      vi.advanceTimersByTime(6_000);
+    });
+    expect(abortButton(el)).toBeNull();
+    // 段间长间隙后新流事件到达：自愈恢复 running
+    act(() => {
+      wsEvent?.({ type: "message_start", message: { id: "b2", role: "assistant", timestamp: 2 } });
+      wsEvent?.({ type: "text_delta", messageId: "b2", delta: "第二段" });
+    });
+    expect(abortButton(el)).not.toBeNull();
+  });
+
   it("agent_settled（hub 必达事件）→ 中止按钮立即消失", async () => {
     const el = await render();
     act(() => {

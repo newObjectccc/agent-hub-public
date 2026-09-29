@@ -312,8 +312,10 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
         case "thinking_delta":
         case "tool_start":
         case "tool_end":
-          // 流事件说明 agent 还在跑：取消待定收尾，中止按钮保持
+          // 流事件说明 agent 还在跑：取消待定收尾，中止按钮保持；
+          // 若 5s 待定误翻了 idle（段间长间隙），后续流事件自愈恢复 running
           clearPendingIdle();
+          setStatus((prev) => (prev === "running" ? prev : "running"));
           // 全部消息流事件统一走 applyWsEvent（含 message_end 去重兜底与占位回填）
           setMessages((prev) => applyWsEvent(prev, event));
           break;
