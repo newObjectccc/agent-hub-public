@@ -7,7 +7,7 @@
  * - /api 与 /ws：纯网络，绝不缓存（WS 本身也不经过 SW）；
  * - 导航请求：network-first，失败或 404 时回退缓存的 index.html（离线启动 + SPA 路由兜底）。
  */
-const CACHE = "agent-hub-shell-v2"; // v2: Neobrutalism UI — bump forces SW update const CACHE = "agent-hub-shell-v2"; old-shell purge
+const CACHE = "agent-hub-shell-v2"; // v2: Neobrutalism UI — bump forces SW update, purges old shell
 const SHELL = [
   "/",
   "/index.html",
