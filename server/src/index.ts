@@ -14,6 +14,7 @@ import { KpiService } from "./kpi.js";
 import { configDir, webDistDir } from "./paths.js";
 import { registerRoutes, type RouteDeps, type SessionHubLike } from "./routes.js";
 import { SessionHub } from "./sessions/hub.js";
+import { SessionTailManager } from "./sessions/tail.js";
 import { probeSystem } from "./system.js";
 import type { ServerEvent } from "./types.js";
 import { WsHub } from "./ws.js";
@@ -87,7 +88,10 @@ export async function startHub(): Promise<StartedHub> {
   });
 
   await app.listen({ port: config.port, host: config.host });
-  wshub.attach(app.server, hub);
+  const tails = new SessionTailManager((sessionId, event) => wshub.broadcast(sessionId, event));
+  // 会话一旦由本进程接管（live），停掉文件 tail，避免双推送源产生重复气泡
+  hub.onLive = (sid) => tails.detach(sid);
+  wshub.attach(app.server, hub, tails);
   await kpi.start();
 
   let closed = false;

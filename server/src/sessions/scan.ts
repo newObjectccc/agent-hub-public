@@ -348,8 +348,8 @@ export async function readSessionFile(file: string): Promise<string> {
 }
 
 export interface ScanOptions {
-  /** 注入运行态（server 内存）；缺省全部 idle */
-  statusOf?: (id: string) => SessionListItem["status"];
+  /** 注入运行态（server 内存 + 外部活动推断）；updatedMs 为会话最后更新时间 */
+  statusOf?: (id: string, updatedMs: number) => SessionListItem["status"];
 }
 
 /** 扫描全部会话（所有 cwd 分组），按 updatedAt 倒序 */
@@ -362,7 +362,7 @@ export async function scanSessions(sessionDir: string, options: ScanOptions = {}
       const parsed = parseSessionJsonl(await readSessionFile(file));
       const summary = buildSessionSummary(file, parsed, fileStat.mtimeMs);
       if (!summary) continue;
-      items.push({ ...summary, status: options.statusOf ? options.statusOf(summary.id) : "idle" });
+      items.push({ ...summary, status: options.statusOf ? options.statusOf(summary.id, Date.parse(summary.updatedAt)) : "idle" });
     } catch {
       // 单个文件损坏不影响其它会话
     }

@@ -17,6 +17,7 @@ import {
 import { ErrorCodes, HubError } from "../errors.js";
 import type { MessageDto, MessageRole, ServerEvent, SessionListItem, SessionStatus, ToolCallStatus } from "../types.js";
 import { decidePromptAction, parsePromptMode, type PromptMode } from "./prompt-policy.js";
+import { inferExternalStatus } from "./tail.js";
 import {
   assistantToolCalls,
   contentToText,
@@ -72,6 +73,8 @@ export class SessionHub {
   private readonly live = new Map<string, LiveSession>();
   private readonly statuses = new Map<string, SessionStatus>();
   private disposed = false;
+  /** 会话转 live 时回调（用于停掉文件 tail，保持单一推送源，防重复气泡） */
+  onLive?: (id: string) => void;
 
   constructor(sessionDir: string, emit: EmitFn) {
     this.sessionDir = sessionDir;
@@ -82,19 +85,31 @@ export class SessionHub {
     return this.statuses.get(id) ?? "idle";
   }
 
+  /** 是否有本进程持有的 live AgentSession（有则事件由 SDK 推送，无需文件 tail） */
+  isLive(id: string): boolean {
+    return this.live.has(id);
+  }
+
+  /** 本进程运行态优先，否则按文件活动推断外部 running */
+  private statusWithInference(id: string, updatedMs: number): SessionStatus {
+    const own = this.statuses.get(id);
+    if (own && own !== "idle") return own;
+    return inferExternalStatus(updatedMs);
+  }
+
   private setStatus(id: string, status: SessionStatus): void {
     if (this.getStatus(id) === status) return;
     this.statuses.set(id, status);
     this.emit(id, { type: "status", status });
   }
 
-  /** 扫描列表（运行态注入） */
+  /** 扫描列表（运行态注入：本进程优先 + 外部活动推断） */
   listSessions(): Promise<SessionListItem[]> {
-    return scanSessions(this.sessionDir, { statusOf: (id) => this.getStatus(id) });
+    return scanSessions(this.sessionDir, { statusOf: (id, updatedMs) => this.statusWithInference(id, updatedMs) });
   }
 
   findSession(id: string): Promise<SessionListItem | null> {
-    return findSessionById(this.sessionDir, id, { statusOf: (sid) => this.getStatus(sid) });
+    return findSessionById(this.sessionDir, id, { statusOf: (sid, updatedMs) => this.statusWithInference(sid, updatedMs) });
   }
 
   async loadMessages(id: string): Promise<MessageDto[] | null> {
@@ -184,6 +199,7 @@ export class SessionHub {
     };
     liveSession.unsubscribe = session.subscribe((event) => this.handleSdkEvent(id, liveSession, event));
     this.live.set(id, liveSession);
+    this.onLive?.(id);
     return session;
   }
 
@@ -322,11 +338,10 @@ export class SessionHub {
         if (role === null || role === "toolResult") break;
         const liveId = live.currentMessageId ?? `live-${live.seq}`;
         const dto = this.buildMessageDto(live, liveId, role, message);
-        // SDK 在通知 listeners 之后才持久化 entry；延迟一拍解析持久化 entry id（权威 id）
-        setImmediate(() => {
-          const entryId = this.findEntryId(live, message) ?? liveId;
-          this.emit(id, { type: "message_end", message: { ...dto, id: entryId } });
-        });
+        // id 保持与 message_start/text_delta 一致（前端按 id upsert 替换流式占位）；
+        // 不回填持久化 entry id——那会让前端找不到流式条目而追加出重复气泡。
+        // 权威 entry id 只在全量对账（GET /api/sessions/:id）时使用，届时整体替换，无残留。
+        this.emit(id, { type: "message_end", message: dto });
         if (role === "assistant") {
           live.currentMessageId = null;
           live.currentMessageStartTs = null;

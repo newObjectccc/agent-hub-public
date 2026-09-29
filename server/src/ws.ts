@@ -7,6 +7,7 @@ import type { Duplex } from "node:stream";
 import { WebSocket, WebSocketServer } from "ws";
 import { ErrorCodes } from "./errors.js";
 import type { SessionHub } from "./sessions/hub.js";
+import type { SessionTailManager } from "./sessions/tail.js";
 import type { ServerEvent } from "./types.js";
 
 const WS_PATH_RE = /^\/ws\/sessions\/([^/]+)$/;
@@ -19,7 +20,8 @@ interface ClientMessage {
 
 export class WsHub {
   private readonly clients = new Map<string, Set<WebSocket>>();
-  private wss: WebSocketServer | null = null;;
+  private wss: WebSocketServer | null = null;
+  private tails: SessionTailManager | null = null;;
 
   /** hub 广播出口（构造 SessionHub 时注入） */
   broadcast(sessionId: string, event: ServerEvent): void {
@@ -55,10 +57,11 @@ export class WsHub {
     }
   }
 
-  /** 挂到 HTTP server 的 upgrade 事件 */
-  attach(server: HttpServer, hub: SessionHub): void {
+  /** 挂到 HTTP server 的 upgrade 事件；tailManager 可选，为非本进程会话提供实时文件 tail */
+  attach(server: HttpServer, hub: SessionHub, tailManager?: SessionTailManager): void {
     const wss = new WebSocketServer({ noServer: true });
     this.wss = wss;
+    this.tails = tailManager ?? null;
 
     server.on("upgrade", (req: IncomingMessage, socket: Duplex, head: Buffer) => {
       const url = req.url ?? "";
@@ -76,6 +79,7 @@ export class WsHub {
 
   /** 关闭全部连接与 WSS。进程退出前调用，否则 app.close() 会被在线 WS 连接挂住不返回 */
   closeAll(): void {
+    this.tails?.stopAll();
     for (const set of this.clients.values()) {
       for (const socket of set) {
         socket.terminate();
@@ -94,8 +98,17 @@ export class WsHub {
   private handleConnection(socket: WebSocket, sessionId: string, hub: SessionHub): void {
     const pending: string[] = [];
     let ready = false;
+    let acquired = false;
     const process = (text: string): void => {
       void this.handleClientMessage(socket, sessionId, hub, text);
+    };
+
+    const cleanup = (): void => {
+      this.remove(sessionId, socket);
+      if (acquired) {
+        acquired = false;
+        this.tails?.release(sessionId);
+      }
     };
 
     socket.on("message", (raw: Buffer | ArrayBuffer | Buffer[]) => {
@@ -106,8 +119,8 @@ export class WsHub {
         pending.push(text);
       }
     });
-    socket.on("close", () => this.remove(sessionId, socket));
-    socket.on("error", () => this.remove(sessionId, socket));
+    socket.on("close", cleanup);
+    socket.on("error", cleanup);
 
     void (async () => {
       const session = await hub.findSession(sessionId);
@@ -120,6 +133,12 @@ export class WsHub {
       this.add(sessionId, socket);
       // 契约：连接后首条握手确认
       this.send(socket, { type: "session", id: session.id, cwd: session.cwd });
+
+      // 非本进程会话：启动文件 tail 实时推送（本进程会话由 SDK 事件流推送，避免重复）
+      if (this.tails && !hub.isLive(sessionId) && socket.readyState === WebSocket.OPEN) {
+        this.tails.acquire(sessionId, session.sessionFile);
+        acquired = true;
+      }
 
       ready = true;
       const queued = pending.splice(0);
