@@ -6,6 +6,7 @@ import { timingSafeEqual } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { HubConfig } from "./config.js";
 import { ErrorCodes, HubError, toErrorEnvelope } from "./errors.js";
+import { createGitApi, type GitApi } from "./git.js";
 import type { KpiService } from "./kpi.js";
 import type { PromptResult } from "./sessions/hub.js";
 import type { MessageDto, SessionListItem, SessionStatus, SystemInfo } from "./types.js";
@@ -27,6 +28,8 @@ export interface RouteDeps {
   kpi: Pick<KpiService, "getCards">;
   config: HubConfig;
   systemInfo: () => Promise<SystemInfo>;
+  /** 只读 git/文件 API（可注入 mock；缺省用真实实现） */
+  git?: GitApi;
 }
 
 function handle(reply: FastifyReply, err: unknown): void {
@@ -49,6 +52,7 @@ function requireAbsoluteCwd(body: unknown): { cwd: string; name?: string } {
 
 export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Promise<void> {
   const { hub, kpi, config } = deps;
+  const git = deps.git ?? createGitApi();
 
   // auth.token 预留：enabled 时校验 Bearer（v0 默认关闭）
   if (config.auth.enabled && config.auth.token !== "") {
@@ -159,6 +163,66 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   app.get("/api/kpi", async (_req, reply) => {
     try {
       return reply.send({ cards: kpi.getCards() });
+    } catch (err) {
+      return handle(reply, err);
+    }
+  });
+
+  /* ===== git / 文件只读 API（契约 §6，硬约束：只读） ===== */
+
+  type GitQuery = { cwd?: string; file?: string; commit?: string; limit?: string; path?: string };
+  const queryCwd = (query: GitQuery): string => {
+    // cwd 缺失/相对/非仓库都回 404 信封（NOT_REPO），语义统一（契约 §6）
+    const cwd = typeof query.cwd === "string" ? query.cwd : "";
+    return cwd.trim();
+  };
+
+  // GET /api/git/status?cwd=
+  app.get<{ Querystring: GitQuery }>("/api/git/status", async (req, reply) => {
+    try {
+      return reply.send(await git.status(queryCwd(req.query)));
+    } catch (err) {
+      return handle(reply, err);
+    }
+  });
+
+  // GET /api/git/log?cwd=&limit=
+  app.get<{ Querystring: GitQuery }>("/api/git/log", async (req, reply) => {
+    try {
+      const limit = Number.parseInt(req.query.limit ?? "20", 10);
+      const commits = await git.log(queryCwd(req.query), Number.isFinite(limit) ? limit : 20);
+      return reply.send({ commits });
+    } catch (err) {
+      return handle(reply, err);
+    }
+  });
+
+  // GET /api/git/diff?cwd=&file=&commit=
+  app.get<{ Querystring: GitQuery }>("/api/git/diff", async (req, reply) => {
+    try {
+      const file = typeof req.query.file === "string" && req.query.file.trim() !== "" ? req.query.file.trim() : null;
+      const commit =
+        typeof req.query.commit === "string" && req.query.commit.trim() !== "" ? req.query.commit.trim() : null;
+      return reply.send(await git.diff(queryCwd(req.query), file, commit));
+    } catch (err) {
+      return handle(reply, err);
+    }
+  });
+
+  // GET /api/git/branches?cwd=
+  app.get<{ Querystring: GitQuery }>("/api/git/branches", async (req, reply) => {
+    try {
+      return reply.send(await git.branches(queryCwd(req.query)));
+    } catch (err) {
+      return handle(reply, err);
+    }
+  });
+
+  // GET /api/files/content?cwd=&path=
+  app.get<{ Querystring: GitQuery }>("/api/files/content", async (req, reply) => {
+    try {
+      const path = typeof req.query.path === "string" ? req.query.path.trim() : "";
+      return reply.send(await git.fileContent(queryCwd(req.query), path));
     } catch (err) {
       return handle(reply, err);
     }

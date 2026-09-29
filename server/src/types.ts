@@ -95,6 +95,62 @@ export interface SystemInfo {
   workspaceRoot: string;
 }
 
+/** ===== git / 文件只读 API（docs/API_CONTRACT.md §6） ===== */
+
+/** GET /api/git/status 的 dirty 文件项（status 为 porcelain 状态字母，如 "M"/"??"/"MM"） */
+export interface GitDirtyFile {
+  path: string;
+  status: string;
+  origPath: string | null;
+}
+
+/** GET /api/git/status 响应 */
+export interface GitStatusResult {
+  cwd: string;
+  root: string;
+  branch: string;
+  detached: boolean;
+  upstream: string | null;
+  ahead: number;
+  behind: number;
+  dirty: GitDirtyFile[];
+  dirtyCount: number;
+}
+
+/** GET /api/git/log 的提交项（hash 为短 hash） */
+export interface GitCommit {
+  hash: string;
+  author: string;
+  authorDate: string;
+  relativeTime: string;
+  subject: string;
+}
+
+/** GET /api/git/branches 的分支项 */
+export interface GitBranchInfo {
+  name: string;
+  current: boolean;
+  upstream: string | null;
+}
+
+/** GET /api/git/diff 响应（unified diff 原文） */
+export interface GitDiffResult {
+  root: string;
+  file: string | null;
+  commit: string | null;
+  truncated: boolean;
+  diff: string;
+}
+
+/** GET /api/files/content 响应（纯文本，语法高亮由前端做） */
+export interface FileContentResult {
+  root: string;
+  path: string;
+  size: number;
+  truncated: boolean;
+  content: string;
+}
+
 /** 统一错误信封 */
 export interface ErrorEnvelope {
   error: { code: string; message: string };

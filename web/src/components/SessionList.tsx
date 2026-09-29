@@ -1,5 +1,6 @@
 import type { SessionSummary } from "../api/types";
 import { relativeTime } from "../utils/relativeTime";
+import { GitStatusBadge } from "./GitStatusBadge";
 import { StatusBadge } from "./StatusBadge";
 import { Button } from "./ui/button";
 
@@ -61,6 +62,8 @@ export function SessionList({ sessions, onSelect, now }: SessionListProps) {
           <div className="session-cwd" title={s.cwd}>
             {shortPath(s.cwd)}
           </div>
+          {/* git 状态条：🌿 分支 · ↑2 ↓0 · ⚠3 files（非 git 仓库自动隐藏） */}
+          <GitStatusBadge cwd={s.cwd} compact />
           <div className="session-summary">{summaryOf(s)}</div>
         </Button>
       ))}

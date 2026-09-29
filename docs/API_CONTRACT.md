@@ -156,3 +156,114 @@ client → server（可选，替代 REST）：
 - 时间一律 ISO 8601 UTC（`timestamp` 毫秒为 pi 原始值）。
 - 所有列表字段缺省 `[]`，对象缺省 `null`，不得省略字段。
 - 端口、session 目录、workspace root 可由 `config/hub.config.json` 覆盖。
+
+## 6. Git 与文件（只读，硬约束）
+
+> **只读硬保证**：server 只调用只读 git 子命令（rev-parse/status/log/diff/show/branch/rev-list），
+> **不提供**任何写操作（commit/checkout/push/…）；`file`/`path`/`commit` 参数全部校验：
+> 路径 resolve 后必须在仓库根内（防穿越），commit/ref 走白名单正则（防选项注入）；
+> git 命令一律 `execFile` 数组传参（无 shell），输出有大小上限。
+>
+> `cwd` 必须是绝对路径且存在 `.git`（普通仓库目录或 worktree 文件），否则统一
+> **404** `{"error":{"code":"NOT_REPO","message"}}`。
+
+### GET /api/git/status?cwd=
+
+分支名、ahead/behind、dirty 文件列表、仓库根（`git rev-parse --show-toplevel`）。
+
+```json
+{
+  "cwd": "/Users/me/Workspace/demo",
+  "root": "/Users/me/Workspace/demo",
+  "branch": "main",
+  "detached": false,
+  "upstream": "origin/main",
+  "ahead": 2,
+  "behind": 0,
+  "dirty": [
+    { "path": "server/src/git.ts", "status": "M", "origPath": null },
+    { "path": "new.txt", "status": "??", "origPath": null },
+    { "path": "new.ts", "status": "R", "origPath": "old.ts" }
+  ],
+  "dirtyCount": 3
+}
+```
+
+说明：`status` 为 porcelain 状态字母（`M`/`MM`/`A`/`D`/`R`/`??`…，已去空格）；
+rename/copy 取新路径放 `path`，旧路径放 `origPath`。无 upstream 时 `upstream:null` 且
+`ahead/behind` 为 0；detached HEAD 时 `detached:true`，`branch` 回退短 hash。
+
+### GET /api/git/log?cwd=&limit=
+
+提交列表（`limit` 钳制到 1..100，缺省 20；`hash` 为短 hash）。
+
+```json
+{
+  "commits": [
+    {
+      "hash": "abc1234",
+      "author": "peter",
+      "authorDate": "2026-02-18T12:00:00.000Z",
+      "relativeTime": "2小时前",
+      "subject": "feat: git 集成"
+    }
+  ]
+}
+```
+
+### GET /api/git/diff?cwd=&file=&commit=
+
+unified diff 原文。`file` 省略 = 全部变更；`commit` 省略 = 工作区（`git diff HEAD`），
+指定时看某提交的 diff（`git show --format= --patch`）。
+
+```json
+{
+  "root": "/Users/me/Workspace/demo",
+  "file": "src/foo.ts",
+  "commit": null,
+  "truncated": false,
+  "diff": "diff --git a/src/foo.ts b/src/foo.ts\n…"
+}
+```
+
+说明：`truncated:true` 表示 diff 超过 512KB 已截断；`file` 越出仓库根 → 400
+`INVALID_PATH`；非法 `commit` → 400 `INVALID_REQUEST`。
+
+### GET /api/git/branches?cwd=
+
+```json
+{
+  "branches": [
+    { "name": "main", "current": true, "upstream": "origin/main" },
+    { "name": "feat/w3-git", "current": false, "upstream": null }
+  ],
+  "current": "main"
+}
+```
+
+### GET /api/files/content?cwd=&path=
+
+文件纯文本内容（语法高亮由前端做）。上限 256KB（超出 `truncated:true`）；
+二进制文件 → 400 `INVALID_FILE`；不存在/目录 → 404 `FILE_NOT_FOUND`；
+`path` 越出仓库根 → 400 `INVALID_PATH`。
+
+```json
+{
+  "root": "/Users/me/Workspace/demo",
+  "path": "src/foo.ts",
+  "size": 1234,
+  "truncated": false,
+  "content": "export const a = 1;\n"
+}
+```
+
+### 错误码（本节新增）
+
+| code | HTTP | 含义 |
+|---|---|---|
+| `NOT_REPO` | 404 | cwd 非绝对路径 / 不存在 / 无 `.git` |
+| `INVALID_PATH` | 400 | 路径穿越（resolve 后越出仓库根） |
+| `INVALID_REQUEST` | 400 | 非法 commit/ref 参数 |
+| `INVALID_FILE` | 400 | 二进制文件不支持预览 |
+| `FILE_NOT_FOUND` | 404 | 文件不存在 / 是目录 |
+| `GIT_FAILED` | 500 | git 命令执行失败 |

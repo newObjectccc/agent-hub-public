@@ -1,4 +1,5 @@
 import type { SessionMessage } from "../api/types";
+import type { FileRef } from "../utils/fileRefs";
 import { Markdown } from "./Markdown";
 import { ToolCallCard } from "./ToolCallCard";
 
@@ -10,7 +11,13 @@ function timeLabel(ts: number): string {
 }
 
 /** 消息气泡：user 右侧，assistant 左侧（markdown 渲染），toolCalls 为折叠卡片 */
-export function MessageBubble({ message }: { message: SessionMessage }) {
+export function MessageBubble({
+  message,
+  onOpenFile,
+}: {
+  message: SessionMessage;
+  onOpenFile?: (ref: FileRef) => void;
+}) {
   return (
     <div className={`msg-row ${message.role}`}>
       <div>
@@ -19,7 +26,7 @@ export function MessageBubble({ message }: { message: SessionMessage }) {
             <>
               {message.text && <Markdown text={message.text} />}
               {message.toolCalls.map((tc, i) => (
-                <ToolCallCard key={`${message.id}-tool-${i}`} toolCall={tc} />
+                <ToolCallCard key={`${message.id}-tool-${i}`} toolCall={tc} onOpenFile={onOpenFile} />
               ))}
               {!message.text && message.toolCalls.length === 0 && (
                 <span className="hint-text">（无内容）</span>
@@ -29,7 +36,7 @@ export function MessageBubble({ message }: { message: SessionMessage }) {
             <>
               <span style={{ whiteSpace: "pre-wrap" }}>{message.text}</span>
               {message.toolCalls.map((tc, i) => (
-                <ToolCallCard key={`${message.id}-tool-${i}`} toolCall={tc} />
+                <ToolCallCard key={`${message.id}-tool-${i}`} toolCall={tc} onOpenFile={onOpenFile} />
               ))}
             </>
           )}

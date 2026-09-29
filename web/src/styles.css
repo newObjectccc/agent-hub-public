@@ -1012,3 +1012,428 @@ a {
   .msg-row > div { max-width: 72%; }
   .app { padding-top: 24px; }
 }
+
+/* ---------- Git 集成 / Diff 查看器 / 文件弹层（W3：移动优先 + 深浅色） ---------- */
+:root {
+  /* diff 配色：+ 绿 / - 黄红（野兽派高饱和），hunk 蓝灰 */
+  --diff-add-bg: #d7f5df;
+  --diff-del-bg: #ffe2b8;
+  --diff-add-fg: #12713c;
+  --diff-del-fg: #b3400a;
+  --diff-hunk-bg: #dfe9f7;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --diff-add-bg: #16382a;
+    --diff-del-bg: #46270f;
+    --diff-add-fg: #6ee7a2;
+    --diff-del-fg: #ffb26b;
+    --diff-hunk-bg: #223047;
+  }
+}
+
+/* 状态条：🌿 分支 · ↑2 ↓0 · ⚠3 files 小徽章行 */
+.git-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+button.git-bar {
+  cursor: pointer;
+  border: 2px solid var(--border);
+  background: var(--muted);
+  color: var(--foreground);
+  padding: 5px 8px;
+  box-shadow: var(--shadow-xs);
+  min-height: 40px;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+
+button.git-bar:active {
+  transform: translate(2px, 2px);
+  box-shadow: none;
+}
+
+.git-bar.compact {
+  gap: 5px;
+  padding: 2px 0;
+}
+
+.git-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border: 2px solid var(--border);
+  border-radius: var(--nb-radius);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+  box-shadow: var(--shadow-xs);
+}
+
+.git-chip.branch { background: var(--primary); color: var(--primary-foreground); }
+.git-chip.plain { background: var(--muted); color: var(--muted-foreground); }
+.git-chip.warn { background: var(--warn); color: var(--primary-foreground); }
+.git-chip.ok { background: var(--ok); color: var(--primary-foreground); }
+
+/* chat 顶栏下的 git 行（状态条 + 变更入口） */
+.chat-subbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-bottom: 3px solid var(--border);
+  background: var(--card);
+  color: var(--card-foreground);
+}
+
+/* ---------- 野兽派弹层（Sheet） ---------- */
+.sheet-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding-top: var(--safe-top);
+}
+
+.sheet {
+  width: min(760px, 100%);
+  max-height: 88dvh;
+  display: flex;
+  flex-direction: column;
+  background: var(--card);
+  color: var(--card-foreground);
+  border: 3px solid var(--border);
+  border-bottom: none;
+  box-shadow: var(--shadow-xl);
+  animation: nb-sheet-up 200ms ease-out;
+}
+
+@keyframes nb-sheet-up {
+  from { opacity: 0; transform: translateY(26px); }
+  to { opacity: 1; transform: none; }
+}
+
+.sheet-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 3px solid var(--border);
+  background: var(--primary);
+  color: var(--primary-foreground);
+}
+
+.sheet-title-wrap {
+  flex: 1;
+  min-width: 0;
+}
+
+.sheet-title {
+  font-family: var(--nb-font-head);
+  font-weight: 900;
+  font-size: 14.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sheet-subtitle {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10.5px;
+  opacity: 0.85;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sheet-close {
+  min-width: 40px;
+  min-height: 40px;
+  border: 2px solid var(--border);
+  background: var(--card);
+  color: var(--card-foreground);
+  box-shadow: var(--shadow-sm);
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.sheet-close:active {
+  transform: translate(2px, 2px);
+  box-shadow: none;
+}
+
+.sheet-body {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 12px;
+}
+
+.sheet-foot {
+  border-top: 3px solid var(--border);
+  padding: 10px 12px calc(10px + var(--safe-bottom));
+}
+
+/* git 面板 tabs */
+.git-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.git-tab {
+  min-height: 40px;
+  padding: 6px 16px;
+  border: 2px solid var(--border);
+  background: var(--muted);
+  color: var(--muted-foreground);
+  font-weight: 700;
+  box-shadow: var(--shadow-xs);
+  cursor: pointer;
+}
+
+.git-tab.active {
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+}
+
+/* ---------- DiffView：13px 等宽 + 横向滚动不破版 ---------- */
+.diff-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 2px 0 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.diff-add { color: var(--diff-add-fg); font-weight: 800; }
+.diff-del { color: var(--diff-del-fg); font-weight: 800; }
+
+.diff-file {
+  border: 3px solid var(--border);
+  box-shadow: var(--shadow-sm);
+  background: var(--card);
+  margin-bottom: 14px;
+}
+
+.diff-file-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-bottom: 2px solid var(--border);
+  background: var(--accent);
+  color: var(--accent-foreground);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11.5px;
+}
+
+.diff-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 700;
+}
+
+.diff-counts {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.diff-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.diff-lines {
+  min-width: max-content;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.dl {
+  display: flex;
+  min-width: max-content;
+}
+
+.dl .ln {
+  width: 3.2em;
+  flex-shrink: 0;
+  text-align: right;
+  padding: 0 6px;
+  color: var(--muted-foreground);
+  background: var(--muted);
+  user-select: none;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.dl .lc {
+  white-space: pre;
+  padding: 0 10px 0 2px;
+}
+
+.dl .sign {
+  display: inline-block;
+  width: 1.2em;
+  font-weight: 800;
+  user-select: none;
+}
+
+.dl.add { background: var(--diff-add-bg); }
+.dl.del { background: var(--diff-del-bg); }
+.dl.hunk { background: var(--diff-hunk-bg); color: var(--muted-foreground); }
+.dl.meta { background: var(--muted); color: var(--muted-foreground); }
+.dl.add .sign { color: var(--diff-add-fg); }
+.dl.del .sign { color: var(--diff-del-fg); }
+
+/* ---------- git log 时间线 ---------- */
+.log-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.log-item {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  border: 2px solid var(--border);
+  background: var(--card);
+  box-shadow: var(--shadow-xs);
+  padding: 9px 10px;
+}
+
+.log-hash {
+  flex-shrink: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  font-weight: 700;
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  border: 2px solid var(--border);
+  padding: 2px 6px;
+}
+
+.log-main { min-width: 0; }
+
+.log-subject {
+  font-size: 13.5px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.log-meta {
+  font-size: 11px;
+  color: var(--muted-foreground);
+  margin-top: 2px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- 分支列表 ---------- */
+.branch-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.branch-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 2px solid var(--border);
+  background: var(--card);
+  padding: 8px 10px;
+  min-height: 40px;
+}
+
+/* ---------- 文件内容（纯文本 + 行号） ---------- */
+.file-code {
+  border: 2px solid var(--border);
+  background: var(--card);
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.code-line {
+  display: flex;
+  min-width: max-content;
+}
+
+.code-line .ln {
+  width: 3.2em;
+  flex-shrink: 0;
+  text-align: right;
+  padding: 0 6px;
+  color: var(--muted-foreground);
+  background: var(--muted);
+  user-select: none;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.code-line .lc {
+  white-space: pre;
+  padding: 0 10px 0 6px;
+}
+
+.code-line.hit {
+  background: var(--accent);
+  outline: 2px solid var(--border);
+}
+
+/* 工具卡片里的文件路径链接 */
+.file-ref {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  margin: 0 2px;
+  padding: 1px 6px;
+  border: 2px solid var(--border);
+  border-radius: var(--nb-radius);
+  background: var(--info);
+  color: var(--info-foreground);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.92em;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  vertical-align: middle;
+}
+
+.file-ref:active {
+  transform: translate(1px, 1px);
+}
