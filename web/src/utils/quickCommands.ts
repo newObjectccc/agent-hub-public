@@ -39,8 +39,26 @@ export function loadCustomCommands(storage: StorageLike): string[] {
   }
 }
 
-export function saveCustomCommands(storage: StorageLike, texts: string[]): void {
-  storage.setItem(QUICK_COMMANDS_STORAGE_KEY, JSON.stringify(texts));
+/**
+ * 安全获取 localStorage：getter 本身在禁 cookie/sandbox 场景会抛 SecurityError。
+ * 返回 null 表示存储不可用（调用方降级为仅内存模式）。
+ */
+export function safeStorage(): StorageLike | null {
+  try {
+    return typeof window === "undefined" ? null : window.localStorage;
+  } catch {
+    return null;
+  }
+}
+
+/** 保存自定义指令：任何异常（quota/隐私模式）静默降级，绝不向外抛。返回是否持久化成功 */
+export function saveCustomCommands(storage: StorageLike, texts: string[]): boolean {
+  try {
+    storage.setItem(QUICK_COMMANDS_STORAGE_KEY, JSON.stringify(texts));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** 追加自定义指令（trim、空忽略、去重，返回新列表） */

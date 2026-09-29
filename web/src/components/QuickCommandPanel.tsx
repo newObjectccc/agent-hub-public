@@ -4,6 +4,7 @@ import {
   allCommands,
   loadCustomCommands,
   removeCustomCommand,
+  safeStorage,
   saveCustomCommands,
 } from "../utils/quickCommands";
 
@@ -19,16 +20,19 @@ export interface QuickCommandPanelProps {
  * 点击条目插入输入框，自定义条目可删除。
  */
 export function QuickCommandPanel({ open, onInsert, onClose }: QuickCommandPanelProps) {
-  const [custom, setCustom] = useState<string[]>(() =>
-    typeof window === "undefined" ? [] : loadCustomCommands(window.localStorage),
-  );
+  // storage 不可用（getter 抛 SecurityError/禁 cookie）→ 降级仅内存，不崩不抛
+  const [custom, setCustom] = useState<string[]>(() => {
+    const storage = safeStorage();
+    return storage ? loadCustomCommands(storage) : [];
+  });
   const [draft, setDraft] = useState("");
 
   if (!open) return null;
 
   const persist = (next: string[]) => {
     setCustom(next);
-    if (typeof window !== "undefined") saveCustomCommands(window.localStorage, next);
+    const storage = safeStorage();
+    if (storage) saveCustomCommands(storage, next);
   };
 
   const commands = allCommands(custom);

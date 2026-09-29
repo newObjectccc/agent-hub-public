@@ -8,6 +8,7 @@ import {
   loadCustomCommands,
   QUICK_COMMANDS_STORAGE_KEY,
   removeCustomCommand,
+  safeStorage,
   saveCustomCommands,
   type StorageLike,
 } from "./quickCommands";
@@ -84,5 +85,46 @@ describe("insertSnippet（点击插入输入框，可编辑后发送）", () => 
 
   it("空模板不改变原文", () => {
     expect(insertSnippet("保持", "  ")).toBe("保持");
+  });
+});
+
+describe("localStorage 异常容错（写路径 + getter）", () => {
+  it("setItem 抛异常时 saveCustomCommands 不向外抛，返回 false", () => {
+    const throwing = {
+      getItem: () => null,
+      setItem: () => {
+        throw new Error("QuotaExceededError");
+      },
+    };
+    let ok: boolean | undefined;
+    expect(() => {
+      ok = saveCustomCommands(throwing as unknown as StorageLike, ["继续"]);
+    }).not.toThrow();
+    expect(ok).toBe(false);
+  });
+
+  it("safeStorage 在 getter 抛 SecurityError 时返回 null（不抛）", () => {
+    const original = Object.getOwnPropertyDescriptor(window, "localStorage");
+    Object.defineProperty(window, "localStorage", {
+      configurable: true,
+      get() {
+        throw new DOMException("denied", "SecurityError");
+      },
+    });
+    try {
+      let got: unknown;
+      expect(() => {
+        got = safeStorage();
+      }).not.toThrow();
+      expect(got).toBe(null);
+    } finally {
+      if (original) Object.defineProperty(window, "localStorage", original);
+    }
+  });
+
+  it("storage 为 null 时 CRUD 纯函数仍可用（仅内存模式）", () => {
+    const next = addCustomCommand(["继续"], "跑测试");
+    expect(next).toEqual(["继续", "跑测试"]);
+    expect(removeCustomCommand(next, "继续")).toEqual(["跑测试"]);
   });
 });
