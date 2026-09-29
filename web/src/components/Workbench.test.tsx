@@ -166,6 +166,28 @@ describe("SessionTabs 分段按钮组", () => {
     });
     expect(onChange).toHaveBeenCalledWith("working");
   });
+
+  it("横向滚动容器 + active 滑块：滑块 transform/width 跟随选中 tab（动画只在真实交互发生）", () => {
+    const counts = { all: 4, working: 1, attention: 2, done: 1 };
+    const el = render(<SessionTabs value="all" counts={counts} onChange={() => {}} />);
+    // 横向 tab 组：超宽可横滑容器 + 绝对定位滑块
+    expect(el.querySelector(".tab-scroll")).not.toBeNull();
+    const slider = el.querySelector(".tab-slider") as HTMLElement;
+    expect(slider).not.toBeNull();
+    expect(slider.getAttribute("aria-hidden")).toBe("true");
+    // 首帧定位不播动画：.ready（transition 开关）未加
+    expect(slider.className).not.toContain("ready");
+    // jsdom 无布局：注入 offsetLeft/offsetWidth 验证滑块跟随机制
+    const tabs = el.querySelectorAll(".tab-btn");
+    Object.defineProperty(tabs[0], "offsetLeft", { configurable: true, value: 0 });
+    Object.defineProperty(tabs[0], "offsetWidth", { configurable: true, value: 80 });
+    Object.defineProperty(tabs[1], "offsetLeft", { configurable: true, value: 88 });
+    Object.defineProperty(tabs[1], "offsetWidth", { configurable: true, value: 90 });
+    rerender(<SessionTabs value="working" counts={counts} onChange={() => {}} />);
+    const moved = el.querySelector(".tab-slider") as HTMLElement;
+    expect(moved.style.transform).toBe("translateX(88px)");
+    expect(moved.style.width).toBe("90px");
+  });
 });
 
 describe("StatusBadge 状态变化 150ms 色块闪烁", () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { elapsedDuration, relativeTime } from "./relativeTime";
+import { elapsedDuration, elapsedMinutesLabel, relativeTime } from "./relativeTime";
 
 const NOW = Date.parse("2026-02-18T12:00:00.000Z");
 
@@ -54,5 +54,24 @@ describe("elapsedDuration（运行时长实时格式化）", () => {
     expect(elapsedDuration(NaN, NOW)).toBe("");
     // 未来时间（时钟偏差）不出现负数
     expect(elapsedDuration(NOW + 5_000, NOW)).toBe("0秒");
+  });
+});
+
+describe("elapsedMinutesLabel（会话行内已运行标记，分钟粒度）", () => {
+  const NOW = Date.parse("2026-02-18T12:00:00.000Z");
+
+  it("分钟级：12分钟", () => {
+    expect(elapsedMinutesLabel(NOW - 12 * 60_000, NOW)).toBe("12分钟");
+    expect(elapsedMinutesLabel(NOW - 59 * 60_000, NOW)).toBe("59分钟");
+  });
+
+  it("小时级：2时05分", () => {
+    expect(elapsedMinutesLabel(NOW - (2 * 3600 + 300) * 1000, NOW)).toBe("2时05分");
+  });
+
+  it("不足 1 分钟、非法起点与未来时间", () => {
+    expect(elapsedMinutesLabel(NOW - 30_000, NOW)).toBe("不到1分钟");
+    expect(elapsedMinutesLabel(NaN, NOW)).toBe("");
+    expect(elapsedMinutesLabel(NOW + 5_000, NOW)).toBe("不到1分钟");
   });
 });

@@ -111,6 +111,8 @@
   --shadow-btn: 4px 4px 0 0 var(--border);
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
 }
 
 /* ---------- 运行时 palette：深色变体（深底 + 亮描边 + 亮色块，非反色） ---------- */
@@ -223,9 +225,12 @@ a {
 
 /* ---------- 布局 ---------- */
 .app {
+  position: relative; /* 弹层定位上下文：右对齐内容列（手机=贴屏幕右缘内侧） */
+  --app-pad-top: calc(12px + var(--safe-top));
   max-width: 760px;
   margin: 0 auto;
-  padding: calc(12px + var(--safe-top)) 14px calc(20px + var(--safe-bottom));
+  /* fluid 水平内边距：小屏紧凑、大屏舒展（配合 safe-area） */
+  padding: var(--app-pad-top) clamp(12px, 3.5vw, 24px) calc(20px + var(--safe-bottom));
 }
 
 .app-header {
@@ -237,7 +242,8 @@ a {
   /* 窄屏（≤380px）按钮多时整体换行，绝不横向溢出 */
   flex-wrap: wrap;
   gap: clamp(8px, 2vw, 12px);  margin-bottom: 16px;
-}
+  gap: 8px;
+  margin-bottom: 16px;}
 
 .app-title {
   font-family: var(--nb-font-head);
@@ -254,7 +260,19 @@ a {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;  padding: 8px 12px;
-  background: var(--primary);
+  /* 与右侧 icon 按钮同高（44px 行高内），整行紧凑；字号流式 clamp（≈17-18px@手机） */
+  font-size: clamp(0.9667rem, 4.5vw, 1.2rem); /* ≈14.5px → 18px（root 15px） */
+  line-height: 1;
+  letter-spacing: 0.01em;
+  margin: 0;
+  flex: 1;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;  background: var(--primary);
   color: var(--primary-foreground);
   border: 3px solid var(--border);
   box-shadow: var(--shadow-card);
@@ -263,7 +281,7 @@ a {
 .section-title {
   font-family: var(--nb-font-head);
   font-weight: 900;
-  font-size: 15px;
+  font-size: 1rem; /* = 15px（root 15px） */
   margin: 22px 0 10px;
   color: var(--foreground);
   display: flex;
@@ -1305,7 +1323,7 @@ a {
 
 @media (min-width: 720px) {
   .msg-row > div { max-width: 72%; }
-  .app { padding-top: 24px; }
+  .app { --app-pad-top: calc(24px + var(--safe-top)); }
 }
 
 /* ---------- 全局搜索面板（首页 🔍 入口） ---------- */
@@ -1417,7 +1435,7 @@ a {
 /* ---------- 通知中心（铃铛 + 下拉面板） ---------- */
 .notif-root,
 .settings-root {
-  position: relative;
+  position: static; /* 弹层不锚定按钮，下落至 .app 定位上下文（见 .notif-panel） */
 }
 
 .notif-bell {
@@ -1447,10 +1465,18 @@ a {
 .notif-panel,
 .settings-panel {
   position: absolute;
-  top: calc(100% + 10px);
-  right: 0;
+  /* 右对齐 .app 内容列右缘（手机上≈贴屏幕右缘，桌面与内容列对齐）：
+     任何视口不超屏；safe-area 边距 + 内部滚动 */
+  top: calc(var(--app-pad-top) + 54px); /* header 44px + 间距 10px */
+  right: clamp(12px, 3.5vw, 24px);
   z-index: 60;
-  width: min(320px, calc(100vw - 28px));
+  width: min(320px, calc(100vw - 24px - var(--safe-left) - var(--safe-right)));
+  max-width: calc(100vw - 24px - var(--safe-left) - var(--safe-right));
+  max-height: calc(100vh - var(--safe-top) - 96px);
+  max-height: calc(100dvh - var(--safe-top) - 96px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
   padding: 12px;
   background: var(--card);
   color: var(--card-foreground);
@@ -1724,22 +1750,61 @@ a {
   opacity: 0.85;
 }
 
-/* ---------- 会话 tab 分段按钮组 ---------- */
+/* ---------- 会话 tab 横向滚动组 + active 滑块 ---------- */
+.tab-scroll {
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  /* 竖向留 padding：滑块硬阴影不被横向滚动容器裁切；负 margin 抵消布局占位 */
+  padding: 4px 2px 8px;
+  margin: -4px -2px 0;
+}
+
+.tab-scroll::-webkit-scrollbar {
+  display: none;
+}
+
 .tab-group {
+  position: relative;
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 8px;
-  margin-bottom: 12px;
+  width: max-content;
+}
+
+/* active 滑块：野兽派硬阴影底色，transform/width 平滑滑到选中 tab */
+.tab-slider {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 0;
+  height: 100%;
+  background: var(--secondary);
+  border: 2px solid var(--border);
+  border-radius: var(--nb-radius);
+  box-shadow: var(--shadow-sm);
+  pointer-events: none;
+}
+
+/* 动画克制：首帧定位不播动画（.ready 才启用 transition），仅真实切换时滑动 */
+.tab-slider.ready {
+  transition: transform 220ms cubic-bezier(0.22, 1, 0.36, 1), width 220ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .tab-btn {
   display: inline-flex;
   align-items: center;
-  gap: 6px;  min-height: 40px;
+  gap: 6px;
+  min-height: 44px;
   padding: 6px 10px;
+  position: relative;
+  z-index: 1;
+  flex-shrink: 0;
+  white-space: nowrap;
   font-family: var(--nb-font-head);
   font-weight: 900;
-  font-size: 12px;
+  font-size: 0.8rem; /* = 12px */
   background: var(--card);
   color: var(--card-foreground);
   border: 2px solid var(--border);
@@ -2883,10 +2948,11 @@ button.git-bar:active {  transform: translate(2px, 2px);
 }
 
 .tab-btn.active {
-  background: var(--secondary);
+  /* 选中态由滑块底色承载，按钮本身透出滑块 */
+  background: transparent;
   color: var(--secondary-foreground);
   box-shadow: none;
-  transform: translate(1px, 1px);
+  transform: none;
 }
 
 .tab-count {
@@ -2936,6 +3002,98 @@ button.git-bar:active {  transform: translate(2px, 2px);
 .tab-btn.active .tab-count {
   background: var(--primary);
   color: var(--primary-foreground);
+}
+
+/* ---------- 可折叠小节（今日概览） ---------- */
+.collapse-section .section-toggle {
+  appearance: none;
+  cursor: pointer;
+  text-align: left;
+}
+
+.collapse-arrow {
+  display: inline-flex;
+  align-items: center;
+  font-size: 12px;
+  transform: rotate(0deg);
+  transition: transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.collapse-arrow.open {
+  transform: rotate(90deg);
+}
+
+/* 高度/透明度 220ms 动画：grid 0fr ↔ 1fr，内容变化自动跟随；首帧落终态不播动画 */
+.collapse-body {
+  display: grid;
+  grid-template-rows: 1fr;
+  opacity: 1;
+  /* 负 margin 抵消 inner 的阴影 padding：折叠前后布局零跳动 */
+  margin: 0 -6px -6px 0;
+  transition: grid-template-rows 220ms cubic-bezier(0.22, 1, 0.36, 1), opacity 200ms ease;
+}
+
+.collapse-body.closed {
+  grid-template-rows: 0fr;
+  opacity: 0;
+}
+
+.collapse-inner {
+  overflow: hidden;
+  min-height: 0;
+  /* 右/下 padding 留出野兽派硬阴影可见区（不被 overflow 裁切） */
+  padding: 0 6px 6px 0;
+}
+
+/* ---------- 会话行内“已运行 X 分钟”实时标记 ---------- */
+.session-elapsed {
+  font-family: var(--nb-font-head);
+  font-weight: 900;
+  font-size: 0.75rem; /* ≈11px */
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  padding: 1px 5px;
+  background: var(--warn);
+  color: var(--primary-foreground);
+  border: 2px solid var(--border);
+}
+
+/* ---------- 平板/桌面（≥768px）：居中限宽 + 概览两列，不拉伸成超宽手机布局 ---------- */
+@media (min-width: 768px) {
+  .app {
+    max-width: 920px;
+  }
+
+  /* 今日概览两列利用宽度（OverviewBar | WeekStatsCard） */
+  .collapse-inner {
+    display: grid;
+    grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+    gap: 0 16px;
+    align-items: start;
+  }
+
+  .collapse-inner > .week-card {
+    margin-top: 0;
+  }
+}
+
+/* 超小屏（≤360px）：收紧头部间距让标题完整可读（触控目标仍 ≥44px） */
+@media (max-width: 360px) {
+  .app-header {
+    gap: 4px;
+  }
+
+  .app-title {
+    padding: 0 8px;
+  }
+}
+
+/* 极小屏（≤340px，如 320 iPhone SE）：标题再降一档保证完整显示 */
+@media (max-width: 340px) {
+  .app-title {
+    font-size: 0.8667rem; /* ≈13px */
+    padding: 0 6px;
+  }
 }
 
 /* ---------- 状态徽章变化：150ms 色块闪烁（只变背景色，不重排） ---------- */
