@@ -51,6 +51,7 @@ function makeInsight(status: SessionListItem["status"], lastRole: "user" | "assi
     lastUserMessage: "帮我跑",
     lastAssistantMessage: "跑完了",
     sessionFile: "/tmp/x.jsonl",
+    isSubAgent: false,
     source: "pi",
   };
   const built = buildInsight(summary, []);

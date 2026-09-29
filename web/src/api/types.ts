@@ -19,6 +19,11 @@ export interface SessionSummary {
   lastUserMessage: string | null;
   lastAssistantMessage: string | null;
   sessionFile: string | null;
+  /**
+   * pi-subagents 派生的子代理会话（命名 `<type>#<id>` 如 developer#abc123，
+   * 或入口消息含派生特征）。渲染容错：缺省按主会话（`!== true`）处理。
+   */
+  isSubAgent: boolean;
 }
 
 export type MessageRole = "user" | "assistant" | "toolResult" | "custom";
@@ -89,6 +94,40 @@ export interface SystemComponent {
   version: string | null;
 }
 
+/* ===== 真实系统指标（docs/API_CONTRACT.md §2；单项失败独立降级 null） ===== */
+
+/** CPU：两次 os.cpus() 采样差分使用率（0..100）；采样失败 usagePercent=null */
+export interface SystemCpuMetrics {
+  usagePercent: number | null;
+  cores: number;
+}
+
+/** 内存（字节） */
+export interface SystemMemoryMetrics {
+  usedBytes: number;
+  totalBytes: number;
+  usagePercent: number;
+}
+
+/** 磁盘（项目所在盘，字节）；采集失败整体 null */
+export interface SystemDiskMetrics {
+  usedBytes: number;
+  totalBytes: number;
+  usagePercent: number;
+  mount: string;
+}
+
+export interface SystemMetrics {
+  cpu: SystemCpuMetrics;
+  memory: SystemMemoryMetrics;
+  disk: SystemDiskMetrics | null;
+  /** 1/5/15 分钟负载均值；Windows 无 → null */
+  loadavg: [number, number, number] | null;
+  /** 系统运行时长秒 */
+  uptimeSeconds: number;
+  sampledAt: string;
+}
+
 export interface SystemStatus {
   platform: "darwin" | "win32" | "linux" | string;
   pi: SystemComponent;
@@ -98,6 +137,8 @@ export interface SystemStatus {
   tailscale: SystemComponent & { loggedIn?: boolean; hostname?: string | null };
   sessionDir: string;
   workspaceRoot: string;
+  /** 真实系统指标；缺省/为 null 表示不可用（旧 server 兼容，UI 降级不显示） */
+  metrics?: SystemMetrics | null;
 }
 
 export interface PromptResult {

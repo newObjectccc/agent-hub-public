@@ -48,6 +48,7 @@ function makeInsight(over: {
     lastUserMessage: "帮我跑一下",
     lastAssistantMessage: "已完成，输出如上",
     sessionFile: "/tmp/sess-a.jsonl",
+    isSubAgent: false,
     source: "pi",
   };
   const messages = over.messages ?? [

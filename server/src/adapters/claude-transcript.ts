@@ -37,6 +37,7 @@ import {
   LAST_MESSAGE_LIMIT,
   RESULT_PREVIEW_LIMIT,
   contentToText,
+  isSubAgentName,
   summarizeToolCall,
   truncateText,
 } from "../sessions/scan.js";
@@ -289,6 +290,8 @@ export function buildClaudeSessionSummary(
     lastUserMessage,
     lastAssistantMessage,
     sessionFile: file,
+    // claude 会话名通常为 uuid，命名规则命中即视为子代理（与 pi 判定口径一致）
+    isSubAgent: isSubAgentName(parsed.name),
   };
 }
 

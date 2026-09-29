@@ -10,6 +10,8 @@ import {
   buildMessages,
   buildSessionSummary,
   encodeCwdDirName,
+  isSubAgentName,
+  isSubAgentSession,
   parseSessionJsonl,
   scanSessions,
   selectActiveBranch,
@@ -204,5 +206,72 @@ describe("scan: 确定性排序 tiebreaker（AC3-a）", () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("scan: 子代理会话识别（isSubAgent）", () => {
+  it("会话名匹配 `<type>#<id>` 规则", () => {
+    assert.equal(isSubAgentName("developer#abc123"), true);
+    assert.equal(isSubAgentName("developer#e51f8eef"), true);
+    assert.equal(isSubAgentName("acceptance-reviewer#f81d33aa"), true);
+    assert.equal(isSubAgentName("Acceptance-Reviewer#f81d33aa"), false); // 大写不命中
+    assert.equal(isSubAgentName("developer#XYZ123"), false); // 后缀非 hex
+    assert.equal(isSubAgentName("pi-seksun-KPI"), false);
+    assert.equal(isSubAgentName("R3-sys"), false);
+    assert.equal(isSubAgentName(null), false);
+  });
+
+  it("入口消息含 pi-subagents 派生特征（无命名也命中）", () => {
+    const entries = [
+      {
+        type: "message",
+        id: "m0",
+        parentId: null,
+        timestamp: "2026-02-18T10:00:00.000Z",
+        message: {
+          role: "system",
+          content: "",
+          sections: { preamble: "...\n<sub_agent_context>\nYou are operating as a sub-agent invoked to handle a specific task.\n</sub_agent_context>\n<active_agent name=\"developer\"/>\n..." },
+        },
+      },
+      { type: "message", id: "m1", parentId: "m0", timestamp: "2026-02-18T10:00:01.000Z", message: { role: "user", content: "实现 issue X" } },
+    ];
+    assert.equal(isSubAgentSession(null, entries), true);
+  });
+
+  it("主会话（普通命名 + 无派生特征）不命中", () => {
+    const entries = [
+      { type: "message", id: "m1", parentId: null, timestamp: "2026-02-18T10:00:01.000Z", message: { role: "user", content: "帮我看看构建" } },
+    ];
+    assert.equal(isSubAgentSession("pi-seksun-KPI", entries), false);
+    assert.equal(isSubAgentSession(null, entries), false);
+  });
+
+  it("buildSessionSummary 输出 isSubAgent（命名规则 + 特征两种来源）", () => {
+    const named = buildSessionSummary(
+      "/tmp/a.jsonl",
+      parseSessionJsonl(
+        [
+          JSON.stringify({ type: "session", version: 3, id: "sub-1", timestamp: "2026-02-18T10:00:00.000Z", cwd: "/tmp/ws" }),
+          JSON.stringify({ type: "session_info", id: "n1", parentId: null, timestamp: "2026-02-18T10:00:01.000Z", name: "developer#abc123" }),
+          JSON.stringify({ type: "message", id: "m1", parentId: "n1", timestamp: "2026-02-18T10:00:02.000Z", message: { role: "user", content: "hi" } }),
+        ].join("\n"),
+      ),
+      Date.parse("2026-02-18T10:00:02.000Z"),
+    );
+    assert.equal(named?.name, "developer#abc123");
+    assert.equal(named?.isSubAgent, true);
+
+    const main = buildSessionSummary(
+      "/tmp/b.jsonl",
+      parseSessionJsonl(
+        [
+          JSON.stringify({ type: "session", version: 3, id: "main-1", timestamp: "2026-02-18T10:00:00.000Z", cwd: "/tmp/ws" }),
+          JSON.stringify({ type: "session_info", id: "n2", parentId: null, timestamp: "2026-02-18T10:00:01.000Z", name: "pi-seksun-KPI" }),
+        ].join("\n"),
+      ),
+      Date.parse("2026-02-18T10:00:02.000Z"),
+    );
+    assert.equal(main?.isSubAgent, false);
   });
 });

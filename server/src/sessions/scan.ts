@@ -277,6 +277,40 @@ export function sessionName(entries: RawEntry[]): string | null {
   return name;
 }
 
+/** pi-subagents 派生子代理会话的命名规则：`<type>#<id>`，如 developer#abc123 / acceptance-reviewer#f81d33aa */
+export const SUB_AGENT_NAME_RE = /^[a-z0-9-]+#[0-9a-f]{6,}$/;
+
+/** 入口消息里的 pi-subagents 派生特征（system preamble / 首条任务描述） */
+const SUB_AGENT_MARKERS = ["<sub_agent_context>", "<active_agent name=", "pi-subagents"];
+
+/** 仅按命名规则判定（claude 等无 entries 场景的轻量判定） */
+export function isSubAgentName(name: string | null): boolean {
+  return name !== null && SUB_AGENT_NAME_RE.test(name.trim());
+}
+
+/** 入口消息（前 10 条 message）是否含 pi-subagents 派生特征 */
+function hasSubAgentMarker(entries: RawEntry[]): boolean {
+  const scanned = entries.slice(0, 10);
+  for (const entry of scanned) {
+    if (entry.type !== "message" || !isRecord(entry.message)) continue;
+    const message = entry.message;
+    const parts: string[] = [contentToText(message.content)];
+    const sections = message.sections;
+    if (isRecord(sections) && typeof sections.preamble === "string") parts.push(sections.preamble);
+    const text = parts.join("\n");
+    if (SUB_AGENT_MARKERS.some((marker) => text.includes(marker))) return true;
+  }
+  return false;
+}
+
+/**
+ * 子代理会话判定（server 检测，web 按 isSubAgent 呈现）：
+ * 会话名匹配 `<type>#<id>`，或入口消息含 pi-subagents 派生特征。
+ */
+export function isSubAgentSession(name: string | null, entries: RawEntry[]): boolean {
+  return isSubAgentName(name) || hasSubAgentMarker(entries);
+}
+
 /** 会话摘要（列表项，status 由 server 运行态注入） */
 export function buildSessionSummary(file: string, parsed: ParsedSession, mtimeMs: number): Omit<SessionListItem, "status"> | null {
   const { header, entries } = parsed;
@@ -288,6 +322,7 @@ export function buildSessionSummary(file: string, parsed: ParsedSession, mtimeMs
   }
 
   const active = selectActiveBranch(entries);
+  const name = sessionName(entries);
   let lastUserMessage: string | null = null;
   let lastAssistantMessage: string | null = null;
   for (const entry of active) {
@@ -318,13 +353,14 @@ export function buildSessionSummary(file: string, parsed: ParsedSession, mtimeMs
   return {
     id: header.id,
     source: "pi",
-    name: sessionName(entries),
+    name,
     cwd: typeof header.cwd === "string" ? header.cwd : "",
     updatedAt: new Date(updatedMs).toISOString(),
     messageCount,
     lastUserMessage,
     lastAssistantMessage,
     sessionFile: file,
+    isSubAgent: isSubAgentSession(name, entries),
   };
 }
 

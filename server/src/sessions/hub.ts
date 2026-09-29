@@ -26,6 +26,7 @@ import {
   contentToThinking,
   encodeCwdDirName,
   findSessionById,
+  isSubAgentName,
   RESULT_PREVIEW_LIMIT,
   scanSessions,
   sessionFileName,
@@ -222,6 +223,8 @@ export class SessionHub {
       lastUserMessage: null,
       lastAssistantMessage: null,
       sessionFile: file,
+      // 手工创建的会话默认主会话；命名命中 `<type>#<id>` 规则时同样标记子代理
+      isSubAgent: isSubAgentName(trimmedName === "" ? null : trimmedName),
     };
   }
 
