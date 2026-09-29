@@ -8,7 +8,7 @@
  * 合并排序与按 id 分发由 registry.ts 统一处理。
  */
 import type { PromptResult } from "../sessions/hub.js";
-import type { SearchResultDto, SessionTreeDto } from "../types.js";
+import type { PromptImageAttachment, SearchResultDto, SessionTreeDto } from "../types.js";
 import type { MessageDto, SessionListItem, SessionSource, SessionStatus } from "../types.js";
 
 export type { PromptResult };
@@ -23,7 +23,7 @@ export interface SessionAdapter {
   listSessions(): Promise<SessionListItem[]>;
   findSession(id: string): Promise<SessionListItem | null>;
   loadMessages(id: string): Promise<MessageDto[] | null>;
-  prompt(id: string, text: unknown, modeRaw: unknown): Promise<PromptResult>;
+  prompt(id: string, text: unknown, modeRaw: unknown, images?: PromptImageAttachment[]): Promise<PromptResult>;
   abort(id: string): Promise<void>;
   /** 新建会话（pi：JSONL header 落盘；claude：空白 transcript 会话文件） */
   createSession?(cwd: string, name?: string): Promise<SessionListItem>;

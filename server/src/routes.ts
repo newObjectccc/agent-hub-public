@@ -15,16 +15,24 @@ import type { KpiService } from "./kpi.js";
 import type { LiveIngestLike } from "./live.js";
 import type { PromptResult } from "./sessions/hub.js";
 import { fullPage, paginateMessages, parseLimit } from "./sessions/paginate.js";
+import {
+  loadImageAttachments,
+  MAX_ATTACHMENTS_PER_MESSAGE,
+  MAX_UPLOAD_BODY_BYTES,
+  saveUpload,
+} from "./uploads.js";
 import type {
   CommandListDto,
   FsTreeDto,
   MessageDto,
+  PromptImageAttachment,
   SearchResultDto,
   SessionListItem,
   SessionSource,
   SessionStatus,
   SessionTreeDto,
   SystemInfo,
+  UploadDto,
 } from "./types.js";
 
 /** SessionHub 的结构接口（测试可注入 fake） */
@@ -37,7 +45,7 @@ export interface SessionHubLike {
   loadTree(id: string): Promise<SessionTreeDto | null>;
   createSession(cwd: string, name?: string, source?: SessionSource): Promise<SessionListItem>;
   forkSession(id: string): Promise<SessionListItem>;
-  prompt(id: string, text: unknown, modeRaw: unknown): Promise<PromptResult>;
+  prompt(id: string, text: unknown, modeRaw: unknown, images?: PromptImageAttachment[]): Promise<PromptResult>;
   abort(id: string): Promise<void>;
   /** 手动压缩上下文（pi 专用；instructions 透传 SDK session.compact()） */
   compact(id: string, instructions?: string): Promise<void>;
@@ -199,10 +207,14 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
     }
   });
 
-  // POST /api/sessions/:id/prompt
+  // POST /api/sessions/:id/prompt（images：上传图片相对路径数组，pi 直接附图，契约 §1/§11）
   app.post<{ Params: { id: string } }>("/api/sessions/:id/prompt", async (req, reply) => {
     try {
-      const body = (typeof req.body === "object" && req.body !== null ? req.body : {}) as { text?: unknown; mode?: unknown };
+      const body = (typeof req.body === "object" && req.body !== null ? req.body : {}) as {
+        text?: unknown;
+        mode?: unknown;
+        images?: unknown;
+      };
       const text = body.text;
       // pi slash 命令 `/compact [instructions]`：SDK prompt() 不处理内置命令（实测透传成普通消息），
       // 改走官方 SDK session.compact() 通道（契约 §8）；其余命令原样作为 prompt 文本发送
@@ -228,7 +240,21 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
           }
         }
       }
-      const result = await hub.prompt(req.params.id, body.text, body.mode);
+      let attachments: PromptImageAttachment[] | undefined;
+      if (body.images !== undefined && body.images !== null) {
+        if (!Array.isArray(body.images)) {
+          throw new HubError(ErrorCodes.INVALID_REQUEST, "images 必须是路径数组");
+        }
+        if (body.images.length > MAX_ATTACHMENTS_PER_MESSAGE) {
+          throw new HubError(ErrorCodes.INVALID_REQUEST, `单条消息最多 ${MAX_ATTACHMENTS_PER_MESSAGE} 张图片`);
+        }
+        const owner = await hub.findSession(req.params.id);
+        if (!owner) {
+          throw new HubError(ErrorCodes.SESSION_NOT_FOUND, `会话不存在: ${req.params.id}`, 404);
+        }
+        attachments = await loadImageAttachments(owner.cwd, body.images);
+      }
+      const result = await hub.prompt(req.params.id, body.text, body.mode, attachments);
       if (result.busy) {
         throw new HubError(ErrorCodes.SESSION_BUSY, "会话正在运行中；可指定 mode=steer|followUp 或先 abort", 409);
       }
@@ -412,6 +438,41 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
       const hiddenRaw = req.query.hidden;
       const hidden = hiddenRaw === "1" || hiddenRaw === "true";
       return reply.send(await fsTree.listDir(queryCwd(req.query), { path, q, hidden }));
+    } catch (err) {
+      return handle(reply, err);
+    }
+  });
+
+  // POST /api/uploads（契约 §11：上传到会话 cwd/.agent-hub-uploads/，base64 JSON）
+  app.post("/api/uploads", { bodyLimit: MAX_UPLOAD_BODY_BYTES }, async (req, reply) => {
+    try {
+      const body = (typeof req.body === "object" && req.body !== null ? req.body : {}) as {
+        sessionId?: unknown;
+        cwd?: unknown;
+        name?: unknown;
+        mimeType?: unknown;
+        data?: unknown;
+      };
+      // cwd 优先取 sessionId 归属会话（防前端伪造任意写入目录）；无 sessionId 时要求显式绝对路径 cwd
+      let cwd: string | null = null;
+      if (typeof body.sessionId === "string" && body.sessionId !== "") {
+        const session = await hub.findSession(body.sessionId);
+        if (!session) {
+          throw new HubError(ErrorCodes.SESSION_NOT_FOUND, `会话不存在: ${body.sessionId}`, 404);
+        }
+        cwd = session.cwd;
+      } else if (typeof body.cwd === "string" && body.cwd.trim() !== "") {
+        const { cwd: abs } = requireAbsoluteCwd({ cwd: body.cwd });
+        cwd = abs;
+      }
+      const upload: UploadDto = await saveUpload({
+        cwd,
+        sessionId: typeof body.sessionId === "string" ? body.sessionId : undefined,
+        name: body.name,
+        mimeType: body.mimeType,
+        data: body.data,
+      });
+      return reply.status(201).send({ upload });
     } catch (err) {
       return handle(reply, err);
     }

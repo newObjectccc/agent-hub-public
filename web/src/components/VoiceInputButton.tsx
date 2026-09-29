@@ -2,11 +2,13 @@ import { useMemo, useRef, useState } from "react";
 import {
   collectFinalTranscript,
   collectInterimTranscript,
+  getSpeechAvailability,
   getSpeechRecognitionCtor,
-  isSpeechRecognitionSupported,
+  SPEECH_HTTP_HINT,
   SPEECH_LANG,
   type SpeechRecognitionLike,
 } from "../utils/speech";
+import { showToast } from "../utils/toast";
 
 export interface VoiceInputButtonProps {
   /** 识别完成（松开后）回传最终文本 */
@@ -18,11 +20,14 @@ const END_FALLBACK_MS = 800;
 
 /**
  * 语音输入：按住说话、松开转文字进输入框（Web Speech API，zh-CN）。
- * 不支持的浏览器整颗按钮隐藏；录音中有野兽派脉冲反馈。
+ * - 浏览器不支持 SpeechRecognition：整颗按钮隐藏（原行为）
+ * - 支持但非安全上下文（HTTP 部署）：禁用态 + tooltip/点击提示"语音需 HTTPS"，
+ *   不做点击无反应的死按钮（Web Speech API 仅 HTTPS/localhost 可用）
+ * - HTTPS：按住说话，录音中有野兽派脉冲反馈
  */
 export function VoiceInputButton({ onTranscript, disabled }: VoiceInputButtonProps) {
-  const supported = useMemo(
-    () => isSpeechRecognitionSupported(typeof window === "undefined" ? null : window),
+  const availability = useMemo(
+    () => getSpeechAvailability(typeof window === "undefined" ? null : window),
     [],
   );
   const [recording, setRecording] = useState(false);
@@ -33,8 +38,33 @@ export function VoiceInputButton({ onTranscript, disabled }: VoiceInputButtonPro
   const onTranscriptRef = useRef(onTranscript);
   onTranscriptRef.current = onTranscript;
 
-  // 不支持 → 优雅隐藏
-  if (!supported) return null;
+  // 不支持 API → 优雅隐藏（原行为）
+  if (!availability.supported) return null;
+
+  // HTTP（非安全上下文）→ 禁用态 + 明确提示（长按/点击均给反馈，不是死按钮）
+  if (!availability.usable) {
+    return (
+      <span className="voice-wrap">
+        <button
+          type="button"
+          className="voice-btn unavailable"
+          aria-label="语音输入不可用：需 HTTPS 部署"
+          aria-disabled="true"
+          title={SPEECH_HTTP_HINT}
+          onPointerDown={(e) => {
+            e.preventDefault();
+            showToast(SPEECH_HTTP_HINT);
+          }}
+          onClick={() => showToast(SPEECH_HTTP_HINT)}
+        >
+          🎙
+          <span className="voice-slash" aria-hidden="true">
+            /
+          </span>
+        </button>
+      </span>
+    );
+  }
 
   const finish = () => {
     if (timerRef.current !== null) {
@@ -106,8 +136,9 @@ export function VoiceInputButton({ onTranscript, disabled }: VoiceInputButtonPro
       <button
         type="button"
         className={`voice-btn${recording ? " recording" : ""}`}
-        aria-label={recording ? "松开结束语音输入" : "按住说话"}
+        aria-label={recording ? "松开结束语音输入" : "按住说话（需 HTTPS）"}
         aria-pressed={recording}
+        title="按住说话（仅 HTTPS 可用）"
         disabled={disabled}
         onPointerDown={(e) => {
           e.preventDefault();

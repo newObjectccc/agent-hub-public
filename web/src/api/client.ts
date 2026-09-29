@@ -20,6 +20,7 @@ import type {
   GitCommit,
   GitDiffResult,
   GitStatusResult,
+  UploadResponse,
 } from "./types";
 
 export type PromptMode = "prompt" | "steer" | "followUp";
@@ -94,10 +95,26 @@ export const api = {
     });
   },
 
-  sendPrompt(id: string, text: string, mode: PromptMode = "prompt"): Promise<PromptResult> {
+  /** 发送消息（契约 §1）；images 为上传图片引用路径（pi 直接附图，契约 §11） */
+  sendPrompt(id: string, text: string, mode: PromptMode = "prompt", images?: string[]): Promise<PromptResult> {
     return request(`/api/sessions/${encodeURIComponent(id)}/prompt`, {
       method: "POST",
-      body: JSON.stringify({ text, mode }),
+      body: JSON.stringify(images && images.length > 0 ? { text, mode, images } : { text, mode }),
+    });
+  },
+
+  /** 上传文件（契约 §11）：base64 JSON，落盘会话 cwd/.agent-hub-uploads/ */
+  uploadFile(input: {
+    sessionId?: string;
+    cwd?: string;
+    name: string;
+    mimeType: string;
+    /** 纯 base64（不含 data: 前缀） */
+    data: string;
+  }): Promise<UploadResponse> {
+    return request("/api/uploads", {
+      method: "POST",
+      body: JSON.stringify(input),
     });
   },
 

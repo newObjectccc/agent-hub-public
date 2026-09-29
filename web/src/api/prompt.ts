@@ -16,8 +16,20 @@ export interface SendPromptOutcome {
 }
 
 export interface SendPromptDeps {
-  sendPrompt: (id: string, text: string, mode: PromptMode) => Promise<PromptResult>;
+  /** images 仅在有附件时作为第 4 参传入（保持旧 3 参 mock 兼容） */
+  sendPrompt: (id: string, text: string, mode: PromptMode, images?: string[]) => Promise<PromptResult>;
   onNotice?: (message: string) => void;
+}
+
+/** 有附件才带第 4 参，保持旧调用/测试的参数匹配不变 */
+function callSend(
+  deps: SendPromptDeps,
+  id: string,
+  text: string,
+  mode: PromptMode,
+  images?: string[],
+): Promise<PromptResult> {
+  return images && images.length > 0 ? deps.sendPrompt(id, text, mode, images) : deps.sendPrompt(id, text, mode);
 }
 
 export const BUSY_NOTICE = "会话正忙，消息已自动排队（followUp），将在本轮结束后发送。";
@@ -34,14 +46,15 @@ export async function sendPromptWithFallback(
   id: string,
   text: string,
   deps: SendPromptDeps,
+  images?: string[],
 ): Promise<SendPromptOutcome> {
   try {
-    const result = await deps.sendPrompt(id, text, "prompt");
+    const result = await callSend(deps, id, text, "prompt", images);
     return { result, busyFallback: false };
   } catch (err) {
     const isBusy = err instanceof ApiError && (err.status === 409 || err.code === "SESSION_BUSY");
     if (!isBusy) throw err;
-    const result = await deps.sendPrompt(id, text, "followUp");
+    const result = await callSend(deps, id, text, "followUp", images);
     deps.onNotice?.(BUSY_NOTICE);
     return { result, busyFallback: true };
   }
@@ -55,8 +68,9 @@ export async function sendPromptWithMode(
   text: string,
   mode: SendMode,
   deps: SendPromptDeps,
+  images?: string[],
 ): Promise<SendPromptOutcome> {
-  if (mode === "auto") return sendPromptWithFallback(id, text, deps);
-  const result = await deps.sendPrompt(id, text, mode);
+  if (mode === "auto") return sendPromptWithFallback(id, text, deps, images);
+  const result = await callSend(deps, id, text, mode, images);
   return { result, busyFallback: false };
 }

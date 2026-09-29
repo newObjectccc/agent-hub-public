@@ -13,7 +13,7 @@
  */
 import { ErrorCodes, HubError } from "../errors.js";
 import type { PromptResult } from "../sessions/hub.js";
-import type { MessageDto, SessionListItem, SessionSource, SessionStatus } from "../types.js";
+import type { MessageDto, PromptImageAttachment, SessionListItem, SessionSource, SessionStatus } from "../types.js";
 import type { ClaudeAdapter } from "./claude.js";
 import type { SessionAdapter } from "./types.js";
 
@@ -137,12 +137,17 @@ export class SessionRegistry {
     return adapter.forkSession(id);
   }
 
-  async prompt(id: string, text: unknown, modeRaw: unknown): Promise<PromptResult> {
+  async prompt(
+    id: string,
+    text: unknown,
+    modeRaw: unknown,
+    images?: PromptImageAttachment[],
+  ): Promise<PromptResult> {
     const adapter = await this.resolve(id);
     if (!adapter) {
       throw new HubError(ErrorCodes.SESSION_NOT_FOUND, `会话不存在: ${id}`, 404);
     }
-    return adapter.prompt(id, text, modeRaw);
+    return adapter.prompt(id, text, modeRaw, images);
   }
 
   async abort(id: string): Promise<void> {

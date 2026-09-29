@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { api } from "../api/client";
 import type { FsEntry } from "../api/types";
+import type { PanelKeyHandle } from "../utils/panelNav";
+import { handlePanelKeyNav } from "../utils/panelNav";
 
 export interface FileTreePanelProps {
   open: boolean;
@@ -9,6 +11,9 @@ export interface FileTreePanelProps {
   /** 确认插入：选中的相对路径（面板关闭） */
   onInsert: (paths: string[]) => void;
   onClose: () => void;
+  /** 最近引用文件（快捷区，点击直接插入） */
+  recent?: string[];
+  onPickRecent?: (path: string) => void;
 }
 
 /** rel 路径拼接（统一 / 分隔，根下就是 name） */
@@ -17,10 +22,14 @@ export function joinRel(path: string, name: string): string {
 }
 
 /**
- * @ 文件树多选面板：面包屑导航 + 搜索过滤 + 多选 + 插入 `@rel/path` 引用。
- * 只读（GET /api/fs/tree），.git/node_modules 默认隐藏可展开；野兽派风格，320-1024 响应式。
+ * @ 文件树面板（浮层贴输入框上方）：最近引用快捷区 + 面包屑导航 + 搜索过滤 +
+ * 多选 + 插入 `@rel/path` 引用。只读（GET /api/fs/tree）；键盘：搜索框 ↓ 进列表，
+ * 方向键循环、Tab 逐项、Enter 选中；.git/node_modules 默认隐藏可展开；320-1024 响应式。
  */
-export function FileTreePanel({ open, cwd, onInsert, onClose }: FileTreePanelProps) {
+export const FileTreePanel = forwardRef<PanelKeyHandle, FileTreePanelProps>(function FileTreePanel(
+  { open, cwd, onInsert, onClose, recent = [], onPickRecent },
+  ref,
+) {
   const [path, setPath] = useState("");
   const [q, setQ] = useState("");
   const [showHidden, setShowHidden] = useState(false);
@@ -31,6 +40,19 @@ export function FileTreePanel({ open, cwd, onInsert, onClose }: FileTreePanelPro
   /** 多选：rel 路径集合（跨目录保留，插入时按选中顺序） */
   const [selected, setSelected] = useState<string[]>([]);
   const seqRef = useRef(0);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      focusFirst: () => rootRef.current?.querySelector<HTMLElement>('[data-nav="1"]')?.focus(),
+      focusLast: () => {
+        const items = rootRef.current?.querySelectorAll<HTMLElement>('[data-nav="1"]');
+        items?.[items.length - 1]?.focus();
+      },
+    }),
+    [],
+  );
 
   // 打开时重置到根（保留上次多选清空）
   useEffect(() => {
@@ -79,16 +101,51 @@ export function FileTreePanel({ open, cwd, onInsert, onClose }: FileTreePanelPro
   }
 
   return (
-    <div className="ft-panel" role="dialog" aria-label="引用文件">
+    <div
+      className="ft-panel"
+      role="dialog"
+      aria-label="引用文件"
+      ref={rootRef}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          onClose();
+          return;
+        }
+        handlePanelKeyNav(e, rootRef.current);
+      }}
+    >
       <div className="ft-head">
         <span className="ft-title">@ 引用文件</span>
         <span className="ft-cwd" title={cwd}>
           {cwd}
         </span>
+        <span className="slash-hint-inline">↑↓ 选择 · Enter 插入 · Esc 关闭</span>
         <button type="button" className="ft-close" onClick={onClose} aria-label="关闭文件面板">
           ✕
         </button>
       </div>
+
+      {recent.length > 0 && (
+        <div className="ft-recents" aria-label="最近引用文件">
+          <div className="ft-recents-label">🕘 最近引用</div>
+          <div className="ft-recents-row">
+            {recent.map((refPath) => (
+              <button
+                key={refPath}
+                type="button"
+                data-nav="1"
+                className="ft-recent-chip"
+                title={refPath}
+                onClick={() => onPickRecent?.(refPath)}
+              >
+                <span aria-hidden="true">📄</span>
+                {refPath.split("/").pop()}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="ft-crumbs" aria-label="目录导航">
         {crumbs.map((c, i) => (
@@ -108,9 +165,15 @@ export function FileTreePanel({ open, cwd, onInsert, onClose }: FileTreePanelPro
       <input
         className="ft-search"
         value={q}
-        placeholder="按文件名过滤…"
+        placeholder="按文件名过滤…（↓ 进入列表）"
         aria-label="按文件名过滤"
         onChange={(e) => setQ(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "ArrowDown") {
+            e.preventDefault();
+            rootRef.current?.querySelector<HTMLElement>('.ft-list [data-nav="1"]')?.focus();
+          }
+        }}
       />
 
       <div className="ft-list">
@@ -124,18 +187,20 @@ export function FileTreePanel({ open, cwd, onInsert, onClose }: FileTreePanelPro
           return (
             <div key={rel} className={`ft-row${entry.hidden ? " hidden" : ""}`}>
               {isDir ? (
-                <button type="button" className="ft-dir" onClick={() => setPath(rel)}>
-                  <span className="ft-icon">▸</span>
+                <button type="button" data-nav="1" className="ft-dir" onClick={() => setPath(rel)}>
+                  <span className="ft-icon">📁</span>
                   <span className="ft-name">{entry.name}</span>
                   <span className="ft-tag">目录</span>
                 </button>
               ) : (
                 <button
                   type="button"
+                  data-nav="1"
                   className={`ft-file${checked ? " checked" : ""}`}
                   aria-pressed={checked}
                   onClick={() => toggleSelect(rel)}
                 >
+                  <span className="ft-icon">📄</span>
                   <span className="ft-check">{checked ? "☑" : "☐"}</span>
                   <span className="ft-name">{entry.name}</span>
                   {entry.hidden && <span className="ft-tag">隐藏</span>}
@@ -176,4 +241,4 @@ export function FileTreePanel({ open, cwd, onInsert, onClose }: FileTreePanelPro
       </div>
     </div>
   );
-}
+});
