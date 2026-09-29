@@ -2,7 +2,7 @@
  * SessionHub：pi SDK 集成核心。
  * - 每个活跃会话一个 AgentSession 实例（内存记录运行态 idle|running|error）
  * - prompt 正忙且 mode 缺省 → SESSION_BUSY（由 prompt-policy 决策）
- * - 事件翻译为 docs/API_CONTRACT.md §4 的 WS 事件
+ * - 事件翻译为 docs/API_CONTRACT.md §6 的 WS 事件
  * - 进程退出时 disposeAll() 回收全部实例
  */
 import { randomBytes } from "node:crypto";
@@ -15,7 +15,7 @@ import {
   type AgentSessionEvent,
 } from "@earendil-works/pi-coding-agent";
 import { ErrorCodes, HubError } from "../errors.js";
-import type { MessageDto, MessageRole, SearchResultDto, ServerEvent, SessionListItem, SessionStatus, SessionTreeDto, ToolCallStatus } from "../types.js";
+import type { HubActivity, MessageDto, MessageRole, SearchResultDto, ServerEvent, SessionListItem, SessionStatus, SessionTreeDto, ToolCallStatus } from "../types.js";
 import { decidePromptAction, parsePromptMode, type PromptMode } from "./prompt-policy.js";
 import { SearchService, SEARCH_DEFAULT_LIMIT } from "./search.js";
 import { inferExternalStatus } from "./tail.js";
@@ -82,6 +82,8 @@ export class SessionHub {
   private readonly feedSessions = new Map<string, number>();  private disposed = false;
   /** 会话转 live 时回调（用于停掉文件 tail，保持单一推送源，防重复气泡） */
   onLive?: (id: string) => void;
+  /** 会话运行活动回调（steering=插话/排队、done=手动中止，供通知聚合） */
+  onActivity?: (sessionId: string, activity: HubActivity) => void;
 
   /** live-feed 活跃窗口：超过此时长无事件则重新允许文件 tail（pi 退出后自愈） */
   static readonly FEED_TTL_MS = 10 * 60_000;
@@ -125,6 +127,11 @@ export class SessionHub {
     const own = this.statuses.get(id);
     if (own && own !== "idle") return own;
     return inferExternalStatus(updatedMs);
+  }
+
+  /** 对外暴露的状态推断（dashboard 统计注入运行态用） */
+  statusFor(id: string, updatedMs: number): SessionStatus {
+    return this.statusWithInference(id, updatedMs);
   }
 
   private setStatus(id: string, status: SessionStatus): void {
@@ -269,6 +276,13 @@ export class SessionHub {
     }
 
     this.setStatus(id, "running");
+    if (decision.kind === "steer" || decision.kind === "followUp") {
+      // 插话/排队：通知聚合（kind=steering）
+      this.onActivity?.(id, {
+        kind: "steering",
+        text: `收到${decision.kind === "steer" ? "插话" : "排队消息"}：${truncateText(text, 80)}`,
+      });
+    }
     const run = (async () => {
       try {
         if (decision.kind === "steer") {
@@ -296,6 +310,7 @@ export class SessionHub {
     if (!live) return;
     await live.session.abort();
     this.setStatus(id, "idle");
+    this.onActivity?.(id, { kind: "done", text: "已手动中止本轮运行" });
   }
 
   /** 手动压缩上下文 */

@@ -1,11 +1,14 @@
 import type { MutableRefObject } from "react";
 import type { SessionSummary } from "../api/types";
+import { useFirstSeen } from "../hooks/useFirstSeen";
+import { sessionTitle, shortPath } from "../utils/display";
 import { relativeTime } from "../utils/relativeTime";
 import { GitStatusBadge } from "./GitStatusBadge";
 import { SourceBadge } from "./SourceBadge";
 import { StatusBadge } from "./StatusBadge";
 import { Button } from "./ui/button";
 import { VirtualList } from "./VirtualList";
+import { cn } from "@/lib/utils";
 
 /** 固定行高（px，含 12px 行间距），必须与 CSS .session-row 高度一致 */
 export const SESSION_ITEM_HEIGHT = 150;
@@ -22,16 +25,22 @@ export interface SessionListProps {
   /** 恢复的列表滚动位置 */
   initialScrollTop?: number;
   onScrollTop?: (top: number) => void;
+  /** 跨卸载持久的 seen 容器（空分类 tab 往返不重播进场动画，AC3-b） */
+  seenIds?: Set<string>;
 }
 
-/** 按 updatedAt 倒序排列（与契约一致），非法时间排最后 */
+/**
+ * 按 updatedAt 倒序排列（与契约一致），非法时间排最后。
+ * 同时间用 id 升序确定性 tiebreaker：无论输入顺序，输出顺序唯一，刷新绝不重排（AC3-a）。
+ */
 export function sortSessions(sessions: SessionSummary[]): SessionSummary[] {
   return sessions.slice().sort((a, b) => {
     const ta = Date.parse(a.updatedAt);
     const tb = Date.parse(b.updatedAt);
     const va = Number.isNaN(ta) ? -Infinity : ta;
     const vb = Number.isNaN(tb) ? -Infinity : tb;
-    return vb - va;
+    if (vb !== va) return vb - va;
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
   });
 }
 
@@ -39,22 +48,9 @@ function summaryOf(s: SessionSummary): string {
   return s.lastAssistantMessage ?? s.lastUserMessage ?? "暂无对话内容";
 }
 
-/** 标题优先级：会话 name > 文件夹名（basename(cwd)）> id 前缀 */
-function titleOf(s: SessionSummary): string {
-  if (s.name && s.name.trim() !== "") return s.name.trim();
-  const base = s.cwd.replace(/[\\/]$/, "").split(/[\\/]/).filter(Boolean).pop();
-  return base && base !== "" ? base : s.id.slice(0, 8);
-}
-
-/** 路径缩写：$HOME → ~，只用于副标题（完整路径在 title 提示/详情中查看） */
-function shortPath(cwd: string): string {
-  // 把 /Users/<user> 或 /home/<user> 前缀缩为 ~
-  return cwd.replace(/^\/(Users|home)\/[^/]+/, "~");
-}
-
 /**
- * 会话列表：标题（name>文件夹名）、缩写路径、状态徽章、最后对话摘要、相对时间。
- * 虚拟滚动：固定行高窗口化渲染，几百会话滚动流畅（DOM 节点数恒定）。
+ * 会话列表：标题（name>文件夹名）、缩写路径、来源徽章、git 状态、状态徽章、摘要、相对时间。
+ * 虚拟滚动（固定行高窗口化）× 动画克制（进场只播首次插入，key 稳定 s.id）。
  */
 export function SessionList({
   sessions,
@@ -64,8 +60,10 @@ export function SessionList({
   scrollRef,
   initialScrollTop,
   onScrollTop,
+  seenIds,
 }: SessionListProps) {
   const sorted = sortSessions(sessions);
+  const newIds = useFirstSeen(sorted.map((s) => s.id), seenIds);
   return (
     <VirtualList
       items={sorted}
@@ -78,12 +76,18 @@ export function SessionList({
       scrollRef={scrollRef}
       initialScrollTop={initialScrollTop}
       onScrollTop={onScrollTop}
-      renderItem={(s) => (
+      renderItem={(s, index) => (
         <div className="session-row">
-          <Button type="button" role="listitem" className="session-item" onClick={() => onSelect(s)}>
+          <Button
+            type="button"
+            role="listitem"
+            className={cn("session-item", newIds.has(s.id) && "enter")}
+            style={newIds.has(s.id) ? { animationDelay: `${Math.min(index, 6) * 30}ms` } : undefined}
+            onClick={() => onSelect(s)}
+          >
             <div className="session-head">
               <span className="session-name" title={s.name && s.name.trim() !== "" ? s.name : s.cwd}>
-                {titleOf(s)}
+                {sessionTitle(s)}
               </span>
               <SourceBadge source={s.source} />
               <StatusBadge status={s.status} />

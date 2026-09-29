@@ -3,7 +3,8 @@
  * 错误统一为 { error: { code, message } }，这里归一为 ApiError。
  */
 import type {
-  KpiResponse,
+  DashboardStats,
+  NotificationListResponse,
   PromptResult,
   SearchResponse,
   SessionDetail,
@@ -103,8 +104,19 @@ export const api = {
     });
   },
 
-  getKpi(): Promise<KpiResponse> {
-    return request("/api/kpi");
+  getDashboardStats(): Promise<DashboardStats> {
+    return request("/api/dashboard/stats");
+  },
+
+  getNotifications(): Promise<NotificationListResponse> {
+    return request("/api/notifications");
+  },
+
+  markNotificationsRead(): Promise<{ ok: boolean; unreadCount: number }> {
+    return request("/api/notifications/read", {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
   },
 
   getSystem(): Promise<SystemStatus> {

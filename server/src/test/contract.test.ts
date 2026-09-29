@@ -4,12 +4,14 @@
  * 2. 409 错误体严格 {error:{code:"SESSION_BUSY",message}}
  * 3. WS 事件 type 集合与字段名严格按 docs/API_CONTRACT.md §4 表格
  */
+import { makeFakeDashboard } from "./fakeDashboard.js";
 import { strict as assert } from "node:assert";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { DEFAULT_CONFIG, type HubConfig } from "../config.js";
+import type { DashboardServiceLike } from "../dashboard.js";
 import { createApp } from "../index.js";
 import type { SessionHubLike } from "../routes.js";
 import { SessionHub } from "../sessions/hub.js";
@@ -56,6 +58,7 @@ function makeFakeHub(promptResult: PromptResult, overrides: Partial<SessionHubLi
   };
 }
 
+
 describe("contract: SPA history fallback", () => {
   let webRoot: string;
   let app: Awaited<ReturnType<typeof createApp>>;
@@ -68,6 +71,7 @@ describe("contract: SPA history fallback", () => {
     await writeFile(join(webRoot, "assets", "app.js"), "console.log(1)");
     app = await createApp({
       hub: makeFakeHub({ accepted: true, mode: "prompt" }),
+      dashboard: makeFakeDashboard(),
       kpi: { getCards: () => [] },
       config,
       systemInfo: async () => systemFixture,
@@ -138,6 +142,7 @@ describe("contract: GET /api/search 与 GET /api/sessions/:id/tree", () => {
   async function makeApp(hub: SessionHubLike): Promise<Awaited<ReturnType<typeof createApp>>> {
     return createApp({
       hub,
+      dashboard: makeFakeDashboard(),
       kpi: { getCards: () => [] },
       config: { ...DEFAULT_CONFIG },
       systemInfo: async () => systemFixture,
@@ -212,6 +217,7 @@ describe("contract: POST prompt 409 SESSION_BUSY", () => {
     app = await createApp({
       hub: makeFakeHub({ accepted: false, mode: "prompt", busy: true }),
       kpi: { getCards: () => [] },
+      dashboard: makeFakeDashboard(),
       config: { ...DEFAULT_CONFIG },
       systemInfo: async () => systemFixture,
       webRoot: null,
@@ -241,6 +247,7 @@ describe("contract: POST prompt 409 SESSION_BUSY", () => {
     const okApp = await createApp({
       hub: makeFakeHub({ accepted: true, mode: "steer" }),
       kpi: { getCards: () => [] },
+      dashboard: makeFakeDashboard(),
       config: { ...DEFAULT_CONFIG },
       systemInfo: async () => systemFixture,
       webRoot: null,
@@ -411,6 +418,7 @@ describe("contract: 统一 404 错误信封（web/dist 缺失时也生效）", (
   before(async () => {
     app = await createApp({
       hub: makeFakeHub({ accepted: true, mode: "prompt" }),
+      dashboard: makeFakeDashboard(),
       kpi: { getCards: () => [] },
       config: { ...DEFAULT_CONFIG },
       systemInfo: async () => systemFixture,
@@ -454,6 +462,7 @@ describe("contract: GET /api/sessions/:id 消息分页（?before=&limit=）", ()
     const base = makeFakeHub({ accepted: true, mode: "prompt" });
     app = await createApp({
       hub: { ...base, loadMessages: async () => pageMessages } as SessionHubLike,
+      dashboard: makeFakeDashboard(),
       kpi: { getCards: () => [] },
       config: { ...DEFAULT_CONFIG },
       systemInfo: async () => systemFixture,

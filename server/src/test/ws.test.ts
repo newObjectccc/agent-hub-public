@@ -8,6 +8,7 @@ import type { AddressInfo } from "node:net";
 import { describe, it } from "node:test";
 import { WebSocket } from "ws";
 import { DEFAULT_CONFIG } from "../config.js";
+import type { DashboardServiceLike } from "../dashboard.js";
 import { createApp } from "../index.js";
 import type { SessionHub } from "../sessions/hub.js";
 import type { SessionHubLike } from "../routes.js";
@@ -61,10 +62,31 @@ function makeFakeHub(promptCalls: PromptCall[]): SessionHubLike {
   };
 }
 
+function makeFakeDashboard(): DashboardServiceLike {
+  return {
+    getStats: async () => ({
+      working: 0,
+      needAttention: 0,
+      todayDone: 0,
+      todayMessages: 0,
+      weekCommits: 0,
+      streak: 0,
+      weekMessages: 0,
+      weekDone: 0,
+      todayDoneSessions: [],
+      workingSessions: [],
+      attentionSessions: [],
+    }),
+    listNotifications: async () => ({ notifications: [], unreadCount: 0 }),
+    markAllRead: async () => undefined,
+  };
+}
+
 async function startServer(promptCalls: PromptCall[]) {
   const app = await createApp({
     hub: makeFakeHub(promptCalls),
     kpi: { getCards: () => [] },
+    dashboard: makeFakeDashboard(),
     config: { ...DEFAULT_CONFIG },
     systemInfo: async () => systemFixture,
     webRoot: null,

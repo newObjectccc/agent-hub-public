@@ -384,7 +384,11 @@ export async function scanSessions(sessionDir: string, options: ScanOptions = {}
       // 单个文件损坏不影响其它会话
     }
   }
-  items.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+  // 确定性 tiebreaker：updatedAt 相同时按 id 升序（与 web sortSessions 口径一致，刷新绝不重排）
+  items.sort((a, b) => {
+    const d = Date.parse(b.updatedAt) - Date.parse(a.updatedAt);
+    return d !== 0 ? d : a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  });
   return items;
 }
 
@@ -398,4 +402,65 @@ export async function findSessionById(sessionDir: string, id: string, options: S
 export async function loadSessionMessages(file: string): Promise<MessageDto[]> {
   const parsed = parseSessionJsonl(await readSessionFile(file));
   return buildMessages(selectActiveBranch(parsed.entries));
+}
+
+/**
+ * 会话深度洞察（dashboard/通知聚合用）：摘要 + active branch 消息 +
+ * 推导字段（最后消息角色 / 最近工具摘要 / 当前 run 起点）。
+ */
+export interface SessionInsight {
+  summary: SessionListItem;
+  messages: MessageDto[];
+  /** active branch 最后一条 user/assistant 消息的 role（无消息为 null） */
+  lastMessageRole: MessageRole | null;
+  /** 最近一次工具调用摘要（最后一条带 toolCalls 的 assistant 消息里最后一个） */
+  lastToolSummary: string | null;
+  /** 当前 run 起点（active branch 最后一条用户消息时间，ISO） */
+  lastRunStartedAt: string | null;
+}
+
+/** 摘要 + active branch 消息 → 洞察（纯函数） */
+export function buildInsight(summary: SessionListItem, messages: MessageDto[]): SessionInsight {
+  let lastMessageRole: MessageRole | null = null;
+  let lastToolSummary: string | null = null;
+  let lastRunStartedAt: string | null = null;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const m = messages[i];
+    if (lastMessageRole === null && (m.role === "user" || m.role === "assistant")) {
+      lastMessageRole = m.role;
+    }
+    if (lastRunStartedAt === null && m.role === "user") {
+      lastRunStartedAt = m.timestamp > 0 ? new Date(m.timestamp).toISOString() : null;
+    }
+    if (lastToolSummary === null && m.toolCalls.length > 0) {
+      lastToolSummary = m.toolCalls[m.toolCalls.length - 1].summary;
+    }
+    if (lastMessageRole !== null && lastToolSummary !== null && lastRunStartedAt !== null) break;
+  }
+  return { summary, messages, lastMessageRole, lastToolSummary, lastRunStartedAt };
+}
+
+/** 扫描全部会话的深度洞察（每个文件一次读写：摘要 + 消息 + 推导字段） */
+export async function scanSessionInsights(sessionDir: string, options: ScanOptions = {}): Promise<SessionInsight[]> {
+  const files = await findSessionFiles(sessionDir);
+  const items: SessionInsight[] = [];
+  for (const file of files) {
+    try {
+      const fileStat = await stat(file);
+      const parsed = parseSessionJsonl(await readSessionFile(file));
+      const summaryBase = buildSessionSummary(file, parsed, fileStat.mtimeMs);
+      if (!summaryBase) continue;
+      const status = options.statusOf ? options.statusOf(summaryBase.id, Date.parse(summaryBase.updatedAt)) : "idle";
+      const summary: SessionListItem = { ...summaryBase, status };
+      const messages = buildMessages(selectActiveBranch(parsed.entries));
+      items.push(buildInsight(summary, messages));
+    } catch {
+      // 单个文件损坏不影响其它会话
+    }
+  }
+  items.sort((a, b) => {
+    const d = Date.parse(b.summary.updatedAt) - Date.parse(a.summary.updatedAt);
+    return d !== 0 ? d : a.summary.id < b.summary.id ? -1 : a.summary.id > b.summary.id ? 1 : 0;
+  });
+  return items;
 }

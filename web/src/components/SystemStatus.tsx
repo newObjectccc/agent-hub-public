@@ -43,6 +43,7 @@ export function SystemStatusBar({ system }: { system: SystemStatus | null }) {
       />
       <Chip label="tmux" available={system.tmux?.available === true} detail={system.tmux?.version} />
       <Chip label="ttyd" available={system.ttyd?.available === true} detail={system.ttyd?.version} />
+      <Chip label="claude" available={system.claude?.available === true} detail={system.claude?.version} />
       <Chip
         label="tailscale"
         available={system.tailscale?.available === true}

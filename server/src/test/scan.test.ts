@@ -181,3 +181,28 @@ describe("scan: JSONL 解析与列表项", () => {
     assert.equal(summary.lastAssistantMessage, null);
   });
 });
+
+describe("scan: 确定性排序 tiebreaker（AC3-a）", () => {
+  it("updatedAt 相同的会话无论输入顺序输出恒定（id 升序）", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agent-hub-sort-"));
+    try {
+      const ts = "2026-02-18T12:00:00.000Z";
+      for (const id of ["zz", "aa", "mm"]) {
+        await writeFile(
+          join(dir, `${id}.jsonl`),
+          [
+            JSON.stringify({ type: "session", version: 3, id, timestamp: ts, cwd: "/tmp/x" }),
+            JSON.stringify({ type: "message", id: "m1", parentId: null, timestamp: ts, message: { role: "user", content: "hi" } }),
+          ].join("\n"),
+          "utf8",
+        );
+      }
+      const a = await scanSessions(dir);
+      const b = await scanSessions(dir);
+      assert.deepEqual(a.map((x) => x.id), ["aa", "mm", "zz"]);
+      assert.deepEqual(b.map((x) => x.id), a.map((x) => x.id), "两次扫描顺序必须一致");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});

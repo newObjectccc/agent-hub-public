@@ -6,6 +6,7 @@
  * 4. 共享密钥：auth.token 非空校验 Bearer，空则放行
  */
 import { strict as assert } from "node:assert";
+import { makeFakeDashboard } from "./fakeDashboard.js";
 import type { AddressInfo } from "node:net";
 import { describe, it } from "node:test";
 import { WebSocket } from "ws";
@@ -199,6 +200,7 @@ describe("live: POST /api/live/:sessionId → WS 广播（fake WS 断言）", ()
     const wshub = new WsHub();
     const ingest = new LiveIngest({ emit: (sid, ev) => wshub.broadcast(sid, ev), ...deps });
     const app = await createApp({
+      dashboard: makeFakeDashboard(),
       hub: makeFakeHub(),
       kpi: { getCards: () => [] },
       config: { ...DEFAULT_CONFIG, auth: { enabled: false, token } },

@@ -4,3 +4,4 @@ dist/
 .DS_Store
 config/hub.config.local.json
 .env
+data/

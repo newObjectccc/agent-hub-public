@@ -15,9 +15,10 @@ import { findClaudeSessionFiles } from "./adapters/claude-transcript.js";
 import { PiAdapter } from "./adapters/pi.js";
 import { SessionRegistry } from "./adapters/registry.js";
 import { loadHubConfig, type HubConfig } from "./config.js";
+import { DashboardService } from "./dashboard.js";
 import { KpiService } from "./kpi.js";
 import { LiveIngest } from "./live.js";
-import { configDir, webDistDir } from "./paths.js";
+import { configDir, dataDir, webDistDir } from "./paths.js";
 import { registerRoutes, type RouteDeps, type SessionHubLike } from "./routes.js";
 import { SessionHub } from "./sessions/hub.js";
 import { PresenceWatcher } from "./sessions/presence.js";
@@ -44,8 +45,9 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
     config: options.config,
     systemInfo: options.systemInfo,
     git: options.git,
-    live: options.live,  });
-
+    live: options.live,
+    dashboard: options.dashboard,
+  });
   // 静态托管 web/dist（存在时），单进程即可服务 PWA
   const root = options.webRoot ?? null;
   const hasWeb = root !== null && existsSync(join(root, "index.html"));
@@ -82,13 +84,29 @@ export async function startHub(): Promise<StartedHub> {
   }
 
   const wshub = new WsHub();
-  const emit = (sessionId: string, event: ServerEvent): void => wshub.broadcast(sessionId, event);
+  // 统一事件出口：通知聚合（settled/error + 最后输出摘要）+ WS 推送 +
+  // 全局 status 变更广播（首页运行看板实时刷新）
+  const emit = (sessionId: string, event: ServerEvent): void => {
+    dashboard.recordEvent(sessionId, event);
+    if (event.type === "status") {
+      wshub.broadcastGlobal({ type: "session_status", sessionId, status: event.status });
+    }
+    wshub.broadcast(sessionId, event);
+  };
   const piHub = new SessionHub(config.sessionDir, emit);
   // Claude Code 会话来源：~/.claude/projects/<encoded-cwd>/<uuid>.jsonl + history.jsonl
   const claudeProjectsDir = join(homedir(), ".claude", "projects");
   const claudeHistoryFile = join(homedir(), ".claude", "history.jsonl");
   const claudeAdapter = new ClaudeAdapter({ projectsDir: claudeProjectsDir, historyFile: claudeHistoryFile, emit });
   const hub = new SessionRegistry(new PiAdapter(piHub), claudeAdapter);
+  const dashboard = new DashboardService({
+    sessionDir: config.sessionDir,
+    workspaceRoot: config.workspaceRoot,
+    storeFile: join(dataDir, "notifications-read.json"),
+    statusOf: (id, updatedMs) => piHub.statusFor(id, updatedMs),
+    onNotification: (item) => wshub.broadcastGlobal({ type: "notification", notification: item }),
+  });
+  piHub.onActivity = (sessionId, activity) => dashboard.recordActivity(sessionId, activity);
   const kpi = new KpiService({ configDir, kpiRefreshMinutes: config.kpiRefreshMinutes });
   // pi 扩展 live-feed 接入：终端 pi 会话的 token 级实时流（契约 §6）
   const liveIngest = new LiveIngest({
@@ -102,6 +120,7 @@ export async function startHub(): Promise<StartedHub> {
   const app = await createApp({
     hub,
     kpi,
+    dashboard,
     config,
     live: liveIngest,
     webRoot: webDistDir,
@@ -111,7 +130,7 @@ export async function startHub(): Promise<StartedHub> {
   });
 
   await app.listen({ port: config.port, host: config.host });
-  const tails = new SessionTailManager((sessionId, event) => wshub.broadcast(sessionId, event));
+  const tails = new SessionTailManager((sessionId, event) => emit(sessionId, event));
   // 会话一旦由本进程接管（live），停掉文件 tail，避免双推送源产生重复气泡
   hub.onLive = (sid) => tails.detach(sid);
   wshub.attach(app.server, hub, tails);

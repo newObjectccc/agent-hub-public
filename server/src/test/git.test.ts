@@ -7,6 +7,7 @@
  * 5. 只读硬保证：git.ts 源码不含任何 git 写子命令
  */
 import { strict as assert } from "node:assert";
+import { makeFakeDashboard } from "./fakeDashboard.js";
 import { readFile, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -433,6 +434,7 @@ describe("git: 路由（契约 §6 信封）", () => {
     await mkdir(join(repoDir, "src"), { recursive: true });
     await writeFile(join(repoDir, "src", "a.ts"), "export const a = 1;\n");
     app = await createApp({
+      dashboard: makeFakeDashboard(),
       hub: fakeHub,
       kpi: { getCards: () => [] },
       config: { ...DEFAULT_CONFIG },
