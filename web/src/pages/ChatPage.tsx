@@ -571,7 +571,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
               aria-label="消息输入框"
             />
           </div>
-          <Button type="button" onClick={() => void doSend()} disabled={sending || !input.trim()} aria-label="发送">
+          <Button type="button" className="send-btn" onClick={() => void doSend()} disabled={sending || !input.trim()} aria-label="发送">
             {sending ? (
               <>
                 <span className="spinner" />

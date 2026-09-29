@@ -2606,10 +2606,19 @@ button.git-bar:active {  transform: translate(2px, 2px);
 
 /* ---------- r4：slash 命令面板 / @ 文件树面板 / 引用条 / 消息图片 ---------- */
 
-/* 输入框容器：占满剩余宽度（320 窄屏不横向溢出） */
+/* 输入框容器：占满剩余宽度（320 窄屏不横向溢出；放不下时发送/中止换行） */
 .chat-textarea-wrap {
-  flex: 1;
-  min-width: 0;
+  flex: 1 1 200px;
+  min-width: 160px;
+}
+
+/* 窄屏（<468px 行放不下全部控件）：发送/中止换到第二行右对齐 */
+.chat-input-row {
+  flex-wrap: wrap;
+}
+
+.chat-input-row .send-btn {
+  margin-left: auto;
 }
 
 /* ---------- 引用条（长按消息 → 引用；发送时拼 Markdown `> `） ---------- */
