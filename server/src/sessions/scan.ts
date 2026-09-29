@@ -280,25 +280,32 @@ export function sessionName(entries: RawEntry[]): string | null {
 /** pi-subagents 派生子代理会话的命名规则：`<type>#<id>`，如 developer#abc123 / acceptance-reviewer#f81d33aa */
 export const SUB_AGENT_NAME_RE = /^[a-z0-9-]+#[0-9a-f]{6,}$/;
 
-/** 入口消息里的 pi-subagents 派生特征（system preamble / 首条任务描述） */
-const SUB_AGENT_MARKERS = ["<sub_agent_context>", "<active_agent name=", "pi-subagents"];
+/** pi-subagents 注入的固定结构标记（只出现在派生会话的 system preamble；主会话不可能自带） */
+const SUB_AGENT_STRUCTURAL_MARKERS = ["<sub_agent_context>", "<active_agent name="];
 
 /** 仅按命名规则判定（claude 等无 entries 场景的轻量判定） */
 export function isSubAgentName(name: string | null): boolean {
   return name !== null && SUB_AGENT_NAME_RE.test(name.trim());
 }
 
-/** 入口消息（前 10 条 message）是否含 pi-subagents 派生特征 */
+/**
+ * 结构标记检测（pi/claude 同口径共用）：
+ * 只认 preamble 文本中的 `<sub_agent_context>` / `<active_agent name=` 结构标记。
+ * 消息正文提及（讨论/引述 pi-subagents、贴出标记字符串）一概不算，防主会话误标。
+ */
+export function hasSubAgentPreambleMarker(preamble: string): boolean {
+  return SUB_AGENT_STRUCTURAL_MARKERS.some((marker) => preamble.includes(marker));
+}
+
+/** 入口（前 10 条 message）的 system 角色 preamble 是否含派生结构标记 */
 function hasSubAgentMarker(entries: RawEntry[]): boolean {
-  const scanned = entries.slice(0, 10);
-  for (const entry of scanned) {
+  for (const entry of entries.slice(0, 10)) {
     if (entry.type !== "message" || !isRecord(entry.message)) continue;
     const message = entry.message;
-    const parts: string[] = [contentToText(message.content)];
+    if (message.role !== "system") continue;
     const sections = message.sections;
-    if (isRecord(sections) && typeof sections.preamble === "string") parts.push(sections.preamble);
-    const text = parts.join("\n");
-    if (SUB_AGENT_MARKERS.some((marker) => text.includes(marker))) return true;
+    const preamble = isRecord(sections) && typeof sections.preamble === "string" ? sections.preamble : "";
+    if (hasSubAgentPreambleMarker(preamble)) return true;
   }
   return false;
 }

@@ -10,6 +10,7 @@ import {
   buildMessages,
   buildSessionSummary,
   encodeCwdDirName,
+  hasSubAgentPreambleMarker,
   isSubAgentName,
   isSubAgentSession,
   parseSessionJsonl,
@@ -273,5 +274,33 @@ describe("scan: 子代理会话识别（isSubAgent）", () => {
       Date.parse("2026-02-18T10:00:02.000Z"),
     );
     assert.equal(main?.isSubAgent, false);
+  });
+});
+
+describe("AC4 零误检：主会话内容提及不算子代理", () => {
+  const systemPreamble = { type: "message", id: "s0", parentId: null, timestamp: "2026-01-01T00:00:00.000Z", message: { role: "system", content: "", sections: { preamble: "You are an expert coding assistant operating inside pi, a coding agent harness." } } };
+  const mkUser = (id: string, text: string) => ({ type: "message", id, parentId: null, timestamp: "2026-01-01T00:00:01.000Z", message: { role: "user", content: text } });
+
+  it("主会话消息正文提及 pi-subagents / 标记字符串 → isSubAgent=false", () => {
+    const entries = [
+      systemPreamble,
+      mkUser("u1", "https://github.com/tintinweb/pi-subagents 这个库，我安装了这个插件"),
+      mkUser("u2", '引述文档：<sub_agent_context> 和 <active_agent name="x"> 是什么'),
+    ];
+    assert.equal(isSubAgentSession(null, entries as never), false);
+  });
+
+  it("system preamble 含结构标记 → isSubAgent=true", () => {
+    const entries = [
+      { type: "message", id: "s0", parentId: null, timestamp: "2026-01-01T00:00:00.000Z", message: { role: "system", content: "", sections: { preamble: "<sub_agent_context>\n<active_agent name=\"developer\">" } } },
+    ];
+    assert.equal(isSubAgentSession(null, entries as never), true);
+  });
+
+  it("命名规则 <type>#<hex> 仍判定为子代理", () => {
+    assert.equal(isSubAgentName("developer#abc123"), true);
+    assert.equal(isSubAgentName("pi-seksun-KPI"), false);
+    assert.equal(hasSubAgentPreambleMarker("普通 preamble"), false);
+    assert.equal(hasSubAgentPreambleMarker("x <active_agent name=\"a\"> y"), true);
   });
 });
