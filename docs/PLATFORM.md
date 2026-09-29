@@ -54,3 +54,25 @@ node cli/setup.js --autostart      # 写入 ~/.config/systemd/user/agent-hub.ser
 | Tailscale | `node cli/start.js --tailscale` | 出门在外（需 Tailscale + Serve） |
 
 > 安全：除以上模式外 server 只绑 127.0.0.1。不要把端口直接暴露到公网。
+
+### Tailscale 实操（macOS 实测可用配置）
+
+macOS 上 Tailscale Serve 的 **HTTP/HTTPS 代理组件**在部分环境不可用
+（报 `501 Not Implemented` 或代理链路 502），推荐用**纯 TCP 转发**，手机浏览器
+直接访问即可（server 不校验 Host）：
+
+```bash
+# macOS GUI 版 CLI（standalone wrapper 可能有 bundle 报错，用 app 内二进制）
+TS=/Applications/Tailscale.app/Contents/MacOS/Tailscale
+$TS serve --bg --tcp=4700 tcp://127.0.0.1:7700
+$TS serve status   # 确认 tcp://<host>:4700 → tcp://127.0.0.1:7700
+```
+
+手机（已连 Tailscale）访问：`http://<你的设备名>.<tailnet>.ts.net:4700`（或 tailscale IP:4700）。
+
+**排查坑**：若 curl 返回 502，先检查本地代理劫持——
+`curl --noproxy '*' <url>` 再测一次（Clash/`http_proxy` 会把内网域名交给上游代理）。
+
+**PWA 安装**：HTTP 模式下安卓 Chrome 菜单“添加到主屏幕”可作快捷方式使用；
+要完整 standalone 安装需 HTTPS——在 Tailscale admin console 开启 HTTPS Certificates
+后改用 `$TS serve --bg --https=443 --terminate-tls=<host> http://127.0.0.1:7700`。
