@@ -47,6 +47,8 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
   const messagesRef = useRef<SessionMessage[]>([]);
   const hasMoreRef = useRef(false);
   const loadingOlderRef = useRef(false);
+  /** 用户是否停在底部（不在底部时不自动滚底，避免与读历史冲突） */
+  const stickToBottomRef = useRef(true);
   /** 前插更早消息后按锚点恢复滚动位置（不触发自动滚底） */
   const pendingRestoreRef = useRef<{ height: number; top: number } | null>(null);
 
@@ -115,7 +117,15 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
       el.scrollTop = el.scrollHeight - restore.height + restore.top;
       return;
     }
-    bottomRef.current?.scrollIntoView?.({ behavior: "smooth", block: "end" });
+    if (!stickToBottomRef.current || !bottomRef.current) return;
+    // 大跨度跳到底部用瞬时滚动：避免平滑动画穿过顶部误触发"加载更早"
+    if (el) {
+      const target = el.scrollHeight - el.clientHeight;
+      const behavior: ScrollBehavior = Math.abs(target - el.scrollTop) > el.clientHeight ? "auto" : "smooth";
+      bottomRef.current.scrollIntoView?.({ behavior, block: "end" });
+    } else {
+      bottomRef.current.scrollIntoView?.({ behavior: "smooth", block: "end" });
+    }
   }, [messages]);
 
   const handleEvent = useCallback(
@@ -245,6 +255,8 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
         ref={scrollRef}
         onScroll={(e) => {
           const el = e.currentTarget;
+          // 停在底部附近才跟随新消息；向上翻历史时不被拉回
+          stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 160;
           if (shouldLoadOlder({ scrollTop: el.scrollTop, hasMore: hasMoreRef.current, loading: loadingOlderRef.current })) {
             void loadOlder();
           }

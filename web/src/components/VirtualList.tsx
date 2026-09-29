@@ -61,13 +61,24 @@ export function VirtualList<T>({
     return () => window.removeEventListener("resize", measure);
   }, []);
 
-  // 列表 scrollTop 记忆：首挂载恢复一次
+  // 列表 scrollTop 记忆：数据就绪后恢复一次（items 未到时内容高度不足，恢复会被 clamp）
   useEffect(() => {
     const el = localRef.current;
-    if (!el || restoredRef.current) return;
+    if (!el || restoredRef.current || items.length === 0) return;
     restoredRef.current = true;
-    if (initialScrollTop && initialScrollTop > 0) el.scrollTop = initialScrollTop;
-  }, [initialScrollTop]);
+    if (initialScrollTop && initialScrollTop > 0) {
+      el.scrollTop = initialScrollTop;
+      // 同步窗口计算基准（浏览器会 clamp，读回实际值）
+      setScrollTop(el.scrollTop);
+      // Chrome scroll anchoring / 窗口渲染重组可能挤动 scrollTop，帧末校正一次
+      requestAnimationFrame(() => {
+        if (Math.abs(el.scrollTop - initialScrollTop) > 40) {
+          el.scrollTop = initialScrollTop;
+          setScrollTop(el.scrollTop);
+        }
+      });
+    }
+  }, [items.length, initialScrollTop]);
 
   const win = computeVirtualWindow({
     count: items.length,

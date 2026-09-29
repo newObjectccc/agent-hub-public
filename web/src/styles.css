@@ -394,6 +394,11 @@ a {
 }
 
 /* ---------- 会话列表（虚拟滚动：固定行高 150px） ---------- */
+/* 虚拟滚动容器通用：窗口化渲染自行管理锚点 */
+.virtual-scroll {
+  overflow-anchor: none;
+}
+
 .session-list-scroll {
   max-height: min(62vh, 640px);
   overflow-y: auto;
@@ -653,6 +658,8 @@ a {
   padding: 14px;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
+  /* 前插历史自己做锚点恢复，关闭浏览器 scroll anchoring */
+  overflow-anchor: none;
 }
 
 /* 消息流（在 PullToRefresh 内容层里保持 flex/gap 布局） */
