@@ -62,6 +62,8 @@ const fakeHub: SessionHubLike = {
   prompt: async () => ({ accepted: true, mode: "prompt" }),
   abort: async () => undefined,
   compact: async () => undefined,
+  search: async () => [],
+  loadTree: async () => null,
 };
 
 /* ============ 1. 路径穿越校验 ============ */

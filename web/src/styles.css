@@ -1079,6 +1079,10 @@ a {
 }
 
 .search-result:active {
+  transform: translate(2px, 2px);
+  box-shadow: none;
+}
+
 /* ---------- Git 集成 / Diff 查看器 / 文件弹层（W3：移动优先 + 深浅色） ---------- */
 :root {
   /* diff 配色：+ 绿 / - 黄红（野兽派高饱和），hunk 蓝灰 */
@@ -1371,6 +1375,8 @@ button.git-bar:active {  transform: translate(2px, 2px);
   100% {
     background: transparent;
   }
+}
+
 .git-bar.compact {
   gap: 5px;
   padding: 2px 0;
