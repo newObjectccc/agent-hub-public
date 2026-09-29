@@ -1,15 +1,27 @@
+import type { MutableRefObject } from "react";
 import type { SessionSummary } from "../api/types";
 import { relativeTime } from "../utils/relativeTime";
 import { GitStatusBadge } from "./GitStatusBadge";
 import { SourceBadge } from "./SourceBadge";
 import { StatusBadge } from "./StatusBadge";
 import { Button } from "./ui/button";
+import { VirtualList } from "./VirtualList";
+
+/** 固定行高（px，含 12px 行间距），必须与 CSS .session-row 高度一致 */
+export const SESSION_ITEM_HEIGHT = 150;
 
 export interface SessionListProps {
   sessions: SessionSummary[];
   onSelect: (session: SessionSummary) => void;
   /** 可注入"现在"时间便于测试 */
   now?: number;
+  /** 注入视口高度（测试）；缺省由滚动容器自测 */
+  viewportHeight?: number;
+  /** 滚动容器引用（列表 scrollTop 记忆 / 下拉刷新到顶判定） */
+  scrollRef?: MutableRefObject<HTMLDivElement | null>;
+  /** 恢复的列表滚动位置 */
+  initialScrollTop?: number;
+  onScrollTop?: (top: number) => void;
 }
 
 /** 按 updatedAt 倒序排列（与契约一致），非法时间排最后 */
@@ -40,35 +52,52 @@ function shortPath(cwd: string): string {
   return cwd.replace(/^\/(Users|home)\/[^/]+/, "~");
 }
 
-/** 会话列表：标题（name>文件夹名）、缩写路径、状态徽章、最后对话摘要、相对时间 */
-export function SessionList({ sessions, onSelect, now }: SessionListProps) {
+/**
+ * 会话列表：标题（name>文件夹名）、缩写路径、状态徽章、最后对话摘要、相对时间。
+ * 虚拟滚动：固定行高窗口化渲染，几百会话滚动流畅（DOM 节点数恒定）。
+ */
+export function SessionList({
+  sessions,
+  onSelect,
+  now,
+  viewportHeight,
+  scrollRef,
+  initialScrollTop,
+  onScrollTop,
+}: SessionListProps) {
   const sorted = sortSessions(sessions);
   return (
-    <div className="session-list" role="list">
-      {sorted.map((s) => (
-        <Button
-          key={s.id}
-          type="button"
-          role="listitem"
-          className="session-item"
-          onClick={() => onSelect(s)}
-        >
-          <div className="session-head">
-            <span className="session-name" title={s.name && s.name.trim() !== "" ? s.name : s.cwd}>
-              {titleOf(s)}
-            </span>
-            <SourceBadge source={s.source} />
-            <StatusBadge status={s.status} />
-            <span className="session-time">{relativeTime(s.updatedAt, now)}</span>
-          </div>
-          <div className="session-cwd" title={s.cwd}>
-            {shortPath(s.cwd)}
-          </div>
-          {/* git 状态条：🌿 分支 · ↑2 ↓0 · ⚠3 files（非 git 仓库自动隐藏） */}
-          <GitStatusBadge cwd={s.cwd} compact />
-          <div className="session-summary">{summaryOf(s)}</div>
-        </Button>
-      ))}
-    </div>
+    <VirtualList
+      items={sorted}
+      itemHeight={SESSION_ITEM_HEIGHT}
+      getKey={(s) => s.id}
+      className="session-list-scroll"
+      innerClassName="session-list"
+      role="list"
+      viewportHeight={viewportHeight}
+      scrollRef={scrollRef}
+      initialScrollTop={initialScrollTop}
+      onScrollTop={onScrollTop}
+      renderItem={(s) => (
+        <div className="session-row">
+          <Button type="button" role="listitem" className="session-item" onClick={() => onSelect(s)}>
+            <div className="session-head">
+              <span className="session-name" title={s.name && s.name.trim() !== "" ? s.name : s.cwd}>
+                {titleOf(s)}
+              </span>
+              <SourceBadge source={s.source} />
+              <StatusBadge status={s.status} />
+              <span className="session-time">{relativeTime(s.updatedAt, now)}</span>
+            </div>
+            <div className="session-cwd" title={s.cwd}>
+              {shortPath(s.cwd)}
+            </div>
+            {/* git 状态条：🌿 分支 · ↑2 ↓0 · ⚠3 files（非 git 仓库自动隐藏） */}
+            <GitStatusBadge cwd={s.cwd} compact />
+            <div className="session-summary">{summaryOf(s)}</div>
+          </Button>
+        </div>
+      )}
+    />
   );
 }

@@ -54,8 +54,13 @@ export const api = {
     return request("/api/sessions");
   },
 
-  getSession(id: string): Promise<SessionDetail> {
-    return request(`/api/sessions/${encodeURIComponent(id)}`);
+  /** 会话详情 + 消息（可选分页：?before=<messageId>&limit=<n>，契约 §1） */
+  getSession(id: string, opts: { before?: string; limit?: number } = {}): Promise<SessionDetail> {
+    const params = new URLSearchParams();
+    if (opts.before) params.set("before", opts.before);
+    if (opts.limit != null) params.set("limit", String(opts.limit));
+    const qs = params.toString();
+    return request(`/api/sessions/${encodeURIComponent(id)}${qs ? `?${qs}` : ""}`);
   },
 
   /** 跨会话搜索（GET /api/search?q=&limit=） */

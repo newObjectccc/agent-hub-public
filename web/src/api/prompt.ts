@@ -22,6 +22,14 @@ export interface SendPromptDeps {
 
 export const BUSY_NOTICE = "会话正忙，消息已自动排队（followUp），将在本轮结束后发送。";
 
+/**
+ * 发送模式：
+ * - "auto"（默认）：保持 409 自动降级逻辑（prompt → 忙碌时 followUp）
+ * - "prompt" / "steer" / "followUp"：手动模式，直接带对应 mode 提交，不再降级
+ *   （steer=插入当前运行之后；followUp=排队到本轮结束）
+ */
+export type SendMode = "auto" | PromptMode;
+
 export async function sendPromptWithFallback(
   id: string,
   text: string,
@@ -37,4 +45,18 @@ export async function sendPromptWithFallback(
     deps.onNotice?.(BUSY_NOTICE);
     return { result, busyFallback: true };
   }
+}
+
+/**
+ * 按 UI 选择的发送模式提交：auto 走 409 降级逻辑，手动模式直接带对应 mode。
+ */
+export async function sendPromptWithMode(
+  id: string,
+  text: string,
+  mode: SendMode,
+  deps: SendPromptDeps,
+): Promise<SendPromptOutcome> {
+  if (mode === "auto") return sendPromptWithFallback(id, text, deps);
+  const result = await deps.sendPrompt(id, text, mode);
+  return { result, busyFallback: false };
 }

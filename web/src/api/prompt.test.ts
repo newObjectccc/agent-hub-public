@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { ApiError } from "./client";
-import { BUSY_NOTICE, sendPromptWithFallback } from "./prompt";
+import { BUSY_NOTICE, sendPromptWithFallback, sendPromptWithMode } from "./prompt";
 import type { PromptResult } from "./types";
 
 const ok: PromptResult = { accepted: true, mode: "prompt" };
@@ -54,5 +54,53 @@ describe("sendPromptWithFallback（409 SESSION_BUSY → followUp）", () => {
       .mockRejectedValueOnce(new ApiError(500, "INTERNAL", "second fail"));
     await expect(sendPromptWithFallback("s1", "x", { sendPrompt })).rejects.toThrow("second fail");
     expect(sendPrompt).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("sendPromptWithMode（手动模式直接带对应 mode 提交）", () => {
+  it("auto：保持 409 降级逻辑（prompt → followUp）", async () => {
+    const sendPrompt = vi
+      .fn()
+      .mockRejectedValueOnce(new ApiError(409, "SESSION_BUSY", "busy"))
+      .mockResolvedValueOnce({ accepted: true, mode: "followUp" });
+    const onNotice = vi.fn();
+    const out = await sendPromptWithMode("s1", "继续", "auto", { sendPrompt, onNotice });
+    expect(out.busyFallback).toBe(true);
+    expect(sendPrompt).toHaveBeenNthCalledWith(1, "s1", "继续", "prompt");
+    expect(sendPrompt).toHaveBeenNthCalledWith(2, "s1", "继续", "followUp");
+    expect(onNotice).toHaveBeenCalledWith(BUSY_NOTICE);
+  });
+
+  it("steer：直接带 mode=steer，不降级（409 也不重试）", async () => {
+    const sendPrompt = vi.fn().mockResolvedValue({ accepted: true, mode: "steer" });
+    const onNotice = vi.fn();
+    const out = await sendPromptWithMode("s1", "插一句", "steer", { sendPrompt, onNotice });
+    expect(out.busyFallback).toBe(false);
+    expect(out.result.mode).toBe("steer");
+    expect(sendPrompt).toHaveBeenCalledTimes(1);
+    expect(sendPrompt).toHaveBeenCalledWith("s1", "插一句", "steer");
+    expect(onNotice).not.toHaveBeenCalled();
+  });
+
+  it("followUp：直接带 mode=followUp 排队发送", async () => {
+    const sendPrompt = vi.fn().mockResolvedValue({ accepted: true, mode: "followUp" });
+    const out = await sendPromptWithMode("s1", "跑完看下日志", "followUp", { sendPrompt });
+    expect(out.busyFallback).toBe(false);
+    expect(sendPrompt).toHaveBeenCalledWith("s1", "跑完看下日志", "followUp");
+    expect(sendPrompt).toHaveBeenCalledTimes(1);
+  });
+
+  it("prompt：手动新消息直传，不触发降级", async () => {
+    const sendPrompt = vi.fn().mockResolvedValue({ accepted: true, mode: "prompt" });
+    const out = await sendPromptWithMode("s1", "新消息", "prompt", { sendPrompt });
+    expect(out.busyFallback).toBe(false);
+    expect(sendPrompt).toHaveBeenCalledWith("s1", "新消息", "prompt");
+    expect(sendPrompt).toHaveBeenCalledTimes(1);
+  });
+
+  it("手动模式出错直接抛出（不自动改 followUp）", async () => {
+    const sendPrompt = vi.fn().mockRejectedValue(new ApiError(409, "SESSION_BUSY", "busy"));
+    await expect(sendPromptWithMode("s1", "x", "steer", { sendPrompt })).rejects.toThrow("busy");
+    expect(sendPrompt).toHaveBeenCalledTimes(1);
   });
 });
