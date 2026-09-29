@@ -14,6 +14,7 @@ import { KpiService } from "./kpi.js";
 import { configDir, webDistDir } from "./paths.js";
 import { registerRoutes, type RouteDeps, type SessionHubLike } from "./routes.js";
 import { SessionHub } from "./sessions/hub.js";
+import { PresenceWatcher } from "./sessions/presence.js";
 import { SessionTailManager } from "./sessions/tail.js";
 import { probeSystem } from "./system.js";
 import type { ServerEvent } from "./types.js";
@@ -92,6 +93,11 @@ export async function startHub(): Promise<StartedHub> {
   // 会话一旦由本进程接管（live），停掉文件 tail，避免双推送源产生重复气泡
   hub.onLive = (sid) => tails.detach(sid);
   wshub.attach(app.server, hub, tails);
+  // 全局存在感知：任一会话文件变化 → 广播 sessions_changed（列表实时刷新）
+  const presence = new PresenceWatcher(config.sessionDir, () =>
+    wshub.broadcastGlobal({ type: "sessions_changed" }),
+  );
+  await presence.start();
   await kpi.start();
 
   let closed = false;
@@ -99,6 +105,7 @@ export async function startHub(): Promise<StartedHub> {
     if (closed) return;
     closed = true;
     kpi.stop();
+    presence.stop();
     hub.disposeAll();
     // 先掐掉全部 WS 连接再关 HTTP，否则在线 WS 客户端会让 app.close() 永不 resolve
     wshub.closeAll();

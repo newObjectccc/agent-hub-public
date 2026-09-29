@@ -11,6 +11,7 @@ import type { SessionTailManager } from "./sessions/tail.js";
 import type { ServerEvent } from "./types.js";
 
 const WS_PATH_RE = /^\/ws\/sessions\/([^/]+)$/;
+const WS_EVENTS_PATH = "/ws/events";
 
 interface ClientMessage {
   type?: unknown;
@@ -20,6 +21,7 @@ interface ClientMessage {
 
 export class WsHub {
   private readonly clients = new Map<string, Set<WebSocket>>();
+  private readonly globalClients = new Set<WebSocket>();
   private wss: WebSocketServer | null = null;
   private tails: SessionTailManager | null = null;
 
@@ -57,6 +59,14 @@ export class WsHub {
     }
   }
 
+  /** 全局事件广播（/ws/events 订阅者）：会话列表变更通知 */
+  broadcastGlobal(event: { type: string; [key: string]: unknown }): void {
+    const payload = JSON.stringify(event);
+    for (const socket of this.globalClients) {
+      if (socket.readyState === WebSocket.OPEN) socket.send(payload);
+    }
+  }
+
   /** 挂到 HTTP server 的 upgrade 事件；tailManager 可选，为非本进程会话提供实时文件 tail */
   attach(server: HttpServer, hub: SessionHub, tailManager?: SessionTailManager): void {
     const wss = new WebSocketServer({ noServer: true });
@@ -64,8 +74,15 @@ export class WsHub {
     this.tails = tailManager ?? null;
 
     server.on("upgrade", (req: IncomingMessage, socket: Duplex, head: Buffer) => {
-      const url = req.url ?? "";
-      const match = WS_PATH_RE.exec(url.split("?")[0]);
+      const url = (req.url ?? "").split("?")[0];
+      // 全局事件通道：会话列表变更通知（presence）
+      if (url === WS_EVENTS_PATH) {
+        wss.handleUpgrade(req, socket, head, (ws) => {
+          this.handleGlobalConnection(ws);
+        });
+        return;
+      }
+      const match = WS_PATH_RE.exec(url);
       if (!match) {
         socket.destroy();
         return;
@@ -77,9 +94,32 @@ export class WsHub {
     });
   }
 
+  private handleGlobalConnection(socket: WebSocket): void {
+    this.globalClients.add(socket);
+    const cleanup = (): void => {
+      this.globalClients.delete(socket);
+    };
+    socket.on("close", cleanup);
+    socket.on("error", cleanup);
+    socket.on("message", (raw: Buffer | ArrayBuffer | Buffer[]) => {
+      try {
+        const parsed = JSON.parse(raw.toString()) as { type?: string };
+        if (parsed.type === "ping") this.send(socket, { type: "pong" });
+      } catch {
+        this.send(socket, { type: "error", code: ErrorCodes.INVALID_MESSAGE, message: "消息不是合法 JSON" });
+      }
+    });
+    // 握手确认
+    this.send(socket, { type: "session", id: "events", cwd: "" });
+  }
+
   /** 关闭全部连接与 WSS。进程退出前调用，否则 app.close() 会被在线 WS 连接挂住不返回 */
   closeAll(): void {
     this.tails?.stopAll();
+    for (const socket of this.globalClients) {
+      socket.terminate();
+    }
+    this.globalClients.clear();
     for (const set of this.clients.values()) {
       for (const socket of set) {
         socket.terminate();

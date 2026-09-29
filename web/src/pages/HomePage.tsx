@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { useGlobalEvents } from "../hooks/useGlobalEvents";
 import { api } from "../api/client";
 import type { KpiCard as KpiCardType, SessionSummary, SystemStatus } from "../api/types";
 import { KpiCard } from "../components/KpiCard";
@@ -43,6 +44,9 @@ export function HomePage() {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // 全局会话变更流：终端里跑的 pi 落盘 → 面板列表自动刷新（5s 粒度）
+  useGlobalEvents({ onSessionsChanged: () => void refresh() });
 
   return (
     <div className="app">

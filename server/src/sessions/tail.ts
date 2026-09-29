@@ -7,8 +7,8 @@
 import { loadSessionMessages } from "./scan.js";
 import type { EmitFn } from "./hub.js";
 
-/** 文件静默多久后推断为 idle */
-const IDLE_AFTER_MS = 15_000;
+/** 文件静默多久后推断为 idle（与 presence 活动窗口一致：覆盖工具间思考的写盘间隙） */
+const IDLE_AFTER_MS = 60_000;
 /** 轮询间隔 */
 const POLL_MS = 2_000;
 

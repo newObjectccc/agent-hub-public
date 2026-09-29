@@ -96,10 +96,11 @@ describe("tail: 文件追加 → message_end 推送 + 状态推断", () => {
     }
   });
 
-  it("inferExternalStatus：15 秒内活动 = running，否则 idle", () => {
+  it("inferExternalStatus：60 秒内活动 = running（覆盖工具间思考间隙），否则 idle", () => {
     const now = Date.now();
     assert.equal(inferExternalStatus(now - 1000, now), "running");
-    assert.equal(inferExternalStatus(now - 20_000, now), "idle");
+    assert.equal(inferExternalStatus(now - 20_000, now), "running");
+    assert.equal(inferExternalStatus(now - 70_000, now), "idle");
   });
 });
 

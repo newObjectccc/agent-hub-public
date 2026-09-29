@@ -25,7 +25,20 @@ function summaryOf(s: SessionSummary): string {
   return s.lastAssistantMessage ?? s.lastUserMessage ?? "暂无对话内容";
 }
 
-/** 会话列表：name、cwd、状态徽章、最后对话摘要、相对时间 */
+/** 标题优先级：会话 name > 文件夹名（basename(cwd)）> id 前缀 */
+function titleOf(s: SessionSummary): string {
+  if (s.name && s.name.trim() !== "") return s.name.trim();
+  const base = s.cwd.replace(/[\\/]$/, "").split(/[\\/]/).filter(Boolean).pop();
+  return base && base !== "" ? base : s.id.slice(0, 8);
+}
+
+/** 路径缩写：$HOME → ~，只用于副标题（完整路径在 title 提示/详情中查看） */
+function shortPath(cwd: string): string {
+  // 把 /Users/<user> 或 /home/<user> 前缀缩为 ~
+  return cwd.replace(/^\/(Users|home)\/[^/]+/, "~");
+}
+
+/** 会话列表：标题（name>文件夹名）、缩写路径、状态徽章、最后对话摘要、相对时间 */
 export function SessionList({ sessions, onSelect, now }: SessionListProps) {
   const sorted = sortSessions(sessions);
   return (
@@ -39,12 +52,14 @@ export function SessionList({ sessions, onSelect, now }: SessionListProps) {
           onClick={() => onSelect(s)}
         >
           <div className="session-head">
-            <span className="session-name">{s.name}</span>
+            <span className="session-name" title={s.name && s.name.trim() !== "" ? s.name : s.cwd}>
+              {titleOf(s)}
+            </span>
             <StatusBadge status={s.status} />
             <span className="session-time">{relativeTime(s.updatedAt, now)}</span>
           </div>
           <div className="session-cwd" title={s.cwd}>
-            {s.cwd}
+            {shortPath(s.cwd)}
           </div>
           <div className="session-summary">{summaryOf(s)}</div>
         </Button>

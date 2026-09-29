@@ -58,26 +58,43 @@ async function probeTool(
 }
 
 async function probeTailscale(execFileFn: typeof execFile, timeoutMs: number): Promise<TailscaleStatus> {
-  const base = await probeTool(execFileFn, "tailscale", ["version"], timeoutMs);
-  if (!base.available) {
-    return { available: false, version: null, loggedIn: false, hostname: null };
+  // 候选链：PATH 的 tailscale（可能是损坏的 bundle wrapper，输出 Fatal error 文本）
+  // → macOS App 内二进制（GUI 版自带，总是可执行）
+  const candidates = ["tailscale"];
+  if (process.platform === "darwin") {
+    candidates.push("/Applications/Tailscale.app/Contents/MacOS/Tailscale");
   }
-  let loggedIn = false;
-  let hostname: string | null = null;
-  const status = await run(execFileFn, "tailscale", ["status", "--json"], timeoutMs);
-  if (status.ok) {
-    try {
-      const parsed = JSON.parse(status.stdout) as {
-        BackendState?: string;
-        Self?: { HostName?: string };
-      };
-      loggedIn = parsed.BackendState === "Running";
-      hostname = typeof parsed.Self?.HostName === "string" ? parsed.Self.HostName : null;
-    } catch {
-      // status 解析失败不影响可用性
+
+  for (const bin of candidates) {
+    const version = await run(execFileFn, bin, ["version"], timeoutMs);
+    if (!version.ok) continue;
+    const versionText = version.stdout.trim().split("\n")[0] ?? "";
+    // 坏 wrapper 的标志：版本输出含 crash 文本或为空
+    if (versionText === "" || /fatal error|panic|bundleidentifier/i.test(versionText)) continue;
+
+    const status = await run(execFileFn, bin, ["status", "--json"], timeoutMs);
+    let loggedIn = false;
+    let hostname: string | null = null;
+    if (status.ok) {
+      try {
+        const parsed = JSON.parse(status.stdout) as {
+          BackendState?: string;
+          Self?: { HostName?: string; DNSName?: string };
+        };
+        loggedIn = parsed.BackendState === "Running";
+        hostname = typeof parsed.Self?.HostName === "string" ? parsed.Self.HostName : null;
+      } catch {
+        // status 解析失败不影响可用性
+      }
     }
+    return {
+      available: true,
+      version: /^v?\d/.test(versionText) ? versionText : null,
+      loggedIn,
+      hostname,
+    };
   }
-  return { available: true, version: base.version, loggedIn, hostname };
+  return { available: false, version: null, loggedIn: false, hostname: null };
 }
 
 export async function probeSystem(options: ProbeOptions): Promise<SystemInfo> {
