@@ -15,6 +15,7 @@ export function makeFakeDashboard(overrides: Partial<DashboardServiceLike> = {})
     } as unknown as Awaited<ReturnType<DashboardServiceLike["getStats"]>>),
     listNotifications: async () => ({ notifications: [], unreadCount: 0 }),
     markAllRead: async () => undefined,
+    markRead: async () => 0,
     ...overrides,
   };
 }

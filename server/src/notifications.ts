@@ -13,6 +13,8 @@ import type { SessionInsight } from "./sessions/scan.js";
 import { truncateText } from "./sessions/scan.js";
 
 export const NOTIFICATION_TEXT_LIMIT = 120;
+/** 语义化摘要（「已完成：<任务>」等）的任务截断长度 */
+export const NOTIFICATION_SUMMARY_LIMIT = 30;
 export const DEFAULT_MAX_NOTIFICATIONS = 50;
 /** 同会话同类型、时间相差在此窗口内的条目视为同一次事件（重启回填去重） */
 export const NEAR_DUPLICATE_WINDOW_MS = 5 * 60 * 1000;
@@ -28,17 +30,110 @@ export interface NotificationDraft {
   kind: NotificationKind;
   text: string;
   timestamp: string;
+  /** pi-subagents 派生的子代理会话通知（前端聚合展示） */
+  isSubAgent?: boolean;
+}
+
+/**
+ * markdown → 纯文本（通知摘要用）：去围栏/标题/列表/引用/分隔线等标记，
+ * 链接保留文字、行内代码/粗斜体保留内容，空白折叠为单行。
+ * 纯函数、可单测：原始 assistant 输出里的 ``` ✅ PASS / --- # R2 这类 markdown
+ * 垃圾不得再直接出现在通知列表里。
+ */
+export function plainText(input: string): string {
+  let text = input;
+  // 围栏代码块标记行去掉（保留内容行）
+  text = text.replace(/^[ \t]*(?:```|~~~)[^\n]*$/gm, " ");
+  // 行首标记：标题 / 引用 / 列表 / 任务框 / 分隔线
+  text = text
+    .replace(/^[ \t]{0,3}#{1,6}[ \t]+/gm, "")
+    .replace(/^[ \t]{0,3}(?:>+[ \t]?)+/gm, "")
+    .replace(/^[ \t]{0,3}(?:[-*+]|\d+[.)])[ \t]+/gm, "")
+    .replace(/^[ \t]{0,3}\[[ xX]\][ \t]+/gm, "")
+    .replace(/^[ \t]{0,3}(?:[-*_][ \t]*){3,}$/gm, " ");
+  // 行内标记：图片/链接 → 文字；行内代码/粗体/斜体/删除线 → 内容；HTML 标签去掉
+  text = text
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/`+([^`]*)`+/g, "$1")
+    .replace(/\*\*([^*\n]+)\*\*/g, "$1")
+    .replace(/__([^_\n]+)__/g, "$1")
+    .replace(/(?<![A-Za-z0-9_])\*([^*\n]+)\*(?![A-Za-z0-9_])/g, "$1")
+    .replace(/(?<![A-Za-z0-9_])_([^_\n]+)_(?![A-Za-z0-9_])/g, "$1")
+    .replace(/~~([^~\n]+)~~/g, "$1")
+    .replace(/<[^>]+>/g, " ");
+  return text.replace(/\s+/g, " ").trim();
+}
+
+function summarize(text: string | null | undefined): string | null {
+  if (!text) return null;
+  const clean = plainText(text);
+  return clean === "" ? null : truncateText(clean, NOTIFICATION_SUMMARY_LIMIT);
+}
+
+/** 首句纯文本摘要：先取首个非空行（换行=句子边界），再去 markdown、按句末标点断句 */
+function firstSentence(text: string | null | undefined): string | null {
+  if (!text) return null;
+  const firstLine =
+    text
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find((line) => line !== "") ?? "";
+  const clean = plainText(firstLine);
+  if (clean === "") return null;
+  const idx = clean.search(/[。！？.!?；;]/);
+  const sentence = idx >= 0 ? clean.slice(0, idx + 1) : clean;
+  return truncateText(sentence, NOTIFICATION_SUMMARY_LIMIT);
+}
+
+export interface NotificationSummaryInput {
+  kind: NotificationKind;
+  /** 本轮最后一条 user 消息（任务名语义） */
+  lastUserText?: string | null;
+  /** 最后一条 assistant 消息（fallback 摘要来源） */
+  lastAssistantText?: string | null;
+  /** 全部无内容时的兜底文案 */
+  fallback: string;
+}
+
+/**
+ * 语义化通知摘要（纯函数）：
+ * - settled：`已完成：<最后 user 消息清洗 30 字>`（任务名语义）；无 user 时退化为
+ *   assistant 首句纯文本；再无则 fallback。
+ * - steering：`被插话：<插话内容清洗 30 字>`，无则 fallback。
+ */
+export function notificationSummary(input: NotificationSummaryInput): string {
+  const user = summarize(input.lastUserText);
+  const assistant = firstSentence(input.lastAssistantText);
+  switch (input.kind) {
+    case "settled":
+      return user ? `已完成：${user}` : assistant ?? input.fallback;
+    case "steering":
+      return user ? `被插话：${user}` : input.fallback;
+    default:
+      return assistant ?? user ?? input.fallback;
+  }
+}
+
+/**
+ * 未读待办语义（全链路统一：服务端 unreadCount / 前端角标 / 列表高亮共用）：
+ * kind=done（已手动中止）是噪声回执、不是待办，不计未读（需求 4）。
+ */
+export function countsAsUnread(item: Pick<NotificationItem, "read" | "kind">): boolean {
+  return !item.read && item.kind !== "done";
 }
 
 export function makeNotification(draft: NotificationDraft): NotificationItem {
+  const cleaned = plainText(draft.text);
   return {
     id: notificationId(draft.sessionId, draft.kind, draft.timestamp),
     sessionId: draft.sessionId,
     sessionName: draft.sessionName ?? null,
     kind: draft.kind,
-    text: truncateText(draft.text === "" ? "（无内容）" : draft.text, NOTIFICATION_TEXT_LIMIT),
+    text: truncateText(cleaned === "" ? "（无内容）" : cleaned, NOTIFICATION_TEXT_LIMIT),
     timestamp: draft.timestamp,
     read: false,
+    isSubAgent: draft.isSubAgent ?? false,
   };
 }
 
@@ -84,7 +179,7 @@ export function applyReadMarks(items: NotificationItem[], readIds: ReadonlySet<s
 }
 
 export function unreadCountOf(items: NotificationItem[]): number {
-  return items.reduce((n, item) => (item.read ? n : n + 1), 0);
+  return items.reduce((n, item) => (countsAsUnread(item) ? n + 1 : n), 0);
 }
 
 /** 会话历史扫描 → 回填通知（等你处理/出错的会话浮出，含最后输出摘要） */
@@ -101,6 +196,7 @@ export function seedNotificationsFromInsights(insights: SessionInsight[]): Notif
           kind: "error",
           text: summary.lastAssistantMessage ?? summary.lastUserMessage ?? "会话运行出错",
           timestamp,
+          isSubAgent: summary.isSubAgent,
         }),
       );
     } else if (summary.status !== "running" && lastMessageRole === "assistant") {
@@ -109,8 +205,14 @@ export function seedNotificationsFromInsights(insights: SessionInsight[]): Notif
           sessionId: summary.id,
           sessionName: summary.name,
           kind: "settled",
-          text: summary.lastAssistantMessage ?? "agent 已完成本轮工作，等你确认",
+          text: notificationSummary({
+            kind: "settled",
+            lastUserText: summary.lastUserMessage,
+            lastAssistantText: summary.lastAssistantMessage,
+            fallback: "agent 已完成本轮工作，等你确认",
+          }),
           timestamp,
+          isSubAgent: summary.isSubAgent,
         }),
       );
     }

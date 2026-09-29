@@ -58,6 +58,9 @@ import { chatPath, chatReturnPath, currentLocate, navigate, treePath } from "../
  * 历史消息懒加载：首屏只拉尾部 ~50 条，上滑/按钮加载更早一页；
  * 流式新消息到达保持原有尾部追加行为。
  */
+/** message_end 后无任何流事件/状态事件的待定收尾时长：超时推断回复完成（status 回 idle） */
+const REPLY_IDLE_FALLBACK_MS = 5_000;
+
 export function ChatPage({ sessionId }: { sessionId: string }) {
   const [session, setSession] = useState<SessionSummary | null>(null);
   const [messages, setMessages] = useState<SessionMessage[]>([]);
@@ -70,6 +73,10 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
   const [refreshing, setRefreshing] = useState(false);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
+  /** 同步防重入闸门（与 sending state 双保险）：快速连点只发一条 */
+  const sendingRef = useRef(false);
+  /** message_end 后的待定收尾定时器（tail 丢 status / 事件丢失时的 UI 兜底） */
+  const pendingIdleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [sendMode, setSendMode] = useState<SendMode>("auto");
   // 上传附件（📎 选择 / 粘贴图片）：上传成功 → 预览条 + 输入框 `@path` 引用
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -110,8 +117,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
   const inputRef = useRef("");
   /** slash / @ 面板键盘句柄（↓/↑/Tab 从输入框下探到面板） */
   const slashPanelRef = useRef<PanelKeyHandle | null>(null);
-  const filePanelRef = useRef<PanelKeyHandle | null>(null);
-  /** 面板关闭后不因持续输入同一 token 反复重开（token 消失后复位） */
+  const filePanelRef = useRef<PanelKeyHandle | null>(null);  /** 面板关闭后不因持续输入同一 token 反复重开（token 消失后复位） */
   const slashDismissedRef = useRef(false);
   const atDismissedRef = useRef(false);
   const slashActiveRef = useRef(false);
@@ -397,6 +403,26 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
     }
   }, [messages]);
 
+  const clearPendingIdle = () => {
+    if (pendingIdleRef.current) {
+      clearTimeout(pendingIdleRef.current);
+      pendingIdleRef.current = null;
+    }
+  };
+
+  /** 回复落盘后的待定收尾：短静默无任何事件 → 本轮回复完成，中止按钮随 status 消失 */
+  const armPendingIdle = () => {
+    clearPendingIdle();
+    pendingIdleRef.current = setTimeout(() => {
+      pendingIdleRef.current = null;
+      setStatus((s) => (s === "running" ? "idle" : s));
+      setSending(false);
+      setSendMode("auto");
+    }, REPLY_IDLE_FALLBACK_MS);
+  };
+
+  useEffect(() => () => clearPendingIdle(), []);
+
   const handleEvent = useCallback(
     (event: WsEvent) => {
       switch (event.type) {
@@ -405,11 +431,20 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
         case "thinking_delta":
         case "tool_start":
         case "tool_end":
-        case "message_end":
+          // 流事件说明 agent 还在跑：取消待定收尾，中止按钮保持；
+          // 若 5s 待定误翻了 idle（段间长间隙），后续流事件自愈恢复 running
+          clearPendingIdle();
+          setStatus((prev) => (prev === "running" ? prev : "running"));
           // 全部消息流事件统一走 applyWsEvent（含 message_end 去重兜底与占位回填）
           setMessages((prev) => applyWsEvent(prev, event));
           break;
+        case "message_end":
+          setMessages((prev) => applyWsEvent(prev, event));
+          // 回复落盘：若 status 事件丢失（tail 静默判定/事件丢发），待定超时自动翻转 idle
+          if ((event.message?.role ?? "assistant") === "assistant") armPendingIdle();
+          break;
         case "status": {
+          clearPendingIdle();
           const s = (event.status ?? "idle") as SessionStatus;
           setStatus(s);
           if (s !== "running") {
@@ -420,11 +455,13 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
         }
         case "agent_settled":
           // 本轮工作全部结束：恢复输入
+          clearPendingIdle();
           setStatus("idle");
           setSending(false);
           setSendMode("auto");
           break;
         case "error":
+          clearPendingIdle();
           setNotice(event.message ? String(event.message) : `${event.code ?? "错误"}：运行期错误`);
           setSending(false);
           break;
@@ -443,16 +480,19 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
   });
 
   const doSend = async () => {
+    // 同步防重入：React state 未 flush 的极速双击/多通道触发也只发一条（快速双击 bug）
+    if (sendingRef.current) return;
     const raw = inputRef.current.trim();
     // 附件兜底：正文为空但仍有附件时用引用行；引用回复拼 Markdown 引用块（`> `）
     const base = buildSendText(raw, attachments);
     const text = quote ? withQuote(quote.text, base) : base;
-    if (!text || sending) return;
+    if (!text) return;
+    sendingRef.current = true;
     const sent = attachments;
     const images = imageRefs(sent);
     setSending(true);
     setNotice(null);
-    const localId = `local-${Date.now()}`;
+    const localId = `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const previewImages = sent
       .filter((a) => a.isImage && a.preview !== null)
       .map((a) => ({ url: a.preview as string, alt: a.name }));
@@ -491,6 +531,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
     } catch (e) {
       setNotice(e instanceof Error ? e.message : "发送失败");
     } finally {
+      sendingRef.current = false;
       setSending(false);
     }
   };
@@ -498,6 +539,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
   const doAbort = async () => {
     try {
       await api.abortSession(sessionId);
+      clearPendingIdle();
       setNotice("已发送中止请求");
       setSending(false);
       setStatus("idle");
@@ -665,8 +707,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
         {status !== "running" && !connected && (
           <div className="typing-indicator">连接断开，重连中…（历史消息不会丢）</div>
         )}
-        <div className="composer">
-          <SlashCommandPanel
+        <div className="composer">          <SlashCommandPanel
             ref={slashPanelRef}
             open={slashOpen && slashSpan !== null}
             source={source}
@@ -676,6 +717,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
             query={slashSpan?.query ?? ""}
             onSelect={pickCommand}
             onClose={() => setSlashOpen(false)}
+            anchorRef={inputWrapRef}
           />
           {fileOpen && session && (
             <FileTreePanel
@@ -685,6 +727,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
               recent={recentRefs}
               onPickRecent={insertRefText}
               onInsert={insertFileRefs}
+              anchorRef={inputWrapRef}
               onClose={() => {
                 setFileOpen(false);
                 atDismissedRef.current = true;
@@ -718,8 +761,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
                     if (slashOpen) {
                       setSlashOpen(false);
                       slashDismissedRef.current = true;
-                      e.preventDefault();
-                      return;
+                      e.preventDefault();                      return;
                     }
                   }
                   // 面板键盘下探：↓/↑/Tab 把焦点交给面板（方向键循环、Tab 逐项、Enter 插入）

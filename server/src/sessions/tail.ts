@@ -13,8 +13,21 @@ export type MessageLoader = (file: string) => Promise<MessageDto[]>;
 
 /** 文件静默多久后推断为 idle（与 presence 活动窗口一致：覆盖工具间思考的写盘间隙） */
 const IDLE_AFTER_MS = 60_000;
+/**
+ * 回复落盘后的静默窗口（与普通写盘活动分开）：最后一条落盘消息是 assistant 文本消息
+ * 时，短静默即视为本轮回复完成（用户体感“回复完按钮就该消失”），不再等 60 秒。
+ * 多段回复/后续落盘会重新 pushRunning，不会卡在 idle。
+ */
+const IDLE_AFTER_REPLY_MS = 3_000;
 /** 轮询间隔 */
 const POLL_MS = 2_000;
+
+/** 测试可注入：轮询/静默窗口（生产用默认值） */
+export interface TailOptions {
+  pollMs?: number;
+  idleAfterMs?: number;
+  idleAfterReplyMs?: number;
+}
 
 interface TailState {
   ref: number;
@@ -25,9 +38,11 @@ interface TailState {
 export class SessionTailManager {
   private readonly tails = new Map<string, TailState>();
   private readonly emit: EmitFn;
+  private readonly options: TailOptions;
 
-  constructor(emit: EmitFn) {
+  constructor(emit: EmitFn, options: TailOptions = {}) {
     this.emit = emit;
+    this.options = options;
   }
 
   acquire(sessionId: string, file: string, loader: MessageLoader = loadSessionMessages): void {
@@ -36,7 +51,7 @@ export class SessionTailManager {
       existing.ref += 1;
       return;
     }
-    const tail = new SessionTail(sessionId, file, this.emit, loader);
+    const tail = new SessionTail(sessionId, file, this.emit, loader, this.options);
     this.tails.set(sessionId, { ref: 1, tail });
     void tail.start();
   }
@@ -74,13 +89,23 @@ class SessionTail {
   private lastChangeMs = 0;
   private runningPushed = false;
   private closed = false;
+  /** 最近一次「assistant 回复落盘」时间；null=当前无回复静默计时（走长窗口） */
+  private replyQuietMs: number | null = null;
+  private readonly pollMs: number;
+  private readonly idleAfterMs: number;
+  private readonly idleAfterReplyMs: number;
 
   constructor(
     private readonly sessionId: string,
     private readonly file: string,
     private readonly emit: EmitFn,
     private readonly loadMessages: MessageLoader = loadSessionMessages,
-  ) {}
+    options: TailOptions = {},
+  ) {
+    this.pollMs = options.pollMs ?? POLL_MS;
+    this.idleAfterMs = options.idleAfterMs ?? IDLE_AFTER_MS;
+    this.idleAfterReplyMs = options.idleAfterReplyMs ?? IDLE_AFTER_REPLY_MS;
+  }
 
   /** 初始快照：把已有消息全部记入 known（不推送——客户端连接时已全量加载） */
   async start(): Promise<void> {
@@ -91,7 +116,7 @@ class SessionTail {
     } catch {
       // 文件暂不可读：下一轮重试
     }
-    this.timer = setInterval(() => void this.tick(), POLL_MS);
+    this.timer = setInterval(() => void this.tick(), this.pollMs);
     // 不阻止进程退出（closeAll/stop 会主动清理）
     this.timer.unref?.();
   }
@@ -107,26 +132,39 @@ class SessionTail {
     try {
       const messages = await this.loadMessages(this.file);
       let changed = false;
+      let lastNew: { role: string; text: string } | null = null;
       for (const m of messages) {
         if (this.knownIds.has(m.id)) continue;
         this.knownIds.add(m.id);
         changed = true;
+        lastNew = { role: m.role, text: m.text };
         // 契约事件：message_end 携带权威消息（前端 upsert）
         this.emit(this.sessionId, { type: "message_end", message: m });
       }
+      const now = Date.now();
       if (changed) {
-        this.lastChangeMs = Date.now();
+        this.lastChangeMs = now;
         this.pushRunning();
-      } else if (this.runningPushed && Date.now() - this.lastChangeMs > IDLE_AFTER_MS) {
-        this.runningPushed = false;
-        // 文件静默 = 外部会话本轮工作结束：发契约 agent_settled（UI 恢复输入框、
-        // 通知聚合出“干完等你处理”），随后 status 回 idle（与 SessionHub 顺序一致）
-        this.emit(this.sessionId, { type: "agent_settled" });
-        this.emit(this.sessionId, { type: "status", status: "idle" });
+        // 只有「本轮最后新增是 assistant 文本消息」才启动回复静默计时：
+        // user/工具落盘说明新一轮或工具活动刚开始，维持长窗口避免误判
+        this.replyQuietMs =
+          lastNew !== null && lastNew.role === "assistant" && lastNew.text.trim() !== "" ? now : null;
+      } else if (this.runningPushed) {
+        const replySettled = this.replyQuietMs !== null && now - this.replyQuietMs > this.idleAfterReplyMs;
+        const silentSettled = now - this.lastChangeMs > this.idleAfterMs;
+        if (replySettled || silentSettled) this.pushSettled();
       }
     } catch {
       // 单轮失败（文件损坏/写入中）忽略，下一轮重试
     }
+  }
+
+  /** 本轮工作结束：发契约 agent_settled（UI 恢复输入框、通知聚合），随后 status 回 idle */
+  private pushSettled(): void {
+    this.runningPushed = false;
+    this.replyQuietMs = null;
+    this.emit(this.sessionId, { type: "agent_settled" });
+    this.emit(this.sessionId, { type: "status", status: "idle" });
   }
 
   private pushRunning(): void {

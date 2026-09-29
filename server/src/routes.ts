@@ -478,11 +478,17 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
     }
   });
 
-  // POST /api/notifications/read（全部已读）
-  app.post("/api/notifications/read", async (_req, reply) => {
+  // POST /api/notifications/read（body.ids 缺省=全部已读；带 ids=单条/多条已读）
+  app.post<{ Body: { ids?: unknown } }>("/api/notifications/read", async (req, reply) => {
     try {
-      await dashboard.markAllRead();
-      return reply.send({ ok: true, unreadCount: 0 });
+      const body = (typeof req.body === "object" && req.body !== null ? req.body : {}) as { ids?: unknown };
+      if (body.ids !== undefined) {
+        if (!Array.isArray(body.ids) || body.ids.some((id) => typeof id !== "string" || id === "")) {
+          throw new HubError(ErrorCodes.INVALID_REQUEST, "ids 必须是非空字符串数组");
+        }
+      }
+      const unreadCount = await dashboard.markRead(body.ids as string[] | undefined);
+      return reply.send({ ok: true, unreadCount });
     } catch (err) {
       return handle(reply, err);
     }

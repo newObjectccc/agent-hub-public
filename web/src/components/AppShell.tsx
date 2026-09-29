@@ -7,9 +7,10 @@
  * - 菜单：🏠 工作台 / 💬 会话 / 🖥 系统 / ⚙️ 设置；drawer 内含 ➕新建会话。
  * - 动画 220ms 开合（reduced-motion 直接显隐）；路由可深链，菜单项即一级路由。
  */
-import { useCallback, useEffect, useRef, useState, type ReactNode, type TouchEvent as ReactTouchEvent } from "react";
+import { useMemo, useCallback, useEffect, useRef, useState, type ReactNode, type TouchEvent as ReactTouchEvent } from "react";
 import { api } from "../api/client";
 import type { NotificationItem } from "../api/types";
+import { unreadCountOf } from "../utils/notifications";
 import { useGlobalEvents } from "../hooks/useGlobalEvents";
 import { useIsMobile } from "../hooks/useIsMobile";
 import {
@@ -63,7 +64,8 @@ export function AppShell({ route, children }: AppShellProps) {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
-  const [unreadCount, setUnreadCount] = useState(0);
+  /** 未读角标从列表派生（角标数 = 列表未读数 = 点击后递减） */
+  const unreadCount = useMemo(() => unreadCountOf(notifications), [notifications]);
   const [notifLoaded, setNotifLoaded] = useState(false);
   /** drawer 右滑手势起点（null = 未在滑动） */
   const swipeRef = useRef<{ startX: number; startY: number } | null>(null);
@@ -72,7 +74,6 @@ export function AppShell({ route, children }: AppShellProps) {
     try {
       const res = await api.getNotifications();
       setNotifications(res.notifications ?? []);
-      setUnreadCount(res.unreadCount ?? 0);
     } catch {
       // 通知拉取失败静默：保持上次数据（铃铛面板内可手动刷新）
     } finally {
@@ -89,9 +90,18 @@ export function AppShell({ route, children }: AppShellProps) {
     onNotification: () => void refreshNotifications(),
   });
 
+  /** 点击通知条目：标记该条已读（乐观递减角标） */
+  const markRead = useCallback(async (id: string) => {
+    setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, read: true } : n)));
+    try {
+      await api.markNotificationsRead([id]);
+    } catch {
+      void refreshNotifications();
+    }
+  }, [refreshNotifications]);
+
   const markAllRead = useCallback(async () => {
     // 乐观清零 + 服务端持久化（失败时下次刷新对齐）
-    setUnreadCount(0);
     setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
     try {
       await api.markNotificationsRead();
@@ -162,6 +172,7 @@ export function AppShell({ route, children }: AppShellProps) {
           loading={!notifLoaded}
           onReload={() => void refreshNotifications()}
           onMarkAllRead={() => void markAllRead()}
+          onMarkRead={(id) => void markRead(id)}
           onOpenSession={(id) => navigate(`/s/${encodeURIComponent(id)}`)}
         />
       </header>

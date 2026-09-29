@@ -1,3 +1,4 @@
+import { useDismissable } from "../hooks/useDismissable";
 import { forwardRef, useImperativeHandle, useMemo, useRef } from "react";
 import type { CommandItem, SessionSource } from "../api/types";
 import type { PanelKeyHandle } from "../utils/panelNav";
@@ -5,6 +6,8 @@ import { handlePanelKeyNav } from "../utils/panelNav";
 import { groupSlashCommands, type SlashGroup } from "../utils/slashInput";
 
 export interface SlashCommandPanelProps {
+  /** 锚点（输入框容器）：点击锚点不误关面板 */
+  anchorRef?: { current: HTMLElement | null } | null;
   open: boolean;
   /** 会话来源（标题分发提示） */
   source: SessionSource;
@@ -29,7 +32,7 @@ function itemIcon(cmd: CommandItem): string {
  * 过滤、点击或键盘（方向键 + Enter，Tab 在条目间移动）插入 `/cmd `。
  */
 export const SlashCommandPanel = forwardRef<PanelKeyHandle, SlashCommandPanelProps>(
-  function SlashCommandPanel({ open, source, commands, loading, error, query, onSelect, onClose }, ref) {
+  function SlashCommandPanel({ open, source, commands, loading, error, query, onSelect, onClose, anchorRef }, ref) {
     const rootRef = useRef<HTMLDivElement | null>(null);
     const groups: SlashGroup[] = useMemo(() => groupSlashCommands(commands, query), [commands, query]);
 
@@ -47,7 +50,10 @@ export const SlashCommandPanel = forwardRef<PanelKeyHandle, SlashCommandPanelPro
       [],
     );
 
-    if (!open) return null;
+    // 点外部/Esc 关闭 + 与其他弹层互斥
+  useDismissable({ open, onDismiss: onClose, rootRef, anchorRefs: anchorRef ? [anchorRef as { current: HTMLElement | null }] : [] });
+
+  if (!open) return null;
 
     let index = 0;
     return (

@@ -1,3 +1,4 @@
+import { useDismissable } from "../hooks/useDismissable";
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { api } from "../api/client";
 import type { FsEntry } from "../api/types";
@@ -5,6 +6,8 @@ import type { PanelKeyHandle } from "../utils/panelNav";
 import { handlePanelKeyNav } from "../utils/panelNav";
 
 export interface FileTreePanelProps {
+  /** 锚点（输入框容器）：点击锚点不误关面板 */
+  anchorRef?: { current: HTMLElement | null } | null;
   open: boolean;
   /** 会话 cwd（= 文件树根，server 只读列目录） */
   cwd: string;
@@ -27,7 +30,7 @@ export function joinRel(path: string, name: string): string {
  * 方向键循环、Tab 逐项、Enter 选中；.git/node_modules 默认隐藏可展开；320-1024 响应式。
  */
 export const FileTreePanel = forwardRef<PanelKeyHandle, FileTreePanelProps>(function FileTreePanel(
-  { open, cwd, onInsert, onClose, recent = [], onPickRecent },
+  { open, cwd, onInsert, onClose, recent = [], onPickRecent, anchorRef },
   ref,
 ) {
   const [path, setPath] = useState("");
@@ -85,6 +88,9 @@ export const FileTreePanel = forwardRef<PanelKeyHandle, FileTreePanelProps>(func
   useEffect(() => {
     void load();
   }, [load]);
+
+  // 点外部/Esc 关闭 + 与其他弹层互斥
+  useDismissable({ open, onDismiss: onClose, rootRef, anchorRefs: anchorRef ? [anchorRef as { current: HTMLElement | null }] : [] });
 
   if (!open) return null;
 

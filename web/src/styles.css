@@ -1614,6 +1614,63 @@ a {
   padding: 6px 0 10px;
 }
 
+/* ---------- 子代理通知聚合行（🤖 N 个子代理完成，点开看明细） ---------- */
+.notif-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.notif-group-head {
+  position: relative; /* 组内未读角标锚定行内，不逃逸到面板右上角 */
+  width: 100%;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  text-align: left;
+  background: var(--muted);
+  color: var(--foreground);
+  border: 2px dashed var(--border);
+  border-radius: var(--nb-radius);
+  cursor: pointer;
+}
+
+.notif-group-head.unread {
+  border-style: solid;
+  background: var(--accent);
+  box-shadow: var(--shadow-xs);
+}
+
+.notif-group-head:active {
+  transform: translate(2px, 2px);
+  box-shadow: none;
+}
+
+.notif-group-title {
+  font-family: var(--nb-font-head);
+  font-weight: 900;
+  font-size: 12px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.notif-group-list {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-left: 2px solid var(--border);
+}
+
+.notif-sub-item {
+  background: var(--background);
+}
+
 .notif-kind {
   font-family: var(--nb-font-head);
   font-weight: 900;

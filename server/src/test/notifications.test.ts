@@ -9,11 +9,14 @@ import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import {
   applyReadMarks,
+  countsAsUnread,
   loadReadMarks,
   makeNotification,
   mergeNotifications,
   notificationId,
+  notificationSummary,
   parseReadMarks,
+  plainText,
   saveReadMarks,
   seedNotificationsFromInsights,
   serializeReadMarks,
@@ -141,7 +144,8 @@ describe("notifications: 历史回填（会话扫描 → 通知）", () => {
     const kinds = seeded.map((n) => n.kind).sort();
     assert.deepEqual(kinds, ["error", "settled"]);
     const settled = seeded.find((n) => n.kind === "settled");
-    assert.equal(settled?.text, "跑完了");
+    // 语义化摘要：settled 优先取最后 user 消息（任务名语义），不再是 assistant 原文
+    assert.equal(settled?.text, "已完成：帮我跑");
     assert.equal(settled?.sessionName, "会话 idle");
     assert.equal(settled?.read, false);
   });
@@ -246,9 +250,9 @@ describe("notifications: DashboardService 通知流", () => {
     assert.deepEqual(pushedKinds, ["done", "error", "settled", "steering"]);
 
     const { notifications, unreadCount } = await service.listNotifications();
-    // 历史回填 1 条（s1 settled）+ live 4 条
+    // 历史回填 1 条（s1 settled）+ live 4 条；done（手动中止）不计未读（噪声回执）
     assert.equal(notifications.length, 5);
-    assert.equal(unreadCount, 5);
+    assert.equal(unreadCount, 4);
     // 时间倒序
     for (let i = 1; i < notifications.length; i += 1) {
       assert.ok(Date.parse(notifications[i - 1].timestamp) >= Date.parse(notifications[i].timestamp));
@@ -256,10 +260,10 @@ describe("notifications: DashboardService 通知流", () => {
     // live settled 的文本取 message_end 跟踪到的最后输出
     const settled = notifications.find((n) => n.kind === "settled" && n.sessionId === "s2");
     assert.equal(settled?.text, "任务完成");
-    // 历史回填带会话名
+    // 历史回填带会话名 + 语义化摘要（已完成：<user 消息>）
     const seeded = notifications.find((n) => n.sessionId === "s1");
     assert.equal(seeded?.sessionName, null); // s1 无 name
-    assert.equal(seeded?.text, "构建已修复");
+    assert.equal(seeded?.text, "已完成：修复构建");
   });
 
   it("markAllRead 后未读清零，且重启（新实例）仍保持已读", async () => {
@@ -275,11 +279,112 @@ describe("notifications: DashboardService 通知流", () => {
     assert.equal(persisted.unreadCount, 0);
   });
 
-  it("重启后新增事件仍为未读", async () => {
+  it("重启后新增事件仍为未读（用 steering 验证；done 不计未读见专项用例）", async () => {
     const restarted = makeService();
-    restarted.recordActivity("s3", { kind: "done", text: "已手动中止本轮运行" });
+    restarted.recordActivity("s3", { kind: "steering", text: "改用方案 B" });
     const { notifications, unreadCount } = await restarted.listNotifications();
     assert.equal(unreadCount, 1);
     assert.equal(notifications.find((n) => n.sessionId === "s3")?.read, false);
+  });
+
+  it("markRead(ids) 单条已读：该条翻 read、未读数递减、返回剩余未读数、重启仍有效", async () => {
+    const service = makeService();
+    // live 通知在实例内存：本用例内新造一条未读（历史条目已被前面用例标已读）
+    service.recordActivity("s-mark", { kind: "steering", text: "单条已读测试" });
+    const before = await service.listNotifications();
+    const target = before.notifications.find((n) => !n.read && n.kind !== "done")!;
+    const remaining = await service.markRead([target.id]);
+    assert.equal(remaining, before.unreadCount - 1);
+
+    const after = await service.listNotifications();
+    assert.equal(after.notifications.find((n) => n.id === target.id)?.read, true);
+    assert.equal(after.unreadCount, before.unreadCount - 1);
+    // 其他条目不受影响
+    const others = after.notifications.filter((n) => n.id !== target.id);
+    assert.ok(others.every((n) => n.read === (before.notifications.find((b) => b.id === n.id)?.read ?? false)));
+
+    // 重启（新实例）：单条已读标记持久化到文件（live 通知在实例内存，read 标记落盘）
+    const marks = await loadReadMarks(storeFile);
+    assert.ok(marks.has(target.id), "单条已读标记应持久化");
+  });
+
+  it("markRead() 无 ids = 全部已读（未读清零）", async () => {
+    const service = makeService();
+    const remaining = await service.markRead();
+    assert.equal(remaining, 0);
+    const after = await service.listNotifications();
+    assert.equal(after.unreadCount, 0);
+  });
+
+  it("done（手动中止）不计未读（噪声回执不算待办，但仍在列表展示）", async () => {
+    const service = makeService();
+    service.recordActivity("s-done", { kind: "done", text: "已手动中止本轮运行" });
+    const { notifications, unreadCount } = await service.listNotifications();
+    const done = notifications.find((n) => n.sessionId === "s-done");
+    assert.ok(done, "done 通知仍保留展示");
+    assert.equal(done?.kind, "done");
+    assert.equal(done?.read, false);
+    assert.equal(unreadCount, 0, "done 不计入未读角标");
+  });
+
+  it("settled 摘要质量：markdown 垃圾不再直出（已完成：<user 消息 30 字>）", async () => {
+    const service = makeService();
+    service.recordEvent("s-md", {
+      type: "message_end",
+      message: {
+        id: "u-md",
+        role: "user",
+        timestamp: NOW_MS,
+        text: "修复 R2 的构建失败问题并跑一遍测试套件确保全绿",
+        toolCalls: [],
+      },
+    });
+    service.recordEvent("s-md", {
+      type: "message_end",
+      message: {
+        id: "a-md",
+        role: "assistant",
+        timestamp: NOW_MS,
+        text: "```\n✅ PASS # 全部测试通过\n```\n---\n# R2「构建」\n- 已修复",
+        toolCalls: [],
+      },
+    });
+    service.recordEvent("s-md", { type: "agent_settled" });
+    const { notifications } = await service.listNotifications();
+    const settled = notifications.find((n) => n.sessionId === "s-md" && n.kind === "settled");
+    assert.ok(settled?.text.startsWith("已完成："), `实际 ${settled?.text}`);
+    assert.ok(!settled?.text.includes("```"), "不得含代码围栏");
+    assert.ok(!settled?.text.includes("#"), "不得含标题标记");
+    assert.ok(!settled?.text.includes("---"), "不得含分隔线");
+    // 任务名语义：user 消息清洗后 30 字截断
+    assert.ok(settled?.text.includes("修复 R2 的构建失败问题并跑一遍测试套件"));
+    assert.ok(settled!.text.length <= `已完成：`.length + 31 + 1, `摘要应 30 字截断，实际 ${settled?.text}`);
+  });
+
+  it("settled 无 user 消息时退化为 assistant 首句纯文本（去 markdown 标记）", async () => {
+    const service = makeService();
+    service.recordEvent("s-md2", {
+      type: "message_end",
+      message: {
+        id: "a-md2",
+        role: "assistant",
+        timestamp: NOW_MS,
+        text: "## 构建已修复\n测试全绿，可以合并了。后续还有部署步骤。",
+        toolCalls: [],
+      },
+    });
+    service.recordEvent("s-md2", { type: "agent_settled" });
+    const { notifications } = await service.listNotifications();
+    const settled = notifications.find((n) => n.sessionId === "s-md2" && n.kind === "settled");
+    assert.equal(settled?.text, "构建已修复");
+  });
+
+  it("live 通知补齐 isSubAgent 标记（供前端聚合子代理通知）", async () => {
+    const service = makeService();
+    service.recordEvent("s-sub", { type: "agent_settled" });
+    const { notifications } = await service.listNotifications();
+    const live = notifications.find((n) => n.sessionId === "s-sub");
+    // s-sub 无会话文件（不在 insights）→ 默认 false；insights 里的会话按 summary.isSubAgent 补
+    assert.equal(live?.isSubAgent, false);
   });
 });

@@ -268,6 +268,8 @@ export interface NotificationItem {
   text: string;
   timestamp: string;
   read: boolean;
+  /** pi-subagents 派生的子代理会话通知（前端聚合为一条展示） */
+  isSubAgent?: boolean;
 }
 
 export interface NotificationListResponse {

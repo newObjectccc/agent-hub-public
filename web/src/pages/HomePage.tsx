@@ -16,7 +16,6 @@ import { WorkingBoard } from "../components/WorkingBoard";
 import { WeekStatsCard } from "../components/WeekStatsCard";
 import { Button } from "../components/ui/button";
 import { chatPath, navigate, SESSIONS_PATH } from "../utils/router";
-
 /** 刷新超过此时长才显示顶部进度条（快速静默刷新保持视觉安静） */
 const PROGRESS_REVEAL_MS = 400;
 
@@ -44,8 +43,7 @@ export function HomePage() {
       progressTimer.current = null;
     }
     setProgressVisible(false);
-    if (statsRes) setStats(statsRes);
-    setRefreshing(false);
+    if (statsRes) setStats(statsRes);    setRefreshing(false);
     setLoaded(true);
   }, []);
 
@@ -65,7 +63,6 @@ export function HomePage() {
 
   const working = stats?.workingSessions ?? [];
   const attention = stats?.attentionSessions ?? [];
-
   return (
     <div className="page home-page">
       {/* stale-while-revalidate：有旧数据时保留旧数据；慢刷新才显示顶部细进度条 */}
