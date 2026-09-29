@@ -123,10 +123,11 @@ export const api = {
     return request("/api/notifications");
   },
 
-  markNotificationsRead(): Promise<{ ok: boolean; unreadCount: number }> {
+  /** POST /api/notifications/read：ids 缺省=全部已读；带 ids=单条/多条已读 */
+  markNotificationsRead(ids?: string[]): Promise<{ ok: boolean; unreadCount: number }> {
     return request("/api/notifications/read", {
       method: "POST",
-      body: JSON.stringify({}),
+      body: JSON.stringify(ids === undefined ? {} : { ids }),
     });
   },
 

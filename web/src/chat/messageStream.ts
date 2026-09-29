@@ -57,18 +57,38 @@ function isPlaceholderId(id: string): boolean {
 
 /**
  * message_end 纯防御性去重（重复气泡 bug 的内容级兜底）：
- * 仅允许合并「列表最后一条流式/乐观占位」（id 为占位形态 且 role+非空 text 一致），
- * 典型：占位 id 与权威 id 不一致的重复投递、user 乐观占位（local-）回填。
- * 不扫描历史、不用时间窗——绝不误合并合法的重复消息。
+ * 从尾部向前收集「连续的同 role+同非空 text 流式/乐观占位」，FIFO 合并其中最早一条
+ * （权威消息按到达顺序对应回填）。
+ * - 连续两条同文本（快速连发）：两条占位各自按序回填、独立显示，不错位/不残留
+ * - 占位段外（中间隔有其它消息/权威消息）不动：绝不误合并合法重复消息
+ *   （live-* 形态 id 也可能是 hub 已完成消息的最终 id，只能合并尾部未回填区）
  */
 function findTailPlaceholder(messages: SessionMessage[], authoritative: SessionMessage): number {
-  const lastIdx = messages.length - 1;
-  if (lastIdx < 0) return -1;
-  const last = messages[lastIdx];
-  if (!isPlaceholderId(last.id)) return -1;
-  if (last.role !== authoritative.role) return -1;
-  if (!last.text || last.text !== authoritative.text) return -1;
-  return lastIdx;
+  let start = messages.length;
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const m = messages[i];
+    const match =
+      isPlaceholderId(m.id) &&
+      m.role === authoritative.role &&
+      m.text !== "" &&
+      m.text === authoritative.text;
+    if (!match) break;
+    start = i;
+  }
+  return start === messages.length ? -1 : start;
+}
+
+/**
+ * user 乐观占位回填目标：尾部最近一条「user + 非空 text + 占位形态 id」消息。
+ * user 的 message_start/message_end 总在该轮 assistant 之前到达，此时尾部最近的
+ * user 占位必然是本轮未回填的乐观占位（新发送的占位恒在尾部）。
+ */
+function findTailUserPlaceholder(messages: SessionMessage[]): number {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const m = messages[i];
+    if (isPlaceholderId(m.id) && m.role === "user" && m.text !== "") return i;
+  }
+  return -1;
 }
 
 export function applyWsEvent(messages: SessionMessage[], event: WsEvent): SessionMessage[] {
@@ -78,6 +98,17 @@ export function applyWsEvent(messages: SessionMessage[], event: WsEvent): Sessio
       const msg = normalizeMessage(event.message);
       if (messages.some((m) => m.id === msg.id)) {
         return updateMessage(messages, msg.id, (m) => ({ ...m, ...msg, text: m.text, toolCalls: m.toolCalls }));
+      }
+      // user 消息也有 message_start 流式占位（pi SDK 路径）：不回填乐观占位会变成
+      // 「local- 乐观占位 + live- 流式占位」双条重复（手机实测 bug）。
+      // 只对 user 生效（assistant 新流式绝不吞并已有消息）；回填保留占位已显示的文本。
+      if (msg.role === "user") {
+        const dupIdx = findTailUserPlaceholder(messages);
+        if (dupIdx >= 0) {
+          const next = messages.slice();
+          next[dupIdx] = { ...next[dupIdx], id: msg.id, timestamp: msg.timestamp };
+          return next;
+        }
       }
       return [...messages, msg];
     }
@@ -146,8 +177,9 @@ export function applyWsEvent(messages: SessionMessage[], event: WsEvent): Sessio
         next[idx] = withThinkingFallback(authoritative, messages[idx]);
         return next;
       }
-      // 纯防御去重：仅合并列表末尾的流式/乐观占位（同 role+同非空 text），
-      // 覆盖两类真实场景：流式占位 id 与权威 id 不一致的重复投递、user 乐观占位（local-）回填
+      // 纯防御去重：合并尾部连续同文本占位段内最早一条（同 role+同非空 text），
+      // 覆盖三类真实场景：流式占位 id 与权威 id 不一致的重复投递、user 乐观占位（local-）
+      // 回填、连续两条同文本的 FIFO 对应回填（各自独立显示，不误合并）
       const dupIdx = findTailPlaceholder(messages, authoritative);
       if (dupIdx >= 0) {
         const next = messages.slice();

@@ -350,6 +350,8 @@ export interface NotificationItem {
   text: string;
   timestamp: string;
   read: boolean;
+  /** pi-subagents 派生的子代理会话通知（前端默认聚合为一条，不淹没主会话） */
+  isSubAgent?: boolean;
 }
 
 /** GET /api/notifications 响应 */

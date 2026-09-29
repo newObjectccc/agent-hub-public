@@ -82,6 +82,7 @@ function makeFakeDashboard(): DashboardServiceLike {
     }),
     listNotifications: async () => ({ notifications: [], unreadCount: 0 }),
     markAllRead: async () => undefined,
+    markRead: async () => 0,
   };
 }
 

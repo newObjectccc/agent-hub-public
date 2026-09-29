@@ -1,8 +1,9 @@
 /**
  * 会话操作菜单（chat 顶栏"⋯"）：目前提供「复制为新会话」（fork）。
- * 野兽派下拉：厚描边 + 硬阴影；点外部 / Esc 关闭；触控目标 ≥44px。
+ * 野兽派下拉：厚描边 + 硬阴影；点外部 / Esc 关闭（useDismissable，与其他弹层互斥）；触控目标 ≥44px。
  */
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
+import { useDismissable } from "../hooks/useDismissable";
 import { CopyIcon, MoreIcon } from "./icons";
 
 export interface SessionActionsMenuProps {
@@ -14,21 +15,7 @@ export function SessionActionsMenu({ onFork, forkBusy = false }: SessionActionsM
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement | null>(null);
 
-  useEffect(() => {
-    if (!open) return;
-    const onDocClick = (e: MouseEvent): void => {
-      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent): void => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("click", onDocClick);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("click", onDocClick);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
+  useDismissable({ open, onDismiss: () => setOpen(false), rootRef: wrapRef });
 
   return (
     <div className="action-menu-wrap" ref={wrapRef}>

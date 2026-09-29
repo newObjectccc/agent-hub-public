@@ -1,5 +1,6 @@
-import { useMemo } from "react";
+import { useMemo, useRef, type RefObject } from "react";
 import type { CommandItem, SessionSource } from "../api/types";
+import { useDismissable } from "../hooks/useDismissable";
 import { filterSlashCommands } from "../utils/slashInput";
 
 export interface SlashCommandPanelProps {
@@ -15,19 +16,25 @@ export interface SlashCommandPanelProps {
   /** 选中命令：插入输入框（替换 /token 为 `/cmd `） */
   onSelect: (name: string) => void;
   onClose: () => void;
+  /** 锚点（输入框容器）：点击继续输入不算外部，不误关面板 */
+  anchorRef?: RefObject<HTMLElement | null>;
 }
 
 /**
  * slash 命令面板（浮层在输入框上方）：按 source 分发清单、继续输入过滤、
  * 点击插入输入框；claude 内置命令标注"仅终端可用"（print 模式实测不可用）。
  */
-export function SlashCommandPanel({ open, source, commands, loading, error, query, onSelect, onClose }: SlashCommandPanelProps) {
+export function SlashCommandPanel({ open, source, commands, loading, error, query, onSelect, onClose, anchorRef }: SlashCommandPanelProps) {
   const filtered = useMemo(() => filterSlashCommands(commands, query), [commands, query]);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+
+  // 点外部/Esc 关闭 + 与其他弹层互斥（锚点=输入框容器，继续打字不误关）
+  useDismissable({ open, onDismiss: onClose, rootRef, anchorRefs: anchorRef ? [anchorRef] : [] });
 
   if (!open) return null;
 
   return (
-    <div className="slash-panel" role="dialog" aria-label="斜杠命令">
+    <div className="slash-panel" role="dialog" aria-label="斜杠命令" ref={rootRef}>
       <div className="slash-head">
         <span className="slash-title">/ 命令 · {source === "pi" ? "pi" : "claude"}</span>
         <button type="button" className="slash-close" onClick={onClose} aria-label="关闭命令面板">

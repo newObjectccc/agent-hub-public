@@ -236,3 +236,152 @@ describe("message_end 内容级去重兜底（重复气泡防御）", () => {
     expect(next[0].text).toBe("hi");
   });
 });
+
+describe("message_end 连续同文本占位（快速连发）FIFO 回填", () => {
+  it("连续两条同文本占位：权威消息按到达顺序各自回填，2 条独立显示不重复", () => {
+    // 快速连发两条相同文本：两条乐观占位并存
+    let msgs: SessionMessage[] = [
+      { id: "local-a", role: "user", timestamp: 0, text: "hi", toolCalls: [] },
+      { id: "local-b", role: "user", timestamp: 1, text: "hi", toolCalls: [] },
+    ];
+    // 第一条权威回显（对应 local-a）：合并尾部连续段最早一条，不许错位吃掉 local-b
+    msgs = applyWsEvent(msgs, {
+      type: "message_end",
+      message: { id: "user-1", role: "user", timestamp: 2, text: "hi", toolCalls: [] },
+    });
+    expect(msgs.map((m) => m.id)).toEqual(["user-1", "local-b"]);
+    // 第二条权威回显：回填 local-b
+    msgs = applyWsEvent(msgs, {
+      type: "message_end",
+      message: { id: "user-2", role: "user", timestamp: 3, text: "hi", toolCalls: [] },
+    });
+    expect(msgs).toHaveLength(2);
+    expect(msgs.map((m) => m.id)).toEqual(["user-1", "user-2"]);
+  });
+
+  it("第二条权威先到（乱序）也不残留：尾部段内仍按序回填", () => {
+    let msgs: SessionMessage[] = [
+      { id: "local-a", role: "user", timestamp: 0, text: "hi", toolCalls: [] },
+      { id: "local-b", role: "user", timestamp: 1, text: "hi", toolCalls: [] },
+    ];
+    msgs = applyWsEvent(msgs, {
+      type: "message_end",
+      message: { id: "user-2", role: "user", timestamp: 3, text: "hi", toolCalls: [] },
+    });
+    msgs = applyWsEvent(msgs, {
+      type: "message_end",
+      message: { id: "user-1", role: "user", timestamp: 2, text: "hi", toolCalls: [] },
+    });
+    // 条数正确（2 条）：连续同文本场景不因占位合并失败而重复显示
+    expect(msgs).toHaveLength(2);
+  });
+
+  it("连续两条相同文本的合法权威消息（非占位 id）各自独立显示，不误合并", () => {
+    const msgs: SessionMessage[] = [
+      { id: "user-1", role: "user", timestamp: 0, text: "hi", toolCalls: [] },
+      { id: "user-2", role: "user", timestamp: 1, text: "hi", toolCalls: [] },
+    ];
+    const next = applyWsEvent(msgs, {
+      type: "message_end",
+      message: { id: "user-3", role: "user", timestamp: 2, text: "hi", toolCalls: [] },
+    });
+    expect(next).toHaveLength(3);
+    expect(next.map((m) => m.id)).toEqual(["user-1", "user-2", "user-3"]);
+  });
+
+  it("assistant 流式占位 id 与权威 id 不一致（tail/live 双推送）：同文本合并为 1 条", () => {
+    let msgs: SessionMessage[] = [
+      { id: "live-7", role: "assistant", timestamp: 0, text: "干完了", toolCalls: [] },
+    ];
+    msgs = applyWsEvent(msgs, {
+      type: "message_end",
+      message: { id: "entry-abc", role: "assistant", timestamp: 5, text: "干完了", toolCalls: [] },
+    });
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0].id).toBe("entry-abc");
+  });
+});
+
+describe("message_start（user）乐观占位回填（pi SDK 双占位重复 bug）", () => {
+  it("user message_start 回填乐观占位（不追加第二条），message_end 同 id 覆盖后仍 1 条", () => {
+    // 手机实测复现路径：doSend 乐观占位 + WS user message_start 流式占位 + message_end
+    let msgs: SessionMessage[] = [
+      { id: "local-x", role: "user", timestamp: 0, text: "最后一轮诊断消息", toolCalls: [] },
+    ];
+    msgs = applyWsEvent(msgs, {
+      type: "message_start",
+      message: { id: "live-5-1", role: "user", timestamp: 1 },
+    });
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0].id).toBe("live-5-1");
+    expect(msgs[0].text).toBe("最后一轮诊断消息");
+
+    msgs = applyWsEvent(msgs, {
+      type: "message_end",
+      message: { id: "live-5-1", role: "user", timestamp: 1, text: "最后一轮诊断消息", toolCalls: [] },
+    });
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0].id).toBe("live-5-1");
+  });
+
+  it("连续两条同文本 user：start/end 各自收敛，2 条独立不重复", () => {
+    let msgs: SessionMessage[] = [
+      { id: "local-1", role: "user", timestamp: 0, text: "hi", toolCalls: [] },
+      { id: "local-2", role: "user", timestamp: 1, text: "hi", toolCalls: [] },
+    ];
+    msgs = applyWsEvent(msgs, { type: "message_start", message: { id: "live-a", role: "user", timestamp: 2 } });
+    msgs = applyWsEvent(msgs, {
+      type: "message_end",
+      message: { id: "live-a", role: "user", timestamp: 2, text: "hi", toolCalls: [] },
+    });
+    msgs = applyWsEvent(msgs, { type: "message_start", message: { id: "live-b", role: "user", timestamp: 3 } });
+    msgs = applyWsEvent(msgs, {
+      type: "message_end",
+      message: { id: "live-b", role: "user", timestamp: 3, text: "hi", toolCalls: [] },
+    });
+    // 核心：2 条独立显示（不重复、不误合并）；id 可能保留本地占位形态（无视觉影响）
+    expect(msgs).toHaveLength(2);
+    expect(msgs.every((m) => m.text === "hi")).toBe(true);
+  });
+
+  it("快速连发两条不同文本：start/end 收敛后条数与内容顺序均正确", () => {
+    let msgs: SessionMessage[] = [
+      { id: "local-1", role: "user", timestamp: 0, text: "第一条", toolCalls: [] },
+      { id: "local-2", role: "user", timestamp: 1, text: "第二条", toolCalls: [] },
+    ];
+    msgs = applyWsEvent(msgs, { type: "message_start", message: { id: "live-a", role: "user", timestamp: 2 } });
+    msgs = applyWsEvent(msgs, {
+      type: "message_end",
+      message: { id: "live-a", role: "user", timestamp: 2, text: "第一条", toolCalls: [] },
+    });
+    msgs = applyWsEvent(msgs, { type: "message_start", message: { id: "live-b", role: "user", timestamp: 3 } });
+    msgs = applyWsEvent(msgs, {
+      type: "message_end",
+      message: { id: "live-b", role: "user", timestamp: 3, text: "第二条", toolCalls: [] },
+    });
+    expect(msgs).toHaveLength(2);
+    expect(msgs.map((m) => m.text)).toEqual(["第一条", "第二条"]);
+  });
+
+  it("assistant message_start 不吞并已有 assistant 消息（新流式独立追加）", () => {
+    const msgs: SessionMessage[] = [
+      { id: "live-1", role: "assistant", timestamp: 0, text: "上一轮回复", toolCalls: [] },
+    ];
+    const next = applyWsEvent(msgs, {
+      type: "message_start",
+      message: { id: "live-2", role: "assistant", timestamp: 5 },
+    });
+    expect(next).toHaveLength(2);
+    expect(next.map((m) => m.id)).toEqual(["live-1", "live-2"]);
+  });
+
+  it("user message_start 无乐观占位时照旧追加（外部/tail 回显场景）", () => {
+    const next = applyWsEvent(base(), {
+      type: "message_start",
+      message: { id: "live-9", role: "user", timestamp: 1 },
+    });
+    expect(next).toHaveLength(1);
+    expect(next[0].id).toBe("live-9");
+    expect(next[0].text).toBe("");
+  });
+});

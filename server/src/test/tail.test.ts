@@ -126,3 +126,82 @@ describe("tail: detach 强制停（live 接管场景）", () => {
     }
   });
 });
+
+describe("tail: 回复落盘后的短静默 → agent_settled（中止按钮及时消失）", () => {
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  async function setup(): Promise<{ dir: string; file: string; got: Array<{ sessionId: string; event: ServerEvent }>; manager: SessionTailManager }> {
+    const dir = await mkdtemp(join(tmpdir(), "agent-hub-tail3-"));
+    const file = join(dir, "s.jsonl");
+    await writeFile(
+      file,
+      [
+        JSON.stringify({ type: "session", version: 3, id: "tail-3", timestamp: ts(), cwd: "/tmp/demo" }),
+        entry("u1", "user", "帮我修构建"),
+      ].join("\n"),
+      "utf8",
+    );
+    const got: Array<{ sessionId: string; event: ServerEvent }> = [];
+    // 注入小轮询/短静默窗口（生产默认 2s 轮询 / 3s 回复静默 / 60s 活动窗口）
+    const manager = new SessionTailManager((sessionId, event) => got.push({ sessionId, event }), {
+      pollMs: 100,
+      idleAfterReplyMs: 200,
+      idleAfterMs: 60_000,
+    });
+    manager.acquire("tail-3", file);
+    await sleep(250); // 初始快照
+    return { dir, file, got, manager };
+  }
+
+  it("assistant 回复落盘 + 短静默 → agent_settled + status idle（不再等 60s）", async () => {
+    const { dir, file, got, manager } = await setup();
+    try {
+      await appendFile(file, `\n${entry("a1", "assistant", "构建修好了")}`, "utf8");
+      await sleep(900);
+      const types = got.map((e) => e.event.type);
+      assert.ok(types.includes("message_end"), `应推回复 message_end，实际 ${JSON.stringify(types)}`);
+      assert.ok(types.includes("agent_settled"), `回复落盘短静默应推 agent_settled，实际 ${JSON.stringify(types)}`);
+      // 顺序：agent_settled → status idle（与 SessionHub 一致）
+      const settleAt = got.findIndex((e) => e.event.type === "agent_settled");
+      const idleAt = got.findIndex((e) => e.event.type === "status" && (e.event as { status: string }).status === "idle");
+      assert.ok(settleAt >= 0 && idleAt > settleAt, `顺序应为 settled→idle，实际 ${JSON.stringify(got.map((e) => e.event.type))}`);
+    } finally {
+      manager.stopAll();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("user 消息落盘不走短静默（工具间思考仍用长窗口，不误判 idle）", async () => {
+    const { dir, file, got, manager } = await setup();
+    try {
+      await appendFile(file, `\n${entry("u2", "user", "继续")}`, "utf8");
+      await sleep(900);
+      const types = got.map((e) => e.event.type);
+      assert.ok(types.includes("message_end"));
+      assert.ok(!types.includes("agent_settled"), `user 落盘不应触发短静默 settle，实际 ${JSON.stringify(types)}`);
+    } finally {
+      manager.stopAll();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("回复落盘 settle 后新一轮落盘 → 重新 running 并可再次 settle（多段/多轮不卡死）", async () => {
+    const { dir, file, got, manager } = await setup();
+    try {
+      await appendFile(file, `\n${entry("a1", "assistant", "第一轮完成")}`, "utf8");
+      await sleep(700);
+      assert.equal(got.filter((e) => e.event.type === "agent_settled").length, 1);
+
+      await appendFile(file, `\n${entry("a2", "assistant", "第二轮完成")}`, "utf8");
+      await sleep(900);
+      const types = got.map((e) => e.event.type);
+      const settled = types.filter((t) => t === "agent_settled").length;
+      assert.equal(settled, 2, `两轮回复各自 settle，实际 ${JSON.stringify(types)}`);
+      const lastRunning = types.lastIndexOf("status");
+      assert.ok(lastRunning > types.indexOf("agent_settled"), "第二轮应重新推 running");
+    } finally {
+      manager.stopAll();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});

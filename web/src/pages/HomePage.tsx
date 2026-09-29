@@ -23,6 +23,7 @@ import { RefreshIcon, SearchIcon, PlusIcon } from "../components/icons";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { filterSessionsByTab, type SessionTab } from "../utils/sessionTabs";
+import { unreadCountOf } from "../utils/notifications";
 import { peekListScrollTop, saveListScrollTop } from "../utils/scrollMemory";
 import { chatPath, navigate } from "../utils/router";
 
@@ -43,7 +44,8 @@ export function HomePage() {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
-  const [unreadCount, setUnreadCount] = useState(0);
+  /** 未读角标从列表派生（角标数 = 列表未读数 = 点击后递减，口径见 utils/notifications） */
+  const unreadCount = useMemo(() => unreadCountOf(notifications), [notifications]);
   const [system, setSystem] = useState<SystemStatus | null>(null);
   const [listError, setListError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -91,7 +93,6 @@ export function HomePage() {
     if (statsRes.status === "fulfilled") setStats(statsRes.value);
     if (notifRes.status === "fulfilled") {
       setNotifications(notifRes.value.notifications ?? []);
-      setUnreadCount(notifRes.value.unreadCount ?? 0);
     }
     setRefreshing(false);
     setLoaded(true);
@@ -114,7 +115,6 @@ export function HomePage() {
 
   const markAllRead = useCallback(async () => {
     // 乐观清零 + 服务端持久化（失败时下次刷新对齐）
-    setUnreadCount(0);
     setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
     try {
       await api.markNotificationsRead();
@@ -122,6 +122,17 @@ export function HomePage() {
       // 持久化失败不阻塞 UI
     }
   }, []);
+
+  /** 点击通知条目：标记该条已读（乐观递减角标）+ 跳转会话 */
+  const markRead = useCallback(async (id: string) => {
+    setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, read: true } : n)));
+    try {
+      await api.markNotificationsRead([id]);
+    } catch {
+      // 持久化失败：重新对账，保证角标与服务端一致
+      void refresh();
+    }
+  }, [refresh]);
 
   const working = useMemo(() => stats?.workingSessions ?? [], [stats]);
   const attentionIds = useMemo(
@@ -193,6 +204,7 @@ export function HomePage() {
           loading={!loaded}
           onReload={() => void refresh()}
           onMarkAllRead={() => void markAllRead()}
+          onMarkRead={(id) => void markRead(id)}
           onOpenSession={(id) => navigate(chatPath(id))}
         />
         <SettingsMenu />

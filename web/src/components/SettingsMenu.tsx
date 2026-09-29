@@ -3,6 +3,7 @@
  * 与 NoticeBanner 解耦：写入 localStorage，提醒发生时读取。
  */
 import { useEffect, useRef, useState } from "react";
+import { useDismissable } from "../hooks/useDismissable";
 import {
   DEFAULT_NOTIFY_SETTINGS,
   loadNotifySettings,
@@ -46,6 +47,9 @@ export function SettingsMenu() {
   const [settings, setSettings] = useState<NotifySettings>(DEFAULT_NOTIFY_SETTINGS);
   const [theme, setTheme] = useState<ThemeSetting>("system");
   const rootRef = useRef<HTMLDivElement | null>(null);
+
+  // 点外部/Esc 关闭 + 与其他弹层（通知铃铛/⋯菜单等）互斥
+  useDismissable({ open, onDismiss: () => setOpen(false), rootRef });
 
   useEffect(() => {
     const storage = typeof localStorage !== "undefined" ? localStorage : null;

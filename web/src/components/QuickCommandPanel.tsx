@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useRef, useState, type RefObject } from "react";
+import { useDismissable } from "../hooks/useDismissable";
 import {
   addCustomCommand,
   allCommands,
@@ -13,19 +14,25 @@ export interface QuickCommandPanelProps {
   /** 点击模板：插入输入框（可编辑后发送） */
   onInsert: (text: string) => void;
   onClose: () => void;
+  /** 锚点（⚡ 触发按钮）：toggle 点击不算外部，避免“打开即被关”打架 */
+  anchorRef?: RefObject<HTMLElement | null>;
 }
 
 /**
  * 快捷指令面板：内置常用 prompt 模板 + 用户自定义（localStorage 持久化）。
  * 点击条目插入输入框，自定义条目可删除。
  */
-export function QuickCommandPanel({ open, onInsert, onClose }: QuickCommandPanelProps) {
+export function QuickCommandPanel({ open, onInsert, onClose, anchorRef }: QuickCommandPanelProps) {
   // storage 不可用（getter 抛 SecurityError/禁 cookie）→ 降级仅内存，不崩不抛
   const [custom, setCustom] = useState<string[]>(() => {
     const storage = safeStorage();
     return storage ? loadCustomCommands(storage) : [];
   });
   const [draft, setDraft] = useState("");
+  const rootRef = useRef<HTMLDivElement | null>(null);
+
+  // 点外部/Esc 关闭 + 与其他弹层互斥
+  useDismissable({ open, onDismiss: onClose, rootRef, anchorRefs: anchorRef ? [anchorRef] : [] });
 
   if (!open) return null;
 
@@ -38,7 +45,7 @@ export function QuickCommandPanel({ open, onInsert, onClose }: QuickCommandPanel
   const commands = allCommands(custom);
 
   return (
-    <div className="quick-panel" role="dialog" aria-label="快捷指令">
+    <div className="quick-panel" role="dialog" aria-label="快捷指令" ref={rootRef}>
       <div className="quick-head">
         <span className="quick-title">⚡ 快捷指令</span>
         <button type="button" className="quick-close" onClick={onClose} aria-label="关闭快捷指令">

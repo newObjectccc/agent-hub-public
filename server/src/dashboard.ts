@@ -19,6 +19,7 @@ import {
   loadReadMarks,
   makeNotification,
   mergeNotifications,
+  notificationSummary,
   saveReadMarks,
   seedNotificationsFromInsights,
   unreadCountOf,
@@ -339,6 +340,8 @@ export interface DashboardServiceLike {
   getStats(): Promise<DashboardStats>;
   listNotifications(): Promise<NotificationListResponse>;
   markAllRead(): Promise<void>;
+  /** 单条/多条已读（ids 缺省=全部已读）；返回剩余未读数 */
+  markRead(ids?: string[]): Promise<number>;
 }
 
 export interface DashboardServiceOptions {
@@ -363,6 +366,7 @@ export class DashboardService implements DashboardServiceLike {
   private refreshing = false;
   private readonly liveItems = new Map<string, NotificationItem>();
   private readonly lastAssistantText = new Map<string, string>();
+  private readonly lastUserText = new Map<string, string>();
   private readIds = new Set<string>();
   private readMarksLoaded = false;
 
@@ -386,7 +390,8 @@ export class DashboardService implements DashboardServiceLike {
     }
     // 首次冷扫描（无任何缓存可回）：仅启动/首查一次
     await this.refreshInsights();
-    return this.cachedInsights!;
+    // 冷扫描失败（缓存仍空）回退空列表：通知/概览接口不 500
+    return this.cachedInsights ?? [];
   }
 
   private async refreshInsights(): Promise<void> {
@@ -445,21 +450,39 @@ export class DashboardService implements DashboardServiceLike {
     const seeded = seedNotificationsFromInsights(insights);
     // live 条目覆盖同 id 的历史回填（近重复由 mergeNotifications 折叠）
     const merged = mergeNotifications([seeded, [...this.liveItems.values()]]);
-    // 补全会话名（live 事件只知道 sessionId）
+    // 补全会话名与子代理标记（live 事件只知道 sessionId）
     const names = new Map<string, string | null>();
-    for (const insight of insights) names.set(insight.summary.id, insight.summary.name);
-    const named = merged.map((item) =>
-      item.sessionName === null && names.has(item.sessionId) ? { ...item, sessionName: names.get(item.sessionId) ?? null } : item,
-    );
+    const subAgentIds = new Set<string>();
+    for (const insight of insights) {
+      names.set(insight.summary.id, insight.summary.name);
+      if (insight.summary.isSubAgent) subAgentIds.add(insight.summary.id);
+    }
+    const named = merged.map((item) => ({
+      ...(item.sessionName === null && names.has(item.sessionId)
+        ? { ...item, sessionName: names.get(item.sessionId) ?? null }
+        : item),
+      isSubAgent: item.isSubAgent === true || subAgentIds.has(item.sessionId),
+    }));
     const notifications = applyReadMarks(named, readIds);
     return { notifications, unreadCount: unreadCountOf(notifications) };
   }
 
   async markAllRead(): Promise<void> {
-    const { notifications } = await this.listNotifications();
+    await this.markRead();
+  }
+
+  /** 单条/多条已读（ids 缺省=全部已读）；返回剩余未读数（与前端角标/列表未读同口径） */
+  async markRead(ids?: string[]): Promise<number> {
     const readIds = await this.ensureReadMarks();
-    for (const item of notifications) readIds.add(item.id);
+    if (ids === undefined) {
+      const { notifications } = await this.listNotifications();
+      for (const item of notifications) readIds.add(item.id);
+    } else {
+      for (const id of ids) readIds.add(id);
+    }
     await saveReadMarks(this.options.storeFile, readIds);
+    const { unreadCount } = await this.listNotifications();
+    return unreadCount;
   }
 
   /** 记录一条通知（live 事件 → 内存 + 回调推送） */
@@ -483,8 +506,12 @@ export class DashboardService implements DashboardServiceLike {
   recordEvent(sessionId: string, event: ServerEvent): void {
     switch (event.type) {
       case "message_end": {
-        if (event.message.role === "assistant" && event.message.text.trim() !== "") {
+        if (event.message.text.trim() === "") break;
+        if (event.message.role === "assistant") {
           this.lastAssistantText.set(sessionId, event.message.text);
+        } else if (event.message.role === "user") {
+          // 任务名语义：settled/steering 摘要优先用本轮最后一条 user 消息
+          this.lastUserText.set(sessionId, event.message.text);
         }
         break;
       }
@@ -492,7 +519,12 @@ export class DashboardService implements DashboardServiceLike {
         this.record(
           sessionId,
           "settled",
-          this.lastAssistantText.get(sessionId) ?? "agent 已完成本轮工作，等你确认",
+          notificationSummary({
+            kind: "settled",
+            lastUserText: this.lastUserText.get(sessionId),
+            lastAssistantText: this.lastAssistantText.get(sessionId),
+            fallback: "agent 已完成本轮工作，等你确认",
+          }),
         );
         break;
       }
@@ -507,6 +539,10 @@ export class DashboardService implements DashboardServiceLike {
 
   /** 会话运行活动（steering=插话/排队；done=手动中止） */
   recordActivity(sessionId: string, activity: HubActivity): void {
-    this.record(sessionId, activity.kind, activity.text);
+    const text =
+      activity.kind === "steering"
+        ? notificationSummary({ kind: "steering", lastUserText: activity.text, fallback: "收到插话" })
+        : activity.text;
+    this.record(sessionId, activity.kind, text);
   }
 }

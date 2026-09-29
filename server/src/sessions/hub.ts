@@ -50,6 +50,8 @@ interface LiveSession {
   /** toolCallId → 结果（折叠进 assistant message_end 的 toolCalls） */
   toolResults: Map<string, { isError: boolean; text: string }>;
   seq: number;
+  /** 本轮 run 是否已收尾（SDK agent_settled / abort / run 兑底三选一，保证必达且不重复） */
+  runSettled: boolean;
 }
 
 export interface PromptResult {
@@ -75,12 +77,18 @@ export function dtoRole(role: unknown): MessageRole | null {
   }
 }
 
+export interface SessionHubOptions {
+  /** 测试注入：缺省用 pi SDK 的 createAgentSession */
+  createAgentSession?: typeof createAgentSession;
+}
+
 export class SessionHub {
   private readonly sessionDir: string;
   private readonly emit: EmitFn;
   private readonly live = new Map<string, LiveSession>();
   private readonly statuses = new Map<string, SessionStatus>();
   private readonly searchService: SearchService;
+  private readonly createSessionFn: typeof createAgentSession;
   /** 扩展 live-feed 推送过的会话：id → 最后事件时间（10 分钟内视为 live，防文件 tail 双推送） */
   private readonly feedSessions = new Map<string, number>();  private disposed = false;
   /** 会话转 live 时回调（用于停掉文件 tail，保持单一推送源，防重复气泡） */
@@ -91,10 +99,11 @@ export class SessionHub {
   /** live-feed 活跃窗口：超过此时长无事件则重新允许文件 tail（pi 退出后自愈） */
   static readonly FEED_TTL_MS = 10 * 60_000;
 
-  constructor(sessionDir: string, emit: EmitFn) {
+  constructor(sessionDir: string, emit: EmitFn, options: SessionHubOptions = {}) {
     this.sessionDir = sessionDir;
     this.emit = emit;
     this.searchService = new SearchService(sessionDir);
+    this.createSessionFn = options.createAgentSession ?? createAgentSession;
   }
 
   getStatus(id: string): SessionStatus {
@@ -291,7 +300,7 @@ export class SessionHub {
     }
 
     const manager = SessionManager.open(found.sessionFile);
-    const { session } = await createAgentSession({
+    const { session } = await this.createSessionFn({
       sessionManager: manager,
       cwd: found.cwd !== "" ? found.cwd : undefined,
     });
@@ -303,6 +312,7 @@ export class SessionHub {
       currentMessageStartTs: null,
       toolResults: new Map(),
       seq: 0,
+      runSettled: true,
       unsubscribe: () => undefined,
     };
     liveSession.unsubscribe = session.subscribe((event) => this.handleSdkEvent(id, liveSession, event));
@@ -322,6 +332,10 @@ export class SessionHub {
     }
 
     const session = await this.ensureLive(id);
+    const live = this.live.get(id);
+    if (live === undefined) {
+      throw new HubError(ErrorCodes.INVALID_REQUEST, "会话未初始化");
+    }
     const decision = decidePromptAction(!session.isIdle, mode);
     if (decision.kind === "busy") {
       return { accepted: false, mode: mode ?? "prompt", busy: true };
@@ -329,12 +343,16 @@ export class SessionHub {
 
     this.setStatus(id, "running");
     if (decision.kind === "steer" || decision.kind === "followUp") {
-      // 插话/排队：通知聚合（kind=steering）
+      // 插话/排队：通知聚合（kind=steering；摘要由 dashboard 统一清洗/截断）
       this.onActivity?.(id, {
         kind: "steering",
-        text: `收到${decision.kind === "steer" ? "插话" : "排队消息"}：${truncateText(text, 80)}`,
+        text: truncateText(text, 80),
       });
     }
+    // steer 是并发插话（不独立收尾，由主 run 或 SDK agent_settled 收尾）；
+    // prompt/followUp 是一轮独立 run，必须自己兑底收尾（agent_settled 必达）
+    const trackRun = decision.kind === "prompt" || decision.kind === "followUp";
+    if (trackRun) live.runSettled = false;
     const run = (async () => {
       try {
         if (decision.kind === "steer") {
@@ -345,9 +363,21 @@ export class SessionHub {
           await session.prompt(text);
         }
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        this.setStatus(id, "error");
-        this.emit(id, { type: "error", code: ErrorCodes.PROMPT_FAILED, message });
+        // abort / SDK 已收尾：不报 error（不把“手动中止”变成红色错误）
+        if (!live.runSettled) {
+          live.runSettled = true;
+          const message = err instanceof Error ? err.message : String(err);
+          this.setStatus(id, "error");
+          this.emit(id, { type: "error", code: ErrorCodes.PROMPT_FAILED, message });
+        }
+      } finally {
+        // agent_settled 必达兑底：SDK 正常会发 agent_settled（置 runSettled）；
+        // 异常路径（事件丢失/进程异常）由这里恢复 UI，避免“中止按钮残留”
+        if (trackRun && !live.runSettled) {
+          live.runSettled = true;
+          this.emit(id, { type: "agent_settled" });
+          this.setStatus(id, "idle");
+        }
       }
     })();
     // 不阻塞 HTTP 响应：实际输出走 WS 事件流
@@ -360,6 +390,9 @@ export class SessionHub {
   async abort(id: string): Promise<void> {
     const live = this.live.get(id);
     if (!live) return;
+    // abort 自己已收尾（status idle + done 活动）：抑制 run finally 的 agent_settled 兑底，
+    // 避免中止后又冒出一条“干完了”通知
+    live.runSettled = true;
     await live.session.abort();
     this.setStatus(id, "idle");
     this.onActivity?.(id, { kind: "done", text: "已手动中止本轮运行" });
@@ -470,6 +503,7 @@ export class SessionHub {
         break;
       }
       case "agent_settled": {
+        live.runSettled = true;
         this.emit(id, { type: "agent_settled" });
         this.setStatus(id, "idle");
         break;

@@ -213,6 +213,7 @@ describe("NotificationCenter 未读角标与已读", () => {
     loading: false,
     onReload: vi.fn(),
     onMarkAllRead: vi.fn(),
+    onMarkRead: vi.fn(),
     onOpenSession: vi.fn(),
   };
 

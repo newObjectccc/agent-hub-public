@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { api } from "../api/client";
 import type { FsEntry } from "../api/types";
+import { useDismissable } from "../hooks/useDismissable";
 
 export interface FileTreePanelProps {
   open: boolean;
@@ -9,6 +10,8 @@ export interface FileTreePanelProps {
   /** 确认插入：选中的相对路径（面板关闭） */
   onInsert: (paths: string[]) => void;
   onClose: () => void;
+  /** 锚点（输入框容器）：点击继续输入不算外部，不误关面板 */
+  anchorRef?: RefObject<HTMLElement | null>;
 }
 
 /** rel 路径拼接（统一 / 分隔，根下就是 name） */
@@ -20,7 +23,7 @@ export function joinRel(path: string, name: string): string {
  * @ 文件树多选面板：面包屑导航 + 搜索过滤 + 多选 + 插入 `@rel/path` 引用。
  * 只读（GET /api/fs/tree），.git/node_modules 默认隐藏可展开；野兽派风格，320-1024 响应式。
  */
-export function FileTreePanel({ open, cwd, onInsert, onClose }: FileTreePanelProps) {
+export function FileTreePanel({ open, cwd, onInsert, onClose, anchorRef }: FileTreePanelProps) {
   const [path, setPath] = useState("");
   const [q, setQ] = useState("");
   const [showHidden, setShowHidden] = useState(false);
@@ -31,6 +34,10 @@ export function FileTreePanel({ open, cwd, onInsert, onClose }: FileTreePanelPro
   /** 多选：rel 路径集合（跨目录保留，插入时按选中顺序） */
   const [selected, setSelected] = useState<string[]>([]);
   const seqRef = useRef(0);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+
+  // 点外部/Esc 关闭 + 与其他弹层互斥（锚点=输入框容器，继续打字不误关）
+  useDismissable({ open, onDismiss: onClose, rootRef, anchorRefs: anchorRef ? [anchorRef] : [] });
 
   // 打开时重置到根（保留上次多选清空）
   useEffect(() => {
@@ -79,7 +86,7 @@ export function FileTreePanel({ open, cwd, onInsert, onClose }: FileTreePanelPro
   }
 
   return (
-    <div className="ft-panel" role="dialog" aria-label="引用文件">
+    <div className="ft-panel" role="dialog" aria-label="引用文件" ref={rootRef}>
       <div className="ft-head">
         <span className="ft-title">@ 引用文件</span>
         <span className="ft-cwd" title={cwd}>
