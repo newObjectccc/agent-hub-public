@@ -3939,3 +3939,398 @@ button.git-bar:active {  transform: translate(2px, 2px);
     min-height: 44px;
   }
 }
+
+/* ============================================================
+ * 一体化输入栏 / 上传 / / @ 面板增强（C 路结构，紧凑野兽派密度 token）
+ * 面板贴输入框上方（bottom:100%），320-1024 全视口不超屏
+ * ============================================================ */
+.composer {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* 一体化融合输入栏：输入框 + 按钮组单容器（粗描边 + 硬阴影，内嵌无缝） */
+.composer-box {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  padding: 5px 6px 5px 10px;
+  background: var(--card);
+  color: var(--card-foreground);
+  border: var(--bw) solid var(--border);
+  border-radius: var(--nb-radius);
+  box-shadow: var(--shadow-card);
+}
+
+.composer-box .chat-textarea-wrap {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* 内嵌输入框：去独立边框（容器已描边），行高紧凑 */
+.composer-textarea {
+  width: 100%;
+  min-height: 44px;
+  max-height: 40vh;
+  padding: 10px 0;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  outline: none;
+  resize: none;
+  font-size: 14.5px;
+  line-height: 1.45;
+}
+
+.composer-textarea::placeholder {
+  color: var(--muted-foreground);
+}
+
+.composer-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  padding-bottom: 1px;
+}
+
+/* 通用内嵌按钮（📎 上传等）：44px 触控底线 */
+.composer-btn {
+  width: 44px;
+  height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 17px;
+  background: var(--accent);
+  color: var(--accent-foreground);
+  border: var(--bw) solid var(--border);
+  border-radius: var(--nb-radius);
+  box-shadow: var(--nb-shadow-xs);
+  cursor: pointer;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+
+.composer-btn:hover {
+  transform: translate(-1px, -1px);
+  box-shadow: var(--nb-shadow-sm);
+}
+
+.composer-btn:active {
+  transform: translate(1px, 1px);
+  box-shadow: none;
+}
+
+.composer-btn.busy {
+  opacity: 0.7;
+}
+
+.composer-file-input {
+  display: none;
+}
+
+/* 发送主按钮：未就绪灰、ready 亮黄高亮（野兽派撞色） */
+.composer-send {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-width: 72px;
+  height: 44px;
+  padding: 0 12px;
+  font-family: var(--nb-font-head);
+  font-weight: 900;
+  font-size: 13.5px;
+  background: var(--muted);
+  color: var(--muted-foreground);
+  border: var(--bw) solid var(--border);
+  border-radius: var(--nb-radius);
+  box-shadow: var(--nb-shadow-sm);
+  cursor: pointer;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+
+.composer-send.ready {
+  background: var(--primary);
+  color: var(--primary-foreground);
+  box-shadow: var(--nb-shadow-card);
+}
+
+.composer-send.ready:hover {
+  transform: translate(-1px, -1px);
+  box-shadow: var(--nb-shadow-hover);
+}
+
+.composer-send:active:not(:disabled) {
+  transform: translate(1px, 1px);
+  box-shadow: none;
+}
+
+.composer-send:disabled {
+  cursor: not-allowed;
+  opacity: 0.75;
+}
+
+.send-icon {
+  font-size: 13px;
+  line-height: 1;
+}
+
+.send-text {
+  white-space: nowrap;
+}
+
+/* ---------- 📎 附件预览条（输入框上方） ---------- */
+.attach-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 2px 0;
+}
+
+.attach-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: min(240px, 100%);
+  height: 48px;
+  padding: 3px 4px 3px 6px;
+  background: var(--accent);
+  color: var(--accent-foreground);
+  border: var(--bw) solid var(--border);
+  border-radius: var(--nb-radius);
+  box-shadow: var(--nb-shadow-xs);
+}
+
+.attach-thumb {
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  object-fit: cover;
+  background: var(--card);
+  border: 2px solid var(--border);
+}
+
+.attach-thumb.file {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+}
+
+.attach-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.attach-remove {
+  width: 44px;
+  height: 44px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  background: var(--destructive);
+  color: var(--destructive-foreground);
+  border: 2px solid var(--border);
+  border-radius: var(--nb-radius);
+  cursor: pointer;
+}
+
+.attach-remove:active {
+  transform: translate(1px, 1px);
+}
+
+/* ---------- @ 面板：最近引用文件快捷区 ---------- */
+.ft-recents {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 6px 2px;
+  border-bottom: 2px solid var(--border);
+}
+
+.ft-recents-label {
+  font-family: var(--nb-font-head);
+  font-weight: 900;
+  font-size: 11.5px;
+  color: var(--muted-foreground);
+}
+
+.ft-recents-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  max-height: 96px;
+  overflow-y: auto;
+}
+
+.ft-recent-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 200px;
+  min-height: 44px;
+  padding: 4px 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: var(--info);
+  color: var(--info-foreground);
+  border: 2px solid var(--border);
+  border-radius: var(--nb-radius);
+  box-shadow: var(--nb-shadow-xs);
+  cursor: pointer;
+}
+
+.ft-recent-chip:active {
+  transform: translate(1px, 1px);
+  box-shadow: none;
+}
+
+/* ---------- / 命令面板：分组 / 图标 ---------- */
+.slash-group {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.slash-group-head {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 2px;
+  font-family: var(--nb-font-head);
+  font-weight: 900;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: var(--muted-foreground);
+  border-bottom: 2px solid var(--border);
+}
+
+.slash-group-icon {
+  font-size: 13px;
+  line-height: 1;
+}
+
+.slash-item-icon {
+  flex-shrink: 0;
+  width: 18px;
+  text-align: center;
+  font-size: 13px;
+  line-height: 1;
+}
+
+.slash-hint-inline {
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10.5px;
+  color: var(--muted-foreground);
+}
+
+/* ---------- chat 输入区杂项 ---------- */
+.run-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 0;
+}
+
+.voice-btn.unavailable {
+  opacity: 0.55;
+  background: var(--muted);
+  color: var(--muted-foreground);
+}
+
+/* 录音中禁用斜杠覆盖（粗描边红条） */
+.voice-slash {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  font-weight: 900;
+  color: var(--destructive-foreground);
+  pointer-events: none;
+}
+
+/* ---------- 骨架屏（列表/块级） ---------- */
+.skeleton-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.skeleton-block {
+  height: 96px;
+  background: var(--muted);
+  border: var(--bw) solid var(--border);
+  box-shadow: var(--nb-shadow-xs);
+}
+
+/* 野兽派斜条纹（缓动扫光，reduced-motion 由全局降级块接管） */
+.nb-stripe {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    var(--muted) 0 10px,
+    var(--accent) 10px 20px
+  );
+  background-size: 200% 100%;
+  animation: nb-stripe-shift 1.2s linear infinite;
+}
+
+@keyframes nb-stripe-shift {
+  from {
+    background-position: 0 0;
+  }
+  to {
+    background-position: 28px 0;
+  }
+}
+
+/* ---------- Diff 查看器容器 ---------- */
+.diff-view {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* ---------- 子代理兜底分组容器（🤖 未归组） ---------- */
+.subagent-group {
+  margin-top: 10px;
+}
+
+/* ---------- 树形展开按钮内部（计数/箭头） ---------- */
+.session-expand-count {
+  white-space: nowrap;
+}
+
+.session-expand-caret {
+  line-height: 1;
+}
+
+/* ---------- 页面容器（内容纵向节奏） ---------- */
+.home-page,
+.sessions-page,
+.system-page,
+.settings-page {
+  display: block;
+}
+
+.system-page .syscard {
+  margin-top: 2px;
+}

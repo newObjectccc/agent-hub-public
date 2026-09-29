@@ -5,3 +5,6 @@ dist/
 config/hub.config.local.json
 .env
 data/
+
+# agent-hub 上传暂存（server 端运行时文件，不入库）
+.agent-hub-uploads/
