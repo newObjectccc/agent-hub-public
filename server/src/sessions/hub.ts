@@ -15,9 +15,11 @@ import {
   type AgentSessionEvent,
 } from "@earendil-works/pi-coding-agent";
 import { ErrorCodes, HubError } from "../errors.js";
-import type { MessageDto, MessageRole, ServerEvent, SessionListItem, SessionStatus, ToolCallStatus } from "../types.js";
+import type { MessageDto, MessageRole, SearchResultDto, ServerEvent, SessionListItem, SessionStatus, SessionTreeDto, ToolCallStatus } from "../types.js";
 import { decidePromptAction, parsePromptMode, type PromptMode } from "./prompt-policy.js";
+import { SearchService, SEARCH_DEFAULT_LIMIT } from "./search.js";
 import { inferExternalStatus } from "./tail.js";
+import { loadSessionTree } from "./tree.js";
 import {
   assistantToolCalls,
   contentToText,
@@ -72,6 +74,7 @@ export class SessionHub {
   private readonly emit: EmitFn;
   private readonly live = new Map<string, LiveSession>();
   private readonly statuses = new Map<string, SessionStatus>();
+  private readonly searchService: SearchService;
   private disposed = false;
   /** 会话转 live 时回调（用于停掉文件 tail，保持单一推送源，防重复气泡） */
   onLive?: (id: string) => void;
@@ -79,6 +82,7 @@ export class SessionHub {
   constructor(sessionDir: string, emit: EmitFn) {
     this.sessionDir = sessionDir;
     this.emit = emit;
+    this.searchService = new SearchService(sessionDir);
   }
 
   getStatus(id: string): SessionStatus {
@@ -116,6 +120,23 @@ export class SessionHub {
     const found = await this.findSession(id);
     if (!found) return null;
     return loadSessionMessages(found.sessionFile);
+  }
+
+  /** 跨会话搜索（active branch 消息文本，内存缓存） */
+  search(query: string, limit: number = SEARCH_DEFAULT_LIMIT): Promise<SearchResultDto[]> {
+    return this.searchService.search(query, limit);
+  }
+
+  /** 会话分支树（JSONL id/parentId 构树） */
+  async loadTree(id: string): Promise<SessionTreeDto | null> {
+    const found = await this.findSession(id);
+    if (!found) return null;
+    return loadSessionTree(found.sessionFile);
+  }
+
+  /** 会话文件变更（presence 回调）→ 搜索索引失效 */
+  invalidateSearch(): void {
+    this.searchService.invalidate();
   }
 
   /**

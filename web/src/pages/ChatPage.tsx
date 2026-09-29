@@ -1,5 +1,5 @@
 import { ChatSkeleton } from "../components/Skeletons";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api/client";
 import { sendPromptWithFallback } from "../api/prompt";
 import type { SessionMessage, SessionStatus, SessionSummary } from "../api/types";
@@ -7,10 +7,11 @@ import { applyWsEvent, type WsEvent } from "../chat/messageStream";
 import { useSessionSocket } from "../hooks/useSessionSocket";
 import { MessageBubble } from "../components/MessageBubble";
 import { StatusBadge } from "../components/StatusBadge";
-import { BackIcon } from "../components/icons";
+import { BackIcon, TreeIcon } from "../components/icons";
 import { Button } from "../components/ui/button";
 import { Textarea } from "../components/ui/textarea";
-import { navigate } from "../utils/router";
+import { findMessageByText } from "../utils/search";
+import { chatPath, currentLocate, navigate, treePath } from "../utils/router";
 
 /**
  * 权威消息合并已并入 messageStream.applyWsEvent 的 message_end 分支：
@@ -28,6 +29,10 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
   const [sending, setSending] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  // 搜索定位参数（?q= 关键词 / ?m= 消息 id）：一次性消费，避免每帧抢滚动
+  const locate = useMemo(() => currentLocate(), []);
+  const locatedRef = useRef(false);
+  const [highlightId, setHighlightId] = useState<string | null>(null);
 
   /** GET /api/sessions/:id 全量对账（首屏加载 + WS 重连后） */
   const loadSession = useCallback(async () => {
@@ -55,10 +60,25 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
     return () => clearTimeout(timer);
   }, [notice]);
 
-  // 自动滚动到底部
+  // 消息到位后：有定位参数则高亮并滚动到命中消息，否则自动滚动到底部
   useEffect(() => {
+    if (messages.length === 0) return;
+    if (!locatedRef.current) {
+      locatedRef.current = true;
+      const hitId = locate.messageId
+        ? messages.find((m) => m.id === locate.messageId)?.id ?? findMessageByText(messages, locate.q ?? "")
+        : findMessageByText(messages, locate.q ?? "");
+      if (hitId) {
+        setHighlightId(hitId);
+        // 等待高亮 class 落 DOM 后再滚动，确保元素存在
+        window.requestAnimationFrame(() => {
+          document.getElementById(`msg-${hitId}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+        });
+        return;
+      }
+    }
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [messages]);
+  }, [messages, locate]);
 
   const handleEvent = useCallback(
     (event: WsEvent) => {
@@ -156,6 +176,17 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
           <div className="name">{session?.name ?? sessionId}</div>
           <div className="cwd">{session?.cwd ?? ""}</div>
         </div>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="chat-tree-btn"
+          onClick={() => navigate(treePath(sessionId))}
+          aria-label="查看会话分支树"
+        >
+          <TreeIcon />
+          树
+        </Button>
         <StatusBadge status={status} />
       </header>
 
@@ -175,7 +206,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
           <div className="empty">还没有消息，发送第一条吧</div>
         )}
         {messages.map((m) => (
-          <MessageBubble key={m.id} message={m} />
+          <MessageBubble key={m.id} message={m} highlight={m.id === highlightId} />
         ))}
         <div ref={bottomRef} />
       </div>

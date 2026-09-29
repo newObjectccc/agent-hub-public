@@ -11,7 +11,7 @@ import { DEFAULT_CONFIG } from "../config.js";
 import { createApp } from "../index.js";
 import type { SessionHub } from "../sessions/hub.js";
 import type { SessionHubLike } from "../routes.js";
-import type { MessageDto, SessionListItem, SystemInfo } from "../types.js";
+import type { MessageDto, SearchResultDto, SessionListItem, SessionTreeDto, SystemInfo } from "../types.js";
 import { WsHub } from "../ws.js";
 
 const sessionFixture: SessionListItem = {
@@ -47,6 +47,8 @@ function makeFakeHub(promptCalls: PromptCall[]): SessionHubLike {
     listSessions: async () => [sessionFixture],
     findSession: async (id: string) => (id === "sess-1" ? sessionFixture : null),
     loadMessages: async (): Promise<MessageDto[]> => [],
+    search: async (): Promise<SearchResultDto[]> => [],
+    loadTree: async (): Promise<SessionTreeDto | null> => ({ entries: [], activePath: [] }),
     createSession: async () => sessionFixture,
     prompt: async (_id: string, text: unknown, mode: unknown) => {
       promptCalls.push({ text, mode });

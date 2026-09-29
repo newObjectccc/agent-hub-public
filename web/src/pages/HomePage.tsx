@@ -5,10 +5,11 @@ import type { KpiCard as KpiCardType, SessionSummary, SystemStatus } from "../ap
 import { KpiCard } from "../components/KpiCard";
 import { NewSessionForm } from "../components/NewSessionForm";
 import { PullToRefresh } from "../components/PullToRefresh";
+import { SearchPanel } from "../components/SearchPanel";
 import { SessionList } from "../components/SessionList";
 import { KpiSkeleton, SessionListSkeleton } from "../components/Skeletons";
 import { SystemStatusBar } from "../components/SystemStatus";
-import { RefreshIcon } from "../components/icons";
+import { RefreshIcon, SearchIcon } from "../components/icons";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { chatPath, navigate } from "../utils/router";
@@ -21,6 +22,7 @@ export function HomePage() {
   const [listError, setListError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
 
   const refresh = useCallback(async () => {
     setRefreshing(true);
@@ -54,6 +56,16 @@ export function HomePage() {
       {refreshing && loaded && <div className="refresh-bar" role="progressbar" aria-label="刷新中" />}
       <header className="app-header">
         <h1 className="app-title">Agent Hub</h1>
+        <Button
+          type="button"
+          variant="secondary"
+          size="icon"
+          className="min-h-[44px] min-w-[44px]"
+          onClick={() => setSearchOpen(true)}
+          aria-label="搜索"
+        >
+          <SearchIcon />
+        </Button>
         <Button
           type="button"
           variant="secondary"
@@ -121,6 +133,8 @@ export function HomePage() {
           navigate(chatPath(session.id));
         }}
       />
+
+      <SearchPanel open={searchOpen} onClose={() => setSearchOpen(false)} />
     </div>
   );
 }

@@ -93,10 +93,11 @@ export async function startHub(): Promise<StartedHub> {
   // 会话一旦由本进程接管（live），停掉文件 tail，避免双推送源产生重复气泡
   hub.onLive = (sid) => tails.detach(sid);
   wshub.attach(app.server, hub, tails);
-  // 全局存在感知：任一会话文件变化 → 广播 sessions_changed（列表实时刷新）
-  const presence = new PresenceWatcher(config.sessionDir, () =>
-    wshub.broadcastGlobal({ type: "sessions_changed" }),
-  );
+  // 全局存在感知：任一会话文件变化 → 广播 sessions_changed（列表实时刷新）+ 搜索索引失效
+  const presence = new PresenceWatcher(config.sessionDir, () => {
+    hub.invalidateSearch();
+    wshub.broadcastGlobal({ type: "sessions_changed" });
+  });
   await presence.start();
   await kpi.start();
 
