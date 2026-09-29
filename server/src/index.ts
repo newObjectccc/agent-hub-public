@@ -26,7 +26,7 @@ export interface CreateAppOptions extends RouteDeps {
 
 /** 装配 Fastify app：CORS + REST 路由 + 静态托管 + SPA history fallback */
 export async function createApp(options: CreateAppOptions): Promise<FastifyInstance> {
-  const app = Fastify({ logger: options.logger ?? false });
+  const app = Fastify({ logger: options.logger ?? false, forceCloseConnections: true });
   await app.register(fastifyCors, { origin: true });
 
   await registerRoutes(app, {
@@ -41,16 +41,17 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
   const hasWeb = root !== null && existsSync(join(root, "index.html"));
   if (hasWeb && root !== null) {
     await app.register(fastifyStatic, { root, prefix: "/" });
-    // SPA history fallback：不在 /api、/ws 前缀下的 GET 未命中静态文件 → index.html
-    // （前端路由 /s/:id 等直接刷新不 404）
-    app.setNotFoundHandler((req, reply) => {
-      if (req.method === "GET" && !req.url.startsWith("/api") && !req.url.startsWith("/ws")) {
-        return reply.type("text/html").sendFile("index.html");
-      }
-      return reply.status(404).send({ error: { code: "NOT_FOUND", message: `no route: ${req.url}` } });
-    });
     app.log.info(`serving PWA from ${root}`);
   }
+
+  // 统一 404 错误信封（契约要求）：无论 web/dist 是否存在，未命中路由都返回 {error:{code,message}}；
+  // SPA history fallback 仅在托管 web/dist 时生效：非 /api、/ws 的 GET → index.html（/s/:id 刷新不 404）
+  app.setNotFoundHandler((req, reply) => {
+    if (hasWeb && root !== null && req.method === "GET" && !req.url.startsWith("/api") && !req.url.startsWith("/ws")) {
+      return reply.type("text/html").sendFile("index.html");
+    }
+    return reply.status(404).send({ error: { code: "NOT_FOUND", message: `no route: ${req.url}` } });
+  });
 
   return app;
 }
@@ -60,6 +61,7 @@ export interface StartedHub {
   hub: SessionHub;
   kpi: KpiService;
   config: HubConfig;
+  wshub: WsHub;
   close(): Promise<void>;
 }
 
@@ -94,10 +96,12 @@ export async function startHub(): Promise<StartedHub> {
     closed = true;
     kpi.stop();
     hub.disposeAll();
+    // 先掐掉全部 WS 连接再关 HTTP，否则在线 WS 客户端会让 app.close() 永不 resolve
+    wshub.closeAll();
     await app.close();
   };
 
-  return { app, hub, kpi, config, close };
+  return { app, hub, kpi, config, close, wshub };
 }
 
 async function main(): Promise<void> {

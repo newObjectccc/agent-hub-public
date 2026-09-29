@@ -2,6 +2,7 @@
  * REST 路由（docs/API_CONTRACT.md §1-§3）。
  * 统一错误信封：{ "error": { "code", "message" } }
  */
+import { timingSafeEqual } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { HubConfig } from "./config.js";
 import { ErrorCodes, HubError, toErrorEnvelope } from "./errors.js";
@@ -54,8 +55,11 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
     app.addHook("onRequest", async (req: FastifyRequest, reply: FastifyReply) => {
       const header = req.headers.authorization ?? "";
       const expected = `Bearer ${config.auth.token}`;
-      if (header !== expected) {
-        void reply.status(401).send({ error: { code: "UNAUTHORIZED", message: "invalid or missing bearer token" } });
+      const a = Buffer.from(header);
+      const b = Buffer.from(expected);
+      const ok = a.length === b.length && timingSafeEqual(a, b);
+      if (!ok) {
+        return reply.status(401).send({ error: { code: "UNAUTHORIZED", message: "invalid or missing bearer token" } });
       }
     });
   }

@@ -309,3 +309,37 @@ describe("contract: WS 事件 type 集合与字段名（契约 §4 表格）", (
     hub.disposeAll();
   });
 });
+
+describe("contract: 统一 404 错误信封（web/dist 缺失时也生效）", () => {
+  let app: Awaited<ReturnType<typeof createApp>>;
+
+  before(async () => {
+    app = await createApp({
+      hub: makeFakeHub({ accepted: true, mode: "prompt" }),
+      kpi: { getCards: () => [] },
+      config: { ...DEFAULT_CONFIG },
+      systemInfo: async () => systemFixture,
+      webRoot: null,
+    });
+  });
+
+  after(async () => {
+    await app.close();
+  });
+
+  it("GET /api/unknown 返回 {error:{code,message}} 而非 Fastify 默认 404", async () => {
+    const res = await app.inject({ method: "GET", url: "/api/unknown" });
+    assert.equal(res.statusCode, 404);
+    const body = res.json() as { error: { code: string; message: string } };
+    assert.equal(body.error.code, "NOT_FOUND");
+    assert.equal(typeof body.error.message, "string");
+    assert.deepEqual(Object.keys(body), ["error"]);
+  });
+
+  it("任意未知路径同样返回统一信封", async () => {
+    const res = await app.inject({ method: "GET", url: "/no/such/page" });
+    assert.equal(res.statusCode, 404);
+    const body = res.json() as { error: { code: string } };
+    assert.equal(body.error.code, "NOT_FOUND");
+  });
+});

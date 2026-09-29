@@ -19,6 +19,7 @@ interface ClientMessage {
 
 export class WsHub {
   private readonly clients = new Map<string, Set<WebSocket>>();
+  private wss: WebSocketServer | null = null;;
 
   /** hub 广播出口（构造 SessionHub 时注入） */
   broadcast(sessionId: string, event: ServerEvent): void {
@@ -57,6 +58,7 @@ export class WsHub {
   /** 挂到 HTTP server 的 upgrade 事件 */
   attach(server: HttpServer, hub: SessionHub): void {
     const wss = new WebSocketServer({ noServer: true });
+    this.wss = wss;
 
     server.on("upgrade", (req: IncomingMessage, socket: Duplex, head: Buffer) => {
       const url = req.url ?? "";
@@ -67,28 +69,62 @@ export class WsHub {
       }
       const sessionId = decodeURIComponent(match[1]);
       wss.handleUpgrade(req, socket, head, (ws) => {
-        void this.handleConnection(ws, sessionId, hub);
+        this.handleConnection(ws, sessionId, hub);
       });
     });
   }
 
-  private async handleConnection(socket: WebSocket, sessionId: string, hub: SessionHub): Promise<void> {
-    const session = await hub.findSession(sessionId);
-    if (!session) {
-      this.send(socket, { type: "error", code: ErrorCodes.SESSION_NOT_FOUND, message: `会话不存在: ${sessionId}` });
-      socket.close(1008, ErrorCodes.SESSION_NOT_FOUND);
-      return;
+  /** 关闭全部连接与 WSS。进程退出前调用，否则 app.close() 会被在线 WS 连接挂住不返回 */
+  closeAll(): void {
+    for (const set of this.clients.values()) {
+      for (const socket of set) {
+        socket.terminate();
+      }
     }
+    this.clients.clear();
+    const wss = this.wss;
+    this.wss = null;
+    if (wss) wss.close();
+  }
 
-    this.add(sessionId, socket);
-    // 契约：连接后首条握手确认
-    this.send(socket, { type: "session", id: session.id, cwd: session.cwd });
+  /**
+   * 同步注册消息监听；findSession 解析完成前到达的消息进 pending 队列，
+   * 握手后统一消费。修复“连接即发的消息静默丢失”竞态。
+   */
+  private handleConnection(socket: WebSocket, sessionId: string, hub: SessionHub): void {
+    const pending: string[] = [];
+    let ready = false;
+    const process = (text: string): void => {
+      void this.handleClientMessage(socket, sessionId, hub, text);
+    };
 
     socket.on("message", (raw: Buffer | ArrayBuffer | Buffer[]) => {
-      void this.handleClientMessage(socket, sessionId, hub, raw.toString());
+      const text = raw.toString();
+      if (ready) {
+        process(text);
+      } else {
+        pending.push(text);
+      }
     });
     socket.on("close", () => this.remove(sessionId, socket));
     socket.on("error", () => this.remove(sessionId, socket));
+
+    void (async () => {
+      const session = await hub.findSession(sessionId);
+      if (!session) {
+        this.send(socket, { type: "error", code: ErrorCodes.SESSION_NOT_FOUND, message: `会话不存在: ${sessionId}` });
+        socket.close(1008, ErrorCodes.SESSION_NOT_FOUND);
+        return;
+      }
+
+      this.add(sessionId, socket);
+      // 契约：连接后首条握手确认
+      this.send(socket, { type: "session", id: session.id, cwd: session.cwd });
+
+      ready = true;
+      const queued = pending.splice(0);
+      for (const text of queued) process(text);
+    })();
   }
 
   private async handleClientMessage(socket: WebSocket, sessionId: string, hub: SessionHub, raw: string): Promise<void> {
