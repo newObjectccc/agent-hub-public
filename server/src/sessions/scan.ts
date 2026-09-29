@@ -372,16 +372,26 @@ export interface ScanOptions {
 /** 扫描全部会话（所有 cwd 分组），按 updatedAt 倒序 */
 export async function scanSessions(sessionDir: string, options: ScanOptions = {}): Promise<SessionListItem[]> {
   const files = await findSessionFiles(sessionDir);
+  // 并发解析（分批 8）：与 scanSessionInsights 同策略，避免串行读盘卡列表接口
+  const CONCURRENCY = 8;
   const items: SessionListItem[] = [];
-  for (const file of files) {
-    try {
-      const fileStat = await stat(file);
-      const parsed = parseSessionJsonl(await readSessionFile(file));
-      const summary = buildSessionSummary(file, parsed, fileStat.mtimeMs);
-      if (!summary) continue;
-      items.push({ ...summary, status: options.statusOf ? options.statusOf(summary.id, Date.parse(summary.updatedAt)) : "idle" });
-    } catch {
-      // 单个文件损坏不影响其它会话
+  for (let i = 0; i < files.length; i += CONCURRENCY) {
+    const batch = await Promise.all(
+      files.slice(i, i + CONCURRENCY).map(async (file) => {
+        try {
+          const fileStat = await stat(file);
+          const parsed = parseSessionJsonl(await readSessionFile(file));
+          const summary = buildSessionSummary(file, parsed, fileStat.mtimeMs);
+          if (!summary) return null;
+          return { ...summary, status: options.statusOf ? options.statusOf(summary.id, Date.parse(summary.updatedAt)) : "idle" };
+        } catch {
+          // 单个文件损坏不影响其它会话
+          return null;
+        }
+      }),
+    );
+    for (const item of batch) {
+      if (item) items.push(item);
     }
   }
   // 确定性 tiebreaker：updatedAt 相同时按 id 升序（与 web sortSessions 口径一致，刷新绝不重排）
@@ -443,19 +453,30 @@ export function buildInsight(summary: SessionListItem, messages: MessageDto[]): 
 /** 扫描全部会话的深度洞察（每个文件一次读写：摘要 + 消息 + 推导字段） */
 export async function scanSessionInsights(sessionDir: string, options: ScanOptions = {}): Promise<SessionInsight[]> {
   const files = await findSessionFiles(sessionDir);
+  // 并发解析（分批 8）：60+ 会话文件串行读盘是 dashboard 秒级卡顿的根源
+  const CONCURRENCY = 8;
   const items: SessionInsight[] = [];
-  for (const file of files) {
-    try {
-      const fileStat = await stat(file);
-      const parsed = parseSessionJsonl(await readSessionFile(file));
-      const summaryBase = buildSessionSummary(file, parsed, fileStat.mtimeMs);
-      if (!summaryBase) continue;
-      const status = options.statusOf ? options.statusOf(summaryBase.id, Date.parse(summaryBase.updatedAt)) : "idle";
-      const summary: SessionListItem = { ...summaryBase, status };
-      const messages = buildMessages(selectActiveBranch(parsed.entries));
-      items.push(buildInsight(summary, messages));
-    } catch {
-      // 单个文件损坏不影响其它会话
+  for (let i = 0; i < files.length; i += CONCURRENCY) {
+    const batch = files.slice(i, i + CONCURRENCY);
+    const parsedBatch = await Promise.all(
+      batch.map(async (file) => {
+        try {
+          const fileStat = await stat(file);
+          const parsed = parseSessionJsonl(await readSessionFile(file));
+          const summaryBase = buildSessionSummary(file, parsed, fileStat.mtimeMs);
+          if (!summaryBase) return null;
+          const status = options.statusOf ? options.statusOf(summaryBase.id, Date.parse(summaryBase.updatedAt)) : "idle";
+          const summary: SessionListItem = { ...summaryBase, status };
+          const messages = buildMessages(selectActiveBranch(parsed.entries));
+          return buildInsight(summary, messages);
+        } catch {
+          // 单个文件损坏不影响其它会话
+          return null;
+        }
+      }),
+    );
+    for (const item of parsedBatch) {
+      if (item) items.push(item);
     }
   }
   items.sort((a, b) => {

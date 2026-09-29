@@ -142,12 +142,17 @@ export async function startHub(): Promise<StartedHub> {
     ],
     () => {
       hub.invalidateSearch();
+      hub.invalidateList();
+      dashboard.invalidate();
       wshub.broadcastGlobal({ type: "sessions_changed" });
     },
     [config.sessionDir, claudeProjectsDir],
   );
   await presence.start();
   await kpi.start();
+  // 预热：后台完成首次全量扫描（sessions + dashboard），首查不等冷扫
+  void hub.listSessions().catch(() => undefined);
+  void dashboard.getStats().catch(() => undefined);
 
   let closed = false;
   const close = async (): Promise<void> => {

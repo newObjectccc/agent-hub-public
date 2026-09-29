@@ -61,6 +61,41 @@ export class SessionRegistry {
 
   /** 合并两源列表，按 updatedAt 倒序（契约排序），同刻按 id 稳定排序 */
   async listSessions(): Promise<SessionListItem[]> {
+    const now = Date.now();
+    if (this.cacheList && now - this.cacheListAt < SessionRegistry.LIST_CACHE_TTL_MS) return this.cacheList;
+    // stale-while-revalidate：有旧值立即回，后台刷新（presence 高频失效下依旧秒回）
+    if (this.cacheList) {
+      if (!this.refreshingList) void this.refreshList();
+      return this.cacheList;
+    }
+    await this.refreshList();
+    return this.cacheList ?? [];
+  }
+
+  private async refreshList(): Promise<void> {
+    if (this.refreshingList) return;
+    this.refreshingList = true;
+    try {
+      this.cacheList = await this.loadSessions();
+      this.cacheListAt = Date.now();
+    } catch {
+      // 扫描失败保留旧缓存
+    } finally {
+      this.refreshingList = false;
+    }
+  }
+
+  /** 文件变更（presence）时标记过期：旧值秒回 + 下次刷新（SWR） */
+  invalidateList(): void {
+    this.cacheListAt = 0;
+  }
+
+  private static readonly LIST_CACHE_TTL_MS = 15_000;
+  private cacheList: SessionListItem[] | null = null;
+  private cacheListAt = 0;
+  private refreshingList = false;
+
+  private async loadSessions(): Promise<SessionListItem[]> {
     const [piSessions, claudeSessions] = await Promise.all([this.pi.listSessions(), this.claude.listSessions()]);
     const merged = this.remember([...piSessions, ...claudeSessions]);
     merged.sort((a, b) => {

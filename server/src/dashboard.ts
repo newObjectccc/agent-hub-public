@@ -42,7 +42,9 @@ import type {
 export const ATTENTION_WINDOW_MS = 24 * 60 * 60 * 1000;
 export const MAX_SECTION_CARDS = 20;
 /** 会话扫描缓存 TTL：stats 与通知共用一次扫描 */
-const INSIGHTS_CACHE_TTL_MS = 3_000;
+// 静止期长缓存（轮询命中缓存毫秒级）；文件变更由 presence 主动 invalidate
+const INSIGHTS_CACHE_TTL_MS = 30_000;
+const WEEK_COMMITS_CACHE_TTL_MS = 60_000;
 
 // ---------- 时间窗（纯函数） ----------
 
@@ -356,6 +358,9 @@ export class DashboardService implements DashboardServiceLike {
   private readonly options: DashboardServiceOptions;
   private cachedInsights: SessionInsight[] | null = null;
   private cachedAt = 0;
+  private weekCommits: number | null = null;
+  private weekCommitsAt = 0;
+  private refreshing = false;
   private readonly liveItems = new Map<string, NotificationItem>();
   private readonly lastAssistantText = new Map<string, string>();
   private readIds = new Set<string>();
@@ -369,26 +374,61 @@ export class DashboardService implements DashboardServiceLike {
     return this.options.now ? this.options.now() : Date.now();
   }
 
-  /** 会话洞察（带 TTL 缓存：stats 与通知共用一次全量扫描） */
+  /** 会话洞察：stale-while-revalidate——旧数据秒回，过期/失效时后台静默重扫（永不阻塞请求） */
   async getInsights(force = false): Promise<SessionInsight[]> {
     const now = this.now();
-    if (!force && this.cachedInsights && now - this.cachedAt < INSIGHTS_CACHE_TTL_MS) {
+    const fresh = this.cachedInsights && now - this.cachedAt < INSIGHTS_CACHE_TTL_MS;
+    if (!force && fresh) return this.cachedInsights!;
+    if (this.cachedInsights) {
+      // 有旧数据：立即返回，后台刷新（不并发重复）
+      if (!this.refreshing) void this.refreshInsights();
       return this.cachedInsights;
     }
-    this.cachedInsights = await scanSessionInsights(this.options.sessionDir, {
-      statusOf: this.options.statusOf,
-    });
-    this.cachedAt = now;
-    return this.cachedInsights;
+    // 首次冷扫描（无任何缓存可回）：仅启动/首查一次
+    await this.refreshInsights();
+    return this.cachedInsights!;
+  }
+
+  private async refreshInsights(): Promise<void> {
+    if (this.refreshing) return;
+    this.refreshing = true;
+    try {
+      this.cachedInsights = await scanSessionInsights(this.options.sessionDir, {
+        statusOf: this.options.statusOf,
+      });
+      this.cachedAt = this.now();
+    } catch {
+      // 扫描失败保留旧缓存
+    } finally {
+      this.refreshing = false;
+    }
   }
 
   async getStats(): Promise<DashboardStats> {
     const insights = await this.getInsights();
-    const weekCommits = await countWeekCommits(this.options.workspaceRoot, {
-      now: this.now(),
-      execFileFn: this.options.execFileFn,
-    });
-    return deriveDashboard(insights, { now: this.now(), weekCommits });
+    const now = this.now();
+    if (this.weekCommits === null) {
+      this.weekCommits = await countWeekCommits(this.options.workspaceRoot, {
+        now,
+        execFileFn: this.options.execFileFn,
+      });
+      this.weekCommitsAt = now;
+    } else if (now - this.weekCommitsAt > WEEK_COMMITS_CACHE_TTL_MS) {
+      this.weekCommitsAt = now;
+      void countWeekCommits(this.options.workspaceRoot, {
+        now,
+        execFileFn: this.options.execFileFn,
+      }).then((v) => {
+        this.weekCommits = v;
+      }).catch(() => undefined);
+    }
+    return deriveDashboard(insights, { now, weekCommits: this.weekCommits });
+  }
+
+  /** 文件变更（presence）时标记过期：保留旧值秒回，后台刷新（SWR） */
+  invalidate(): void {
+    this.cachedAt = 0;
+    this.weekCommitsAt = 0;
   }
 
   private async ensureReadMarks(): Promise<Set<string>> {
