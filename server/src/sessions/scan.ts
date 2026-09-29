@@ -301,6 +301,7 @@ export function buildSessionSummary(file: string, parsed: ParsedSession, mtimeMs
 
   return {
     id: header.id,
+    source: "pi",
     name: sessionName(entries),
     cwd: typeof header.cwd === "string" ? header.cwd : "",
     updatedAt: new Date(updatedMs).toISOString(),

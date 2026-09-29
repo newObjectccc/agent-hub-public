@@ -6,6 +6,7 @@ import type { SessionMessage, SessionStatus, SessionSummary } from "../api/types
 import { applyWsEvent, type WsEvent } from "../chat/messageStream";
 import { useSessionSocket } from "../hooks/useSessionSocket";
 import { MessageBubble } from "../components/MessageBubble";
+import { SourceBadge } from "../components/SourceBadge";
 import { StatusBadge } from "../components/StatusBadge";
 import { BackIcon } from "../components/icons";
 import { Button } from "../components/ui/button";
@@ -156,6 +157,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
           <div className="name">{session?.name ?? sessionId}</div>
           <div className="cwd">{session?.cwd ?? ""}</div>
         </div>
+        <SourceBadge source={session?.source ?? null} />
         <StatusBadge status={status} />
       </header>
 

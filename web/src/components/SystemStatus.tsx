@@ -18,7 +18,7 @@ function Chip({ label, available, detail }: ChipProps) {
 }
 
 /**
- * 顶部系统状态条：pi 为核心；tmux / ttyd / tailscale 为可选增强，
+ * 顶部系统状态条：pi / claude 为核心来源；tmux / ttyd / tailscale 为可选增强，
  * 缺失时显示灰色"未安装"，不显示为错误。
  */
 export function SystemStatusBar({ system }: { system: SystemStatus | null }) {
@@ -35,6 +35,11 @@ export function SystemStatusBar({ system }: { system: SystemStatus | null }) {
         label="pi"
         available={system.pi?.available === true}
         detail={system.pi?.version ? `v${system.pi.version}` : "已安装"}
+      />
+      <Chip
+        label="claude"
+        available={system.claude?.available === true}
+        detail={system.claude?.version ? `v${system.claude.version}` : "已安装"}
       />
       <Chip label="tmux" available={system.tmux?.available === true} detail={system.tmux?.version} />
       <Chip label="ttyd" available={system.ttyd?.available === true} detail={system.ttyd?.version} />

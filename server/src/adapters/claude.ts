@@ -1,0 +1,316 @@
+/**
+ * ClaudeAdapter：Claude Code 会话的 server 适配层。
+ *
+ * - 列表/详情：扫描 ~/.claude/projects/<encoded-cwd>/<session-uuid>.jsonl（transcript 解析见 claude-transcript.ts）
+ * - prompt：本地 spawn `claude -p <text> --resume <session-id> --output-format stream-json …`，
+ *   解析 stdout 流事件 → 契约 WS 广播（claude-stream.ts）
+ * - abort：杀掉本进程 spawn 的子进程（SIGTERM → 宽限后 SIGKILL），幂等
+ *
+ * ── 安全约束（硬规则）─────────────────────────────────────────────────────
+ * 1. 只走本地 spawn，不引入任何远程 SDK / 网络驱动；不读取、不记录、不回显任何凭据
+ *    （ANTHROPIC_API_KEY 等仅随子进程 env 继承传递，绝不打印）。
+ * 2. `--permission-mode manual`：不用用户 settings 里的 bypassPermissions，
+ *    保证 claude 无法在无人确认的情况下执行破坏性操作（headless 下需确认的工具一律拒绝）。
+ *    不传 `--dangerously-skip-permissions`、不传 `--allowedTools`。
+ * 3. 模型输出的 stderr 只保留尾部截断预览用于错误提示，不落盘。
+ * ─────────────────────────────────────────────────────────────────────────
+ */
+import { spawn, type ChildProcess } from "node:child_process";
+import { randomBytes } from "node:crypto";
+import { ErrorCodes, HubError } from "../errors.js";
+import type { PromptResult } from "../sessions/hub.js";
+import { decidePromptAction, parsePromptMode } from "../sessions/prompt-policy.js";
+import { inferExternalStatus } from "../sessions/tail.js";
+import type { MessageDto, ServerEvent, SessionListItem, SessionStatus } from "../types.js";
+import { ClaudeStreamTranslator } from "./claude-stream.js";
+import {
+  claudeSummaries,
+  loadClaudeHistoryIndex,
+  loadClaudeSessionMessages,
+  scanClaudeSessions,
+} from "./claude-transcript.js";
+import type { SessionAdapter } from "./types.js";
+
+export type EmitFn = (sessionId: string, event: ServerEvent) => void;
+
+export interface ClaudeAdapterOptions {
+  /** ~/.claude/projects */
+  projectsDir: string;
+  /** ~/.claude/history.jsonl（sessionId → cwd 兜底） */
+  historyFile: string;
+  emit: EmitFn;
+  /** 可注入（测试伪造 spawn） */
+  spawnFn?: typeof spawn;
+  claudeBin?: string;
+}
+
+/** stderr 预览上限（错误提示用） */
+const STDERR_PREVIEW_LIMIT = 500;
+/** abort 后 SIGTERM → SIGKILL 宽限时间 */
+const KILL_GRACE_MS = 2_000;
+
+interface RunningRun {
+  child: ChildProcess;
+  translator: ClaudeStreamTranslator;
+  stderrTail: string;
+  sessionFile: string;
+  /** abort 后不再发 agent_settled 兜底（abort 已发过） */
+  aborted: boolean;
+}
+
+export class ClaudeAdapter implements SessionAdapter {
+  readonly source = "claude" as const;
+  private readonly projectsDir: string;
+  private readonly historyFile: string;
+  private readonly emit: EmitFn;
+  private readonly spawnFn: typeof spawn;
+  private readonly claudeBin: string;
+  private readonly running = new Map<string, RunningRun>();
+  private readonly queues = new Map<string, string[]>();
+  private readonly statuses = new Map<string, SessionStatus>();
+  private historyIndex: Map<string, string> | null = null;
+  private disposed = false;
+  /** 会话转 live 时回调（用于停掉文件 tail，保持单一推送源） */
+  onLive?: (id: string) => void;
+
+  constructor(options: ClaudeAdapterOptions) {
+    this.projectsDir = options.projectsDir;
+    this.historyFile = options.historyFile;
+    this.emit = options.emit;
+    this.spawnFn = options.spawnFn ?? spawn;
+    this.claudeBin = options.claudeBin ?? "claude";
+  }
+
+  isLive(id: string): boolean {
+    return this.running.has(id);
+  }
+
+  getStatus(id: string): SessionStatus {
+    return this.statuses.get(id) ?? "idle";
+  }
+
+  private statusWithInference(id: string, updatedMs: number): SessionStatus {
+    const own = this.statuses.get(id);
+    if (own && own !== "idle") return own;
+    return inferExternalStatus(updatedMs);
+  }
+
+  private setStatus(id: string, status: SessionStatus): void {
+    if (this.getStatus(id) === status) return;
+    this.dispatch(id, { type: "status", status });
+  }
+
+  /** 统一出口：status 事件回写内存状态（含 translator 直发的），保证 getStatus 不漂移 */
+  private dispatch(id: string, event: ServerEvent): void {
+    if (event.type === "status") this.statuses.set(id, event.status);
+    this.emit(id, event);
+  }
+
+  private async getHistoryIndex(): Promise<Map<string, string>> {
+    if (!this.historyIndex) {
+      this.historyIndex = await loadClaudeHistoryIndex(this.historyFile);
+    }
+    return this.historyIndex;
+  }
+
+  async listSessions(): Promise<SessionListItem[]> {
+    const history = await this.getHistoryIndex();
+    return scanClaudeSessions(this.projectsDir, history, {
+      statusOf: (id, updatedMs) => this.statusWithInference(id, updatedMs),
+    });
+  }
+
+  async findSession(id: string): Promise<SessionListItem | null> {
+    const all = await this.listSessions();
+    return all.find((item) => item.id === id) ?? null;
+  }
+
+  async loadMessages(id: string): Promise<MessageDto[] | null> {
+    const found = await this.findSession(id);
+    if (!found) return null;
+    return loadClaudeSessionMessages(found.sessionFile);
+  }
+
+  /**
+   * 发送消息：
+   * - 空闲：spawn `claude -p <text> --resume <id> --output-format stream-json …`
+   * - 正忙且 mode 缺省/"prompt" → busy（调用方转 409 SESSION_BUSY，与 pi 一致）
+   * - 正忙且 steer/followUp → 排队到当前 run 结束（claude CLI 无运行中转向能力，保守降级为排队）
+   */
+  async prompt(id: string, text: unknown, modeRaw: unknown): Promise<PromptResult> {
+    if (typeof text !== "string" || text.trim() === "") {
+      throw new HubError(ErrorCodes.INVALID_REQUEST, "text 必须是非空字符串");
+    }
+    const mode = parsePromptMode(modeRaw);
+    if (mode === null) {
+      throw new HubError(ErrorCodes.INVALID_REQUEST, "mode 必须是 prompt|steer|followUp 之一");
+    }
+
+    const found = await this.findSession(id);
+    if (!found) {
+      throw new HubError(ErrorCodes.SESSION_NOT_FOUND, `会话不存在: ${id}`, 404);
+    }
+
+    const decision = decidePromptAction(this.running.has(id), mode);
+    if (decision.kind === "busy") {
+      return { accepted: false, mode: mode ?? "prompt", busy: true };
+    }
+    if (decision.kind === "steer" || decision.kind === "followUp") {
+      const queue = this.queues.get(id) ?? [];
+      queue.push(text);
+      this.queues.set(id, queue);
+      return { accepted: true, mode: decision.kind };
+    }
+
+    this.startRun(found, text);
+    return { accepted: true, mode: "prompt" };
+  }
+
+  /** 中止当前运行（幂等）：杀子进程 + 清空排队 */
+  async abort(id: string): Promise<void> {
+    this.queues.delete(id);
+    const run = this.running.get(id);
+    if (!run) return;
+    run.aborted = true;
+    this.killChild(run.child);
+    // close 回调负责释放运行态；这里先恢复 UI 可输入
+    this.setStatus(id, "idle");
+    this.emit(id, { type: "agent_settled" });
+  }
+
+  disposeAll(): void {
+    this.disposed = true;
+    for (const run of this.running.values()) {
+      this.killChild(run.child);
+    }
+    this.running.clear();
+    this.queues.clear();
+  }
+
+  // ---- 内部 ----
+
+  private killChild(child: ChildProcess): void {
+    try {
+      child.kill("SIGTERM");
+    } catch {
+      // 进程已退出
+    }
+    const timer = setTimeout(() => {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // 忽略
+      }
+    }, KILL_GRACE_MS);
+    timer.unref?.();
+  }
+
+  /** 合成 user 消息（-p 模式不回显 prompt）：只发 message_end，
+   *  前端去重层会把同 role+同 text 的乐观占位（local-*）合并为权威消息，避免重复气泡 */
+  private emitUserMessage(id: string, text: string): void {
+    this.seq += 1;
+    const messageId = `live-user-${this.seq}-${Date.now()}`;
+    this.emit(id, {
+      type: "message_end",
+      message: { id: messageId, role: "user", timestamp: Date.now(), text, toolCalls: [] },
+    });
+  }
+
+  private seq = 0;
+
+  private startRun(session: SessionListItem, text: string): void {
+    if (this.disposed) {
+      throw new HubError(ErrorCodes.INTERNAL, "server 正在关闭", 503);
+    }
+    // spawn 参数固定安全集：不加 --dangerously-skip-permissions / --allowedTools；
+    // --permission-mode manual 覆盖用户 settings 的 bypassPermissions（见文件头安全约束）
+    const args = [
+      "-p",
+      text,
+      "--resume",
+      session.id,
+      "--output-format",
+      "stream-json",
+      "--verbose",
+      "--include-partial-messages",
+      "--permission-mode",
+      "manual",
+    ];
+    const child = this.spawnFn(this.claudeBin, args, {
+      cwd: session.cwd !== "" ? session.cwd : undefined,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: process.env,
+      windowsHide: true,
+    });
+    const translator = new ClaudeStreamTranslator();
+    const run: RunningRun = { child, translator, stderrTail: "", sessionFile: session.sessionFile, aborted: false };
+    this.running.set(session.id, run);
+    this.setStatus(session.id, "running");
+    this.onLive?.(session.id);
+    this.emitUserMessage(session.id, text);
+
+    let stdoutRest = "";
+    child.stdout?.on("data", (chunk: Buffer | string) => {
+      stdoutRest += String(chunk);
+      let idx = stdoutRest.indexOf("\n");
+      while (idx >= 0) {
+        const line = stdoutRest.slice(0, idx);
+        stdoutRest = stdoutRest.slice(idx + 1);
+        for (const event of translator.feed(line)) {
+          this.dispatch(session.id, event);
+        }
+        idx = stdoutRest.indexOf("\n");
+      }
+    });
+    child.stderr?.on("data", (chunk: Buffer | string) => {
+      run.stderrTail = (run.stderrTail + String(chunk)).slice(-STDERR_PREVIEW_LIMIT);
+    });
+
+    const finish = (errored: boolean): void => {
+      if (this.running.get(session.id) !== run) return; // 已被新 run 顶替
+      this.running.delete(session.id);
+      // result 事件未到（崩溃/被杀）：flush 未竟消息 + 兜底收尾（abort 已收尾则跳过）
+      if (!translator.finished && !run.aborted) {
+        for (const event of translator.flush()) {
+          this.dispatch(session.id, event);
+        }
+        this.emit(session.id, { type: "agent_settled" });
+        this.setStatus(session.id, errored ? "error" : "idle");
+      }
+      // translator 已收尾（result）时：status 由 dispatch 同步，无需重复广播
+      // 队列（steer/followUp）依次消费
+      const queue = this.queues.get(session.id) ?? [];
+      this.queues.delete(session.id);
+      const next = queue.shift();
+      if (next !== undefined && !this.disposed) {
+        if (queue.length > 0) this.queues.set(session.id, queue);
+        try {
+          this.startRun(session, next);
+        } catch {
+          this.setStatus(session.id, "error");
+        }
+      }
+    };
+
+    child.on("error", (err: Error) => {
+      this.emit(session.id, {
+        type: "error",
+        code: ErrorCodes.PROMPT_FAILED,
+        message: `claude 启动失败: ${err.message}`,
+      });
+      finish(true);
+    });
+    child.on("close", (code: number | null) => {
+      const failed = code !== 0 && code !== null && !translator.finished && !run.aborted;
+      if (failed) {
+        const detail = run.stderrTail.trim() !== "" ? run.stderrTail.trim() : `claude 退出码 ${code}`;
+        this.emit(session.id, {
+          type: "error",
+          code: ErrorCodes.PROMPT_FAILED,
+          message: `claude 运行失败: ${detail}`,
+        });
+      }
+      finish(failed);
+    });
+  }
+}

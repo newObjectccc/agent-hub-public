@@ -490,6 +490,10 @@ a {
 .badge.running { background: var(--primary); color: var(--primary-foreground); }
 .badge.error { background: var(--destructive); color: var(--destructive-foreground); }
 
+/* 会话来源徽章（pi / claude）：显式双主题配色（.badge 强制黑字，不能走 secondary 变体——浅色下会黑底黑字） */
+.badge.source-pi { background: var(--muted); color: var(--muted-foreground); }
+.badge.source-claude { background: var(--secondary); color: var(--secondary-foreground); }
+
 /* ---------- 表单 ---------- */
 .form-card {
   padding: 14px;

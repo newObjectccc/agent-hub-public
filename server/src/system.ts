@@ -101,11 +101,13 @@ export async function probeSystem(options: ProbeOptions): Promise<SystemInfo> {
   const execFileFn = options.execFileFn ?? execFile;
   const timeoutMs = options.timeoutMs ?? 5_000;
 
-  const [tmux, ttyd, tailscale, piBin] = await Promise.all([
+  const [tmux, ttyd, tailscale, piBin, claude] = await Promise.all([
     probeTool(execFileFn, "tmux", ["-V"], timeoutMs),
     probeTool(execFileFn, "ttyd", ["--version"], timeoutMs),
     probeTailscale(execFileFn, timeoutMs),
     probeTool(execFileFn, "pi", ["--version"], timeoutMs),
+    // Claude Code 会话来源可用性（claude --version）
+    probeTool(execFileFn, "claude", ["--version"], timeoutMs),
   ]);
 
   // PATH 找不到 pi 但 SDK 已加载 → 核心能力可用（in-process 驱动）
@@ -118,6 +120,7 @@ export async function probeSystem(options: ProbeOptions): Promise<SystemInfo> {
   return {
     platform: process.platform,
     pi,
+    claude,
     tmux,
     ttyd,
     tailscale,

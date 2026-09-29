@@ -4,8 +4,13 @@
 
 export type SessionStatus = "idle" | "running" | "error";
 
+/** 会话来源：pi（~/.pi/agent/sessions）或 claude（~/.claude/projects） */
+export type SessionSource = "pi" | "claude";
+
 export interface SessionSummary {
   id: string;
+  /** 会话来源徽章（pi | claude） */
+  source: SessionSource;
   name: string;
   cwd: string;
   updatedAt: string; // ISO 8601 UTC
@@ -63,6 +68,7 @@ export interface SystemComponent {
 export interface SystemStatus {
   platform: "darwin" | "win32" | "linux" | string;
   pi: SystemComponent;
+  claude: SystemComponent;
   tmux: SystemComponent;
   ttyd: SystemComponent;
   tailscale: SystemComponent & { loggedIn?: boolean; hostname?: string | null };
