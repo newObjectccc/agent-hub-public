@@ -14,6 +14,7 @@ import { GitStatusBadge } from "../components/GitStatusBadge";
 import { MessageBubble } from "../components/MessageBubble";
 import { QuickCommandPanel } from "../components/QuickCommandPanel";
 import { SendModeSwitch } from "../components/SendModeSwitch";
+import { SessionActionsMenu } from "../components/SessionActionsMenu";
 import { SourceBadge } from "../components/SourceBadge";
 import { StatusBadge } from "../components/StatusBadge";
 import { VoiceInputButton } from "../components/VoiceInputButton";
@@ -47,6 +48,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
   const [sending, setSending] = useState(false);
   const [sendMode, setSendMode] = useState<SendMode>("auto");
   const [quickOpen, setQuickOpen] = useState(false);
+  const [forkBusy, setForkBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [gitOpen, setGitOpen] = useState(false);
   const [gitFile, setGitFile] = useState<string | null>(null);
@@ -245,6 +247,21 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
     }
   };
 
+  /** 复制为新会话（fork）：完整上下文→独立新会话，原会话不受影响；成功后跳进新会话 */
+  const doFork = async () => {
+    if (forkBusy) return;
+    setForkBusy(true);
+    setNotice(null);
+    try {
+      const { session } = await api.forkSession(sessionId);
+      navigate(chatPath(session.id));
+    } catch (e) {
+      setNotice(e instanceof Error ? e.message : "复制会话失败");
+    } finally {
+      setForkBusy(false);
+    }
+  };
+
   /** 下拉刷新：还有更早消息时等价"加载更早"，否则刷新对账 */
   const ptrRefresh = async () => {
     if (hasMoreRef.current) {
@@ -293,6 +310,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
             🤖 子代理
           </span>
         )}
+        <SessionActionsMenu onFork={() => void doFork()} forkBusy={forkBusy} />
         <SourceBadge source={session?.source ?? null} />
         <StatusBadge status={status} />
       </header>

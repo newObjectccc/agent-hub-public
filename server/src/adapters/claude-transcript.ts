@@ -50,6 +50,15 @@ export function isClaudeSessionFileName(name: string): boolean {
   return CLAUDE_SESSION_FILE_RE.test(name);
 }
 
+/**
+ * cwd → ~/.claude/projects 子目录名（claude 自身的有损编码：非字母数字 → `-`）。
+ * 实测（claude 2.1.267）：`/tmp/claude-newtest-cwd` → `-tmp-claude-newtest-cwd`。
+ * 有损（不同 cwd 可能撞名），仅用于与 claude CLI 同口径定位会话目录。
+ */
+export function encodeClaudeProjectDir(cwd: string): string {
+  return cwd.replace(/[^a-zA-Z0-9]/g, "-");
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }

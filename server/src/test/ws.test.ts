@@ -55,6 +55,7 @@ function makeFakeHub(promptCalls: PromptCall[]): SessionHubLike {
     search: async (): Promise<SearchResultDto[]> => [],
     loadTree: async (): Promise<SessionTreeDto | null> => ({ entries: [], activePath: [] }),
     createSession: async () => sessionFixture,
+    forkSession: async () => sessionFixture,
     prompt: async (_id: string, text: unknown, mode: unknown) => {
       promptCalls.push({ text, mode });
       return { accepted: true, mode: "prompt" };

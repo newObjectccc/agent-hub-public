@@ -6,6 +6,7 @@
  * - 进程退出时 disposeAll() 回收全部实例
  */
 import { randomBytes } from "node:crypto";
+import { existsSync, writeFileSync } from "node:fs";
 import { mkdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
@@ -226,6 +227,53 @@ export class SessionHub {
       // 手工创建的会话默认主会话；命名命中 `<type>#<id>` 规则时同样标记子代理
       isSubAgent: isSubAgentName(trimmedName === "" ? null : trimmedName),
     };
+  }
+
+  /**
+   * 复制会话（fork）：用 pi SDK 的 `SessionManager.createBranchedSession`（与 pi
+   * `/fork` 命令同一实现）从 **active branch 末尾**（leaf）生成独立新会话文件：
+   * - 新 session id / 新 JSONL 文件；header 带 `parentSession` 血缘指向原文件
+   * - 消息历史 = 原会话 active branch（root→leaf，id/parentId 重链后完整保留）
+   * - 继承 cwd 与 name（session_info entry 在 branch 上，随链复制）
+   * - 原会话文件只读，绝不写回；新会话可独立继续对话
+   *
+   * SDK 对无 assistant 消息的 branch 延迟写盘（首次响应才落盘），这里用
+   * `getEntries()` 兜底显式写盘，保证 fork 后立即在列表可见（契约：201 即可用）。
+   */
+  async forkSession(id: string): Promise<SessionListItem> {
+    const found = await this.findSession(id);
+    if (!found) {
+      throw new HubError(ErrorCodes.SESSION_NOT_FOUND, `会话不存在: ${id}`, 404);
+    }
+    const cwd = found.cwd !== "" ? found.cwd : process.cwd();
+    const targetDir = join(this.sessionDir, encodeCwdDirName(cwd));
+    let manager: SessionManager;
+    try {
+      manager = SessionManager.open(found.sessionFile, targetDir, cwd);
+      const leafId = manager.getLeafId();
+      if (leafId === null) {
+        // 只有 header 的空会话：复制为新文件（同 forkFrom 语义，立即写盘）
+        manager = SessionManager.forkFrom(found.sessionFile, cwd, targetDir);
+      } else {
+        manager.createBranchedSession(leafId);
+        const newFile = manager.getSessionFile();
+        if (newFile && !existsSync(newFile)) {
+          const entries = manager.getEntries();
+          writeFileSync(newFile, `${entries.map((e) => JSON.stringify(e)).join("\n")}\n`, { flag: "wx" });
+        }
+      }
+    } catch (err) {
+      throw new HubError(
+        ErrorCodes.INTERNAL,
+        `会话复制失败: ${err instanceof Error ? err.message : String(err)}`,
+        500,
+      );
+    }
+    const created = await this.findSession(manager.getSessionId());
+    if (!created) {
+      throw new HubError(ErrorCodes.INTERNAL, "会话复制后未能读回新会话", 500);
+    }
+    return created;
   }
 
   /** 取得（或创建）该会话的 AgentSession 实例 */

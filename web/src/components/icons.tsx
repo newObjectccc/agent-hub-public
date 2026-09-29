@@ -92,6 +92,33 @@ export function SearchIcon() {
   );
 }
 
+export function PlusIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden>
+      <path d="M12 4v16M4 12h16" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+export function MoreIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden>
+      <circle cx="5" cy="12" r="2" fill="currentColor" />
+      <circle cx="12" cy="12" r="2" fill="currentColor" />
+      <circle cx="19" cy="12" r="2" fill="currentColor" />
+    </svg>
+  );
+}
+
+export function CopyIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden>
+      <rect x="4" y="4" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2.2" />
+      <path d="M9 20h11V9" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 export function TreeIcon() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden>

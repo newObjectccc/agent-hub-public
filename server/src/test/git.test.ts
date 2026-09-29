@@ -64,6 +64,7 @@ const fakeHub: SessionHubLike = {
   findSession: async () => sessionFixture,
   loadMessages: async (): Promise<MessageDto[]> => [],
   createSession: async () => sessionFixture,
+  forkSession: async () => sessionFixture,
   prompt: async () => ({ accepted: true, mode: "prompt" }),
   abort: async () => undefined,
   compact: async () => undefined,

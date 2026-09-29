@@ -72,11 +72,62 @@ function makeFakeAdapter(
     abort: async (id: string) => {
       calls.push({ method: "abort", args: [id] });
     },
+    createSession: async (cwd: string, name?: string) => {
+      calls.push({ method: "createSession", args: [cwd, name] });
+      return sessions[0];
+    },
+    forkSession: async (id: string) => {
+      calls.push({ method: "forkSession", args: [id] });
+      return sessions.find((s) => s.id === id) ?? sessions[0];
+    },
     disposeAll: () => {
       calls.push({ method: "disposeAll", args: [] });
     },
   } as FakeAdapter;
 }
+
+describe("registry: createSession 按 source 分发 / forkSession 按归属分发", () => {
+  it("createSession 缺省走 pi，source=claude 走 claude 适配器", () => {
+    const piAdapter = makeFakeAdapter("pi", [makeItem("pi-1", "pi", "2026-02-18T12:00:00.000Z")]);
+    const claudeAdapter = makeFakeAdapter("claude", [makeItem("claude-1", "claude", "2026-02-18T11:00:00.000Z")]);
+    const registry = new SessionRegistry(piAdapter, claudeAdapter);
+    void registry.createSession("/tmp/demo", "默认");
+    void registry.createSession("/tmp/demo", "claude 的", "claude");
+    assert.deepEqual(
+      piAdapter.calls.filter((c) => c.method === "createSession").map((c) => c.args),
+      [["/tmp/demo", "默认"]],
+    );
+    assert.deepEqual(
+      claudeAdapter.calls.filter((c) => c.method === "createSession").map((c) => c.args),
+      [["/tmp/demo", "claude 的"]],
+    );
+  });
+
+  it("forkSession 按 id 归属分发到对应适配器（claude 优先于 pi）", async () => {
+    const piAdapter = makeFakeAdapter("pi", [makeItem("pi-1", "pi", "2026-02-18T12:00:00.000Z")]);
+    const claudeAdapter = makeFakeAdapter("claude", [makeItem("claude-1", "claude", "2026-02-18T11:00:00.000Z")]);
+    const registry = new SessionRegistry(piAdapter, claudeAdapter);
+
+    const fromClaude = await registry.forkSession("claude-1");
+    assert.equal(fromClaude.id, "claude-1");
+    assert.equal(claudeAdapter.calls.filter((c) => c.method === "forkSession").length, 1);
+    assert.equal(piAdapter.calls.filter((c) => c.method === "forkSession").length, 0);
+
+    const fromPi = await registry.forkSession("pi-1");
+    assert.equal(fromPi.id, "pi-1");
+    assert.equal(piAdapter.calls.filter((c) => c.method === "forkSession").length, 1);
+  });
+
+  it("forkSession 两边都未命中 → SESSION_NOT_FOUND", async () => {
+    const piAdapter = makeFakeAdapter("pi", [makeItem("pi-1", "pi", "2026-02-18T12:00:00.000Z")]);
+    const claudeAdapter = makeFakeAdapter("claude", [makeItem("claude-1", "claude", "2026-02-18T11:00:00.000Z")]);
+    const registry = new SessionRegistry(piAdapter, claudeAdapter);
+    await assert.rejects(
+      () => registry.forkSession("nope"),
+      (err: unknown) => (err as { code?: string }).code === "SESSION_NOT_FOUND",
+    );
+  });
+});
 
 describe("registry: 合并两个 source 的会话列表", () => {
   it("pi + claude 合并且按 updatedAt 倒序（同刻按 id 稳定排序）", async () => {
