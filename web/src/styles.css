@@ -4013,6 +4013,16 @@ button.git-bar:active {  transform: translate(2px, 2px);
   transition: transform 0.12s ease, box-shadow 0.12s ease;
 }
 
+/* 📎 上传按钮（与 composer-btn 同基线，禁用态明确） */
+.upload-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.upload-btn:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+
 .composer-btn:hover {
   transform: translate(-1px, -1px);
   box-shadow: var(--nb-shadow-sm);
