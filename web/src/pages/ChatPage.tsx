@@ -1,5 +1,5 @@
 import { ChatSkeleton } from "../components/Skeletons";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent } from "react";
 import { api } from "../api/client";
 import { sendPromptWithMode, type SendMode } from "../api/prompt";
 import type { CommandItem, SessionMessage, SessionStatus, SessionSummary } from "../api/types";
@@ -13,7 +13,8 @@ import { GitPanel } from "../components/GitPanel";
 import { GitStatusBadge } from "../components/GitStatusBadge";
 import { FileTreePanel } from "../components/FileTreePanel";
 import { MessageBubble } from "../components/MessageBubble";
-import { QuickCommandPanel } from "../components/QuickCommandPanel";
+import { AttachmentStrip } from "../components/AttachmentStrip";
+import { UploadButton } from "../components/UploadButton";
 import { SendModeSwitch } from "../components/SendModeSwitch";
 import { SessionActionsMenu } from "../components/SessionActionsMenu";
 import { SlashCommandPanel } from "../components/SlashCommandPanel";import { SourceBadge } from "../components/SourceBadge";
@@ -23,16 +24,28 @@ import { BackIcon, TreeIcon } from "../components/icons";
 import { PullToRefresh } from "../components/PullToRefresh";
 import { Button } from "../components/ui/button";
 import { Textarea } from "../components/ui/textarea";
-import { insertSnippet } from "../utils/quickCommands";
+import { insertSnippet } from "../utils/insert";
+import type { PanelKeyHandle } from "../utils/panelNav";
 import { quoteSummary, withQuote } from "../utils/quote";
+import { addRecentRef, loadRecentRefs, safeStorage, saveRecentRefs } from "../utils/recentRefs";
 import {
   applyCommandInsert,
   applyFileInsert,
   detectCommandTrigger,
   detectToken,
-  filterSlashCommands,
+  firstSlashCommand,
   type TokenSpan,
 } from "../utils/slashInput";
+import {
+  buildSendText,
+  dataUrlToBase64,
+  imageRefs,
+  MAX_ATTACHMENTS,
+  readFileAsDataUrl,
+  stripUploadRef,
+  validateUploadFile,
+  type Attachment,
+} from "../utils/uploads";
 import { showToast } from "../utils/toast";
 import { findMessageByText } from "../utils/search";
 import { chatPath, chatReturnPath, currentLocate, navigate, treePath } from "../utils/router";
@@ -58,7 +71,14 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [sendMode, setSendMode] = useState<SendMode>("auto");
-  const [quickOpen, setQuickOpen] = useState(false);
+  // 上传附件（📎 选择 / 粘贴图片）：上传成功 → 预览条 + 输入框 `@path` 引用
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [uploading, setUploading] = useState(false);
+  // @ 面板“最近引用”快捷区（localStorage 持久化）
+  const [recentRefs, setRecentRefs] = useState<string[]>(() => {
+    const storage = safeStorage();
+    return storage ? loadRecentRefs(storage) : [];
+  });
   const [forkBusy, setForkBusy] = useState(false);
   // slash 命令面板：输入 `/` 触发（光标前 token），继续输入即过滤
   const [slashSpan, setSlashSpan] = useState<TokenSpan | null>(null);
@@ -86,6 +106,11 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   /** 输入框容器（ui/textarea 不转发 ref，从容器内取真实 textarea） */
   const inputWrapRef = useRef<HTMLDivElement | null>(null);
+  /** 输入框文本镜像（连续上传/插入时避免闭包旧值） */
+  const inputRef = useRef("");
+  /** slash / @ 面板键盘句柄（↓/↑/Tab 从输入框下探到面板） */
+  const slashPanelRef = useRef<PanelKeyHandle | null>(null);
+  const filePanelRef = useRef<PanelKeyHandle | null>(null);
   /** 面板关闭后不因持续输入同一 token 反复重开（token 消失后复位） */
   const slashDismissedRef = useRef(false);
   const atDismissedRef = useRef(false);
@@ -190,12 +215,108 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
     });
   };
 
-  /** 选中命令：把 `/token` 替换为 `/cmd `；claude 内置命令给降级提示 */
+  /** 统一更新输入框（state + 镜像） */
+  const updateInput = (text: string) => {
+    inputRef.current = text;
+    setInput(text);
+  };
+
+  /** 记录最近引用（@ 面板“最近引用”快捷区） */
+  const rememberRef = (path: string) => {
+    setRecentRefs((prev) => {
+      const next = addRecentRef(prev, path);
+      const storage = safeStorage();
+      if (storage) saveRecentRefs(storage, next);
+      return next;
+    });
+  };
+
+  /** 在光标处插入 `@path ` 引用（尾随空格便于连续输入；上传/最近引用共用） */
+  const insertRefText = (path: string) => {
+    const el = inputWrapRef.current?.querySelector("textarea");
+    const cursor = el?.selectionStart ?? inputRef.current.length;
+    const result = applyFileInsert(inputRef.current, { start: cursor, end: cursor, query: "" }, [path]);
+    updateInput(result.text);
+    focusAt(result.cursor);
+    rememberRef(path);
+  };
+
+  /** 单文件上传：本地预检 → base64 → POST /api/uploads（契约 §11）→ 附件草稿 */
+  const uploadOne = async (file: File): Promise<Attachment | null> => {
+    const problem = validateUploadFile(file);
+    if (problem) {
+      showToast(problem);
+      return null;
+    }
+    const dataUrl = await readFileAsDataUrl(file);
+    const { upload } = await api.uploadFile({
+      sessionId,
+      name: file.name,
+      mimeType: file.type,
+      data: dataUrlToBase64(dataUrl),
+    });
+    return {
+      id: `att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      name: upload.name,
+      path: upload.path,
+      mimeType: upload.mimeType,
+      size: upload.size,
+      isImage: upload.isImage,
+      preview: upload.isImage ? dataUrl : null,
+    };
+  };
+
+  /** 📎 选择 / 粘贴文件（逐个串行上传，成功即插入引用） */
+  const handleFiles = async (files: File[]) => {
+    const room = MAX_ATTACHMENTS - attachments.length;
+    if (room <= 0) {
+      showToast(`单条消息最多 ${MAX_ATTACHMENTS} 个附件`);
+      return;
+    }
+    const picked = files.slice(0, room);
+    if (files.length > room) showToast(`超出上限，仅上传前 ${room} 个`);
+    setUploading(true);
+    try {
+      for (const file of picked) {
+        try {
+          const att = await uploadOne(file);
+          if (!att) continue;
+          setAttachments((prev) => [...prev, att]);
+          insertRefText(att.path);
+        } catch (e) {
+          showToast(`${file.name}：上传失败（${e instanceof Error ? e.message : "未知错误"}）`);
+        }
+      }
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  /** 粘贴图片/文件（剪贴板带文件时拦截并走上传） */
+  const handlePaste = (e: ReactClipboardEvent<HTMLTextAreaElement>) => {
+    const files = Array.from(e.clipboardData?.files ?? []);
+    if (files.length === 0) return;
+    e.preventDefault();
+    void handleFiles(files);
+  };
+
+  /** 删除附件：同步清掉输入框里的 `@path` 引用 */
+  const removeAttachment = (id: string) => {
+    const target = attachments.find((a) => a.id === id);
+    setAttachments((prev) => prev.filter((a) => a.id !== id));
+    if (target) updateInput(stripUploadRef(inputRef.current, target.path));
+  };
+
+  /** 选中命令：把 `/token` 替换为 `/cmd `（尾随空格便于连续输参数）；claude 内置命令给降级提示 */
   const pickCommand = (name: string) => {
     const el = inputWrapRef.current?.querySelector("textarea");
     const span = slashSpan ?? (el ? detectCommandTrigger(el.value, el.selectionStart ?? el.value.length) : null);
-    const result = applyCommandInsert(input, span ?? { start: input.length, end: input.length, query: "" }, name);
-    setInput(result.text);
+    const result = applyCommandInsert(
+      inputRef.current,
+      span ?? { start: inputRef.current.length, end: inputRef.current.length, query: "" },
+      name,
+    );
+    updateInput(result.text);
     setSlashSpan(null);
     setSlashOpen(false);
     slashActiveRef.current = false;
@@ -209,13 +330,14 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
   /** 文件树多选插入：`@rel/path1 @rel/path2`（替换 `@token` 或插到光标处） */
   const insertFileRefs = (paths: string[]) => {
     const el = inputWrapRef.current?.querySelector("textarea");
-    const cursor = el?.selectionStart ?? input.length;
+    const cursor = el?.selectionStart ?? inputRef.current.length;
     const span = atSpan ?? { start: cursor, end: cursor, query: "" };
-    const result = applyFileInsert(input, span, paths);
-    setInput(result.text);
+    const result = applyFileInsert(inputRef.current, span, paths);
+    updateInput(result.text);
     setAtSpan(null);
     atActiveRef.current = false;
     focusAt(result.cursor);
+    for (const path of paths) rememberRef(path);
   };
 
   // 消息到位后：有定位参数则高亮并滚动到命中消息（滚动到底交给下方 useLayoutEffect）
@@ -321,25 +443,46 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
   });
 
   const doSend = async () => {
-    const raw = input.trim();
-    // 引用回复：发送文本前拼 Markdown 引用块（`> `，两端 agent 都能理解）
-    const text = quote ? withQuote(quote.text, raw) : raw;
+    const raw = inputRef.current.trim();
+    // 附件兜底：正文为空但仍有附件时用引用行；引用回复拼 Markdown 引用块（`> `）
+    const base = buildSendText(raw, attachments);
+    const text = quote ? withQuote(quote.text, base) : base;
     if (!text || sending) return;
+    const sent = attachments;
+    const images = imageRefs(sent);
     setSending(true);
     setNotice(null);
     const localId = `local-${Date.now()}`;
+    const previewImages = sent
+      .filter((a) => a.isImage && a.preview !== null)
+      .map((a) => ({ url: a.preview as string, alt: a.name }));
     setMessages((prev) => [
       ...prev,
-      { id: localId, role: "user", timestamp: Date.now(), text, toolCalls: [] },
+      {
+        id: localId,
+        role: "user",
+        timestamp: Date.now(),
+        text,
+        toolCalls: [],
+        ...(previewImages.length > 0 ? { images: previewImages } : {}),
+      },
     ]);
-    setInput("");
+    updateInput("");
+    setAttachments([]);
     setQuote(null);
     try {
-      // auto：409 自动降级（prompt → followUp）；手动模式直接带对应 mode
-      const outcome = await sendPromptWithMode(sessionId, text, sendMode, {
-        sendPrompt: api.sendPrompt,
-        onNotice: setNotice,
-      });
+      // auto：409 自动降级（prompt → followUp）；手动模式直接带对应 mode；
+      // 图片附件随 prompt 上传（pi 直接附图，claude 走 @path 引用，契约 §1/§11）
+      const outcome = await sendPromptWithMode(
+        sessionId,
+        text,
+        sendMode,
+        {
+          sendPrompt: api.sendPrompt,
+          onNotice: setNotice,
+        },
+        images.length > 0 ? images : undefined,
+      );
       if (!outcome.result.accepted) {
         setNotice("消息未被接受，请稍后重试");
       } else {
@@ -391,6 +534,8 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
       setRefreshing(false);
     }
   };
+
+  const hasContent = input.trim() !== "" || attachments.length > 0;
 
   return (
     <div className="chat-page">
@@ -502,7 +647,14 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
             </button>
           </div>
         )}
-        {status === "running" && <SendModeSwitch value={sendMode} onChange={setSendMode} />}
+        {status === "running" && (
+          <div className="run-bar">
+            <SendModeSwitch value={sendMode} onChange={setSendMode} />
+            <Button type="button" variant="destructive" size="sm" onClick={() => void doAbort()}>
+              中止
+            </Button>
+          </div>
+        )}
         {status === "running" && (
           <div className="typing-indicator">
             <span className="spinner" />
@@ -513,13 +665,9 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
         {status !== "running" && !connected && (
           <div className="typing-indicator">连接断开，重连中…（历史消息不会丢）</div>
         )}
-        <div className="chat-input-row">
-          <QuickCommandPanel
-            open={quickOpen}
-            onInsert={(text) => setInput((prev) => insertSnippet(prev, text))}
-            onClose={() => setQuickOpen(false)}
-          />
+        <div className="composer">
           <SlashCommandPanel
+            ref={slashPanelRef}
             open={slashOpen && slashSpan !== null}
             source={source}
             commands={commands}
@@ -531,8 +679,11 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
           />
           {fileOpen && session && (
             <FileTreePanel
+              ref={filePanelRef}
               open={fileOpen}
               cwd={session.cwd}
+              recent={recentRefs}
+              onPickRecent={insertRefText}
               onInsert={insertFileRefs}
               onClose={() => {
                 setFileOpen(false);
@@ -540,74 +691,90 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
               }}
             />
           )}
-          <button
-            type="button"
-            className={`tool-btn${quickOpen ? " active" : ""}`}
-            aria-label="快捷指令"
-            aria-expanded={quickOpen}
-            onClick={() => setQuickOpen((v) => !v)}
-          >
-            ⚡
-          </button>
-          <VoiceInputButton onTranscript={(text) => setInput((prev) => insertSnippet(prev, text))} disabled={sending} />
-          <div className="chat-textarea-wrap" ref={inputWrapRef}>
-            <Textarea
-              placeholder="输入消息…（/ 命令，@ 引用文件，Enter 发送）"
-              value={input}
-              rows={1}
-              onChange={(e) => {
-                setInput(e.target.value);
-                syncTriggers(e.target);
-              }}
-              onClick={(e) => syncTriggers(e.currentTarget)}
-              onKeyUp={(e) => syncTriggers(e.currentTarget)}
-              onSelect={(e) => syncTriggers(e.currentTarget)}
-              onKeyDown={(e) => {
-                if (e.key === "Escape") {
-                  if (fileOpen) {
-                    setFileOpen(false);
-                    atDismissedRef.current = true;
-                    e.preventDefault();
-                    return;
-                  }
-                  if (slashOpen) {
-                    setSlashOpen(false);
-                    slashDismissedRef.current = true;
-                    e.preventDefault();
-                    return;
-                  }
-                }
-                if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-                  e.preventDefault();
-                  // 面板开着：Enter 选中过滤结果第一项（与点击一致）
-                  if (slashOpen && slashSpan) {
-                    const first = filterSlashCommands(commands, slashSpan.query)[0];
-                    if (first) {
-                      pickCommand(first.name);
+          <AttachmentStrip attachments={attachments} onRemove={removeAttachment} />
+          <div className="composer-box">
+            <div className="chat-textarea-wrap" ref={inputWrapRef}>
+              <Textarea
+                className="composer-textarea"
+                placeholder="输入消息…（/ 命令，@ 引用，📎 上传，Enter 发送）"
+                value={input}
+                rows={1}
+                onChange={(e) => {
+                  updateInput(e.target.value);
+                  syncTriggers(e.target);
+                }}
+                onClick={(e) => syncTriggers(e.currentTarget)}
+                onKeyUp={(e) => syncTriggers(e.currentTarget)}
+                onSelect={(e) => syncTriggers(e.currentTarget)}
+                onPaste={handlePaste}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") {
+                    if (fileOpen) {
+                      setFileOpen(false);
+                      atDismissedRef.current = true;
+                      e.preventDefault();
+                      return;
+                    }
+                    if (slashOpen) {
+                      setSlashOpen(false);
+                      slashDismissedRef.current = true;
+                      e.preventDefault();
                       return;
                     }
                   }
-                  void doSend();
-                }
-              }}
-              aria-label="消息输入框"
-            />
+                  // 面板键盘下探：↓/↑/Tab 把焦点交给面板（方向键循环、Tab 逐项、Enter 插入）
+                  const openPanel = slashSpan !== null ? slashPanelRef : atSpan !== null ? filePanelRef : null;
+                  if (openPanel && (e.key === "ArrowDown" || e.key === "ArrowUp" || e.key === "Tab")) {
+                    e.preventDefault();
+                    if (e.key === "ArrowUp") openPanel.current?.focusLast();
+                    else openPanel.current?.focusFirst();
+                    return;
+                  }
+                  if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                    e.preventDefault();
+                    // 面板开着：Enter 选中过滤结果第一项（与点击一致）
+                    if (slashOpen && slashSpan) {
+                      const first = firstSlashCommand(commands, slashSpan.query);
+                      if (first) {
+                        pickCommand(first.name);
+                        return;
+                      }
+                    }
+                    void doSend();
+                  }
+                }}
+                aria-label="消息输入框"
+              />
+            </div>
+            <div className="composer-actions">
+              <UploadButton onFiles={(files) => void handleFiles(files)} busy={uploading} />
+              <VoiceInputButton
+                onTranscript={(text) => updateInput(insertSnippet(inputRef.current, text))}
+                disabled={sending}
+              />
+              <button
+                type="button"
+                className={`composer-send${hasContent ? " ready" : ""}`}
+                onClick={() => void doSend()}
+                disabled={sending || !hasContent}
+                aria-label="发送"
+              >
+                {sending ? (
+                  <>
+                    <span className="spinner" />
+                    <span className="send-text">发送中…</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="send-icon" aria-hidden="true">
+                      ➤
+                    </span>
+                    <span className="send-text">发送</span>
+                  </>
+                )}
+              </button>
+            </div>
           </div>
-          <Button type="button" className="send-btn" onClick={() => void doSend()} disabled={sending || !input.trim()} aria-label="发送">
-            {sending ? (
-              <>
-                <span className="spinner" />
-                发送中…
-              </>
-            ) : (
-              "发送"
-            )}
-          </Button>
-          {status === "running" && (
-            <Button type="button" variant="destructive" size="sm" onClick={() => void doAbort()}>
-              中止
-            </Button>
-          )}
         </div>
       </footer>
 

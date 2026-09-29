@@ -193,6 +193,24 @@ export interface FsTree {
   truncated: boolean;
 }
 
+/** POST /api/uploads 响应项（契约 §11） */
+export interface UploadResult {
+  /** 清洗后的文件名 */
+  name: string;
+  /** 可引用路径：cwd 内为相对路径（`.agent-hub-uploads/x.png`），临时目录兜底为绝对路径 */
+  path: string;
+  /** 落盘绝对路径 */
+  absPath: string;
+  mimeType: string;
+  size: number;
+  /** 是否图片（缩略图预览 + prompt 直接附图） */
+  isImage: boolean;
+}
+
+export interface UploadResponse {
+  upload: UploadResult;
+}
+
 /** GET /api/dashboard/stats：运行看板卡（工作中会话的实时进度） */
 export interface WorkingSessionCard {
   id: string;

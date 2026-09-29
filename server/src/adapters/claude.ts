@@ -23,9 +23,10 @@ import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { ErrorCodes, HubError } from "../errors.js";
 import type { PromptResult } from "../sessions/hub.js";
+import { appendAttachmentHints } from "../uploads.js";
 import { decidePromptAction, parsePromptMode } from "../sessions/prompt-policy.js";
 import { inferExternalStatus } from "../sessions/tail.js";
-import type { MessageDto, ServerEvent, SessionListItem, SessionStatus } from "../types.js";
+import type { MessageDto, PromptImageAttachment, ServerEvent, SessionListItem, SessionStatus } from "../types.js";
 import { ClaudeStreamTranslator } from "./claude-stream.js";
 import {
   claudeSummaries,
@@ -250,7 +251,7 @@ export class ClaudeAdapter implements SessionAdapter {
    * - 正忙且 mode 缺省/"prompt" → busy（调用方转 409 SESSION_BUSY，与 pi 一致）
    * - 正忙且 steer/followUp → 排队到当前 run 结束（claude CLI 无运行中转向能力，保守降级为排队）
    */
-  async prompt(id: string, text: unknown, modeRaw: unknown): Promise<PromptResult> {
+  async prompt(id: string, text: unknown, modeRaw: unknown, images?: PromptImageAttachment[]): Promise<PromptResult> {
     if (typeof text !== "string" || text.trim() === "") {
       throw new HubError(ErrorCodes.INVALID_REQUEST, "text 必须是非空字符串");
     }
@@ -258,6 +259,9 @@ export class ClaudeAdapter implements SessionAdapter {
     if (mode === null) {
       throw new HubError(ErrorCodes.INVALID_REQUEST, "mode 必须是 prompt|steer|followUp 之一");
     }
+    // 图片附件：claude CLI 只有文本通道（spawn `claude -p <text>`），无 ImageContent 通道；
+    // 降级为 @path 引用提示（通道 a），由 claude 的 Read 工具读图（见 uploads.ts 调研结论）。
+    const effectiveText = appendAttachmentHints(text, images);
 
     const found = await this.findSession(id);
     if (!found) {
@@ -270,12 +274,12 @@ export class ClaudeAdapter implements SessionAdapter {
     }
     if (decision.kind === "steer" || decision.kind === "followUp") {
       const queue = this.queues.get(id) ?? [];
-      queue.push(text);
+      queue.push(effectiveText);
       this.queues.set(id, queue);
       return { accepted: true, mode: decision.kind };
     }
 
-    this.startRun(found, text);
+    this.startRun(found, effectiveText);
     return { accepted: true, mode: "prompt" };
   }
 

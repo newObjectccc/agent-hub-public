@@ -16,7 +16,7 @@ import {
   type AgentSessionEvent,
 } from "@earendil-works/pi-coding-agent";
 import { ErrorCodes, HubError } from "../errors.js";
-import type { HubActivity, MessageDto, MessageRole, SearchResultDto, ServerEvent, SessionListItem, SessionStatus, SessionTreeDto, ToolCallStatus } from "../types.js";
+import type { HubActivity, MessageDto, MessageRole, PromptImageAttachment, SearchResultDto, ServerEvent, SessionListItem, SessionStatus, SessionTreeDto, ToolCallStatus } from "../types.js";
 import { decidePromptAction, parsePromptMode, type PromptMode } from "./prompt-policy.js";
 import { SearchService, SEARCH_DEFAULT_LIMIT } from "./search.js";
 import { inferExternalStatus } from "./tail.js";
@@ -312,8 +312,8 @@ export class SessionHub {
     return session;
   }
 
-  /** 发送消息；决策见 prompt-policy（正忙且 mode 缺省 → busy） */
-  async prompt(id: string, text: unknown, modeRaw: unknown): Promise<PromptResult> {
+  /** 发送消息；决策见 prompt-policy（正忙且 mode 缺省 → busy）；images 为上传图片附件（pi 直接附图，通道 b） */
+  async prompt(id: string, text: unknown, modeRaw: unknown, images?: PromptImageAttachment[]): Promise<PromptResult> {
     if (typeof text !== "string" || text.trim() === "") {
       throw new HubError(ErrorCodes.INVALID_REQUEST, "text 必须是非空字符串");
     }
@@ -338,12 +338,17 @@ export class SessionHub {
     }
     const run = (async () => {
       try {
+        // pi 多模态通道 b：PromptOptions.images（message-types.md UserMessage 的 ImageContent 块）
+        const piImages =
+          images && images.length > 0
+            ? images.map((img) => ({ type: "image" as const, data: img.data, mimeType: img.mimeType }))
+            : undefined;
         if (decision.kind === "steer") {
-          await session.steer(text);
+          await session.steer(text, piImages);
         } else if (decision.kind === "followUp") {
-          await session.followUp(text);
+          await session.followUp(text, piImages);
         } else {
-          await session.prompt(text);
+          await session.prompt(text, piImages ? { images: piImages } : undefined);
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);

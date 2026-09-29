@@ -5,6 +5,33 @@
 
 export const SPEECH_LANG = "zh-CN";
 
+/** HTTP（非安全上下文）下的语音降级提示（按钮禁用态 + tooltip/toast） */
+export const SPEECH_HTTP_HINT = "语音输入需 HTTPS 部署后可用（当前 HTTP 环境浏览器禁用语音识别）";
+
+/** 语音可用性（纯函数）：支持 API 且在安全上下文（HTTPS/localhost）才真正可用 */
+export interface SpeechAvailability {
+  /** 浏览器是否提供 SpeechRecognition 构造器 */
+  supported: boolean;
+  /** 是否安全上下文（isSecureContext；HTTP 部署为 false） */
+  secure: boolean;
+  /** 实际可用 = supported && secure */
+  usable: boolean;
+  /** 不可用原因（UI 提示用；可用为 null） */
+  reason: "unsupported" | "insecure" | null;
+}
+
+export function getSpeechAvailability(globalObj: unknown): SpeechAvailability {
+  const supported = getSpeechRecognitionCtor(globalObj) !== null;
+  const g = (typeof globalObj === "object" && globalObj !== null ? globalObj : {}) as Record<string, unknown>;
+  const secure = g.isSecureContext === true;
+  return {
+    supported,
+    secure,
+    usable: supported && secure,
+    reason: supported ? (secure ? null : "insecure") : "unsupported",
+  };
+}
+
 /** SpeechRecognition 实例的最小形状（只用到这些成员） */
 export interface SpeechRecognitionLike {
   lang: string;

@@ -373,3 +373,27 @@ export interface HubActivity {
 export interface ErrorEnvelope {
   error: { code: string; message: string };
 }
+
+/** POST /api/uploads 响应项（契约 §11） */
+export interface UploadDto {
+  /** 清洗后的文件名（含扩展名） */
+  name: string;
+  /** 可引用路径：cwd 内为相对路径（`.agent-hub-uploads/x.png`），临时目录兜底时为绝对路径 */
+  path: string;
+  /** 落盘绝对路径 */
+  absPath: string;
+  mimeType: string;
+  size: number;
+  /** 是否图片（决定 UI 缩略图预览与 prompt 直接附图） */
+  isImage: boolean;
+}
+
+/** prompt 图片附件（通道 b：pi ImageContent；由 server 读上传文件后交给适配层） */
+export interface PromptImageAttachment {
+  /** 原始引用路径（相对 cwd 或绝对；claude 侧降级提示用） */
+  path: string;
+  /** MIME（image/png 等） */
+  mimeType: string;
+  /** base64 图片数据（不含 data: 前缀） */
+  data: string;
+}

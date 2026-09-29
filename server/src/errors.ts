@@ -16,7 +16,11 @@ export const ErrorCodes = {
   INVALID_FILE: "INVALID_FILE",
   FILE_NOT_FOUND: "FILE_NOT_FOUND",
   GIT_FAILED: "GIT_FAILED",
-  UNAUTHORIZED: "UNAUTHORIZED",} as const;
+  UNAUTHORIZED: "UNAUTHORIZED",
+  // 上传 API（契约 §11）
+  UPLOAD_TOO_LARGE: "UPLOAD_TOO_LARGE",
+  UNSUPPORTED_MEDIA_TYPE: "UNSUPPORTED_MEDIA_TYPE",
+} as const;
 
 export type ErrorCode = (typeof ErrorCodes)[keyof typeof ErrorCodes];
 
@@ -40,6 +44,16 @@ export function toErrorEnvelope(err: unknown): { statusCode: number; body: { err
     };
   }
   const message = err instanceof Error ? err.message : String(err);
+  // Fastify 框架层错误（body 超限 FST_ERR_CTP_BODY_TOO_LARGE 等）携带 statusCode：
+  // 保留 4xx 语义，避免把客户端错误误报成 500
+  const fastifyLike = (typeof err === "object" && err !== null ? err : {}) as { statusCode?: unknown; code?: unknown };
+  if (typeof fastifyLike.statusCode === "number" && fastifyLike.statusCode >= 400 && fastifyLike.statusCode < 600) {
+    const code = typeof fastifyLike.code === "string" && fastifyLike.code !== "" ? fastifyLike.code : ErrorCodes.INVALID_REQUEST;
+    return {
+      statusCode: fastifyLike.statusCode,
+      body: { error: { code, message } },
+    };
+  }
   return {
     statusCode: 500,
     body: { error: { code: ErrorCodes.INTERNAL, message } },

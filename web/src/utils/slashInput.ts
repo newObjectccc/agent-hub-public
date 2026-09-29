@@ -59,6 +59,33 @@ export function filterSlashCommands(commands: readonly SlashCommandLike[], query
   );
 }
 
+/** 面板分组：可直接执行在前，“仅终端可用”殿后；组内内置优先、按名字稳定排序 */
+export interface SlashGroup {
+  key: "usable" | "terminal";
+  label: string;
+  icon: string;
+  items: SlashCommandLike[];
+}
+
+export function groupSlashCommands(commands: readonly SlashCommandLike[], query: string): SlashGroup[] {
+  const byKind = (a: SlashCommandLike, b: SlashCommandLike): number => {
+    if (a.builtin !== b.builtin) return a.builtin ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  };
+  const filtered = filterSlashCommands(commands, query);
+  const groups: SlashGroup[] = [
+    { key: "usable", label: "可直接执行", icon: "⚡", items: filtered.filter((c) => !c.terminalOnly).sort(byKind) },
+    { key: "terminal", label: "仅终端可用（插入参考）", icon: "⌨", items: filtered.filter((c) => c.terminalOnly).sort(byKind) },
+  ];
+  return groups.filter((g) => g.items.length > 0);
+}
+
+/** Enter 的默认选中项 = 第一个分组的第一条（与面板视觉首项一致） */
+export function firstSlashCommand(commands: readonly SlashCommandLike[], query: string): SlashCommandLike | null {
+  const groups = groupSlashCommands(commands, query);
+  return groups.length > 0 && groups[0].items.length > 0 ? groups[0].items[0] : null;
+}
+
 export interface InsertResult {
   text: string;
   /** 插入后光标位置 */
