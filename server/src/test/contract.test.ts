@@ -18,6 +18,7 @@ import type { MessageDto, SearchResultDto, ServerEvent, SessionListItem, Session
 
 const sessionFixture: SessionListItem = {
   id: "sess-1",
+  source: "pi",
   name: null,
   cwd: "/tmp/demo",
   updatedAt: "2026-02-18T12:00:00.000Z",
@@ -31,6 +32,7 @@ const sessionFixture: SessionListItem = {
 const systemFixture: SystemInfo = {
   platform: "darwin",
   pi: { available: true, version: "0.87.1" },
+  claude: { available: true, version: "2.1.267" },
   tmux: { available: false, version: null },
   ttyd: { available: false, version: null },
   tailscale: { available: false, version: null, loggedIn: false, hostname: null },

@@ -1,6 +1,7 @@
 import type { SessionSummary } from "../api/types";
 import { relativeTime } from "../utils/relativeTime";
 import { GitStatusBadge } from "./GitStatusBadge";
+import { SourceBadge } from "./SourceBadge";
 import { StatusBadge } from "./StatusBadge";
 import { Button } from "./ui/button";
 
@@ -56,6 +57,7 @@ export function SessionList({ sessions, onSelect, now }: SessionListProps) {
             <span className="session-name" title={s.name && s.name.trim() !== "" ? s.name : s.cwd}>
               {titleOf(s)}
             </span>
+            <SourceBadge source={s.source} />
             <StatusBadge status={s.status} />
             <span className="session-time">{relativeTime(s.updatedAt, now)}</span>
           </div>

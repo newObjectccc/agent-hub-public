@@ -11,6 +11,7 @@ import { FileViewer } from "../components/FileViewer";
 import { GitPanel } from "../components/GitPanel";
 import { GitStatusBadge } from "../components/GitStatusBadge";
 import { MessageBubble } from "../components/MessageBubble";
+import { SourceBadge } from "../components/SourceBadge";
 import { StatusBadge } from "../components/StatusBadge";
 import { BackIcon, TreeIcon } from "../components/icons";
 import { Button } from "../components/ui/button";
@@ -198,6 +199,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
           <TreeIcon />
           树
         </Button>
+        <SourceBadge source={session?.source ?? null} />
         <StatusBadge status={status} />
       </header>
 

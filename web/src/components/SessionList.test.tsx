@@ -15,6 +15,7 @@ const NOW = Date.parse("2026-02-18T12:00:00.000Z");
 function makeSession(over: Partial<SessionSummary>): SessionSummary {
   return {
     id: "s-1",
+    source: "pi",
     name: "pi-demo",
     cwd: "/Users/me/Workspace/demo",
     updatedAt: new Date(NOW - 2 * 60_000).toISOString(),
@@ -74,6 +75,8 @@ describe("SessionList 渲染", () => {
     expect(el.querySelectorAll(".badge.running")).toHaveLength(1);
     expect(el.querySelectorAll(".badge.error")).toHaveLength(1);
     expect(el.querySelectorAll(".badge.idle")).toHaveLength(0);
+    // 来源徽章（默认 pi）
+    expect(el.querySelectorAll(".badge.source-pi")).toHaveLength(2);
     // 摘要：优先 assistant，缺失时回退 user
     expect(text).toContain("好的，我先查 ETL 水位");
     expect(text).toContain("排查构建失败");
@@ -103,6 +106,22 @@ describe("SessionList 渲染", () => {
     });
     expect(onSelect).toHaveBeenCalledTimes(1);
     expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ id: "abc" }));
+  });
+
+  it("claude 会话渲染 claude 来源徽章（与 pi 并列展示）", () => {
+    const el = render(
+      <SessionList
+        sessions={[
+          makeSession({ id: "c1", source: "claude", name: "claude 会话" }),
+          makeSession({ id: "p1", source: "pi", name: "pi 会话" }),
+        ]}
+        onSelect={() => {}}
+        now={NOW}
+      />,
+    );
+    expect(el.querySelectorAll(".badge.source-claude")).toHaveLength(1);
+    expect(el.querySelectorAll(".badge.source-pi")).toHaveLength(1);
+    expect(el.textContent).toContain("claude");
   });
 
   it("lastAssistantMessage 与 lastUserMessage 都为空时显示占位文案", () => {

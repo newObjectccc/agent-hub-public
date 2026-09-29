@@ -10,13 +10,16 @@ Base URL: `http://<host>:<port>/api`（默认端口 7700）
 ## 1. 会话（sessions）
 
 ### GET /api/sessions
-列出全部 pi 会话（来自 `~/.pi/agent/sessions/` 全目录扫描，含所有 cwd 分组）。
+列出全部会话，**合并两个来源**：
+- `source: "pi"`：`~/.pi/agent/sessions/` 全目录扫描（session-format v3 JSONL）
+- `source: "claude"`：`~/.claude/projects/<encoded-cwd>/<session-uuid>.jsonl`（Claude Code transcript）
 
 ```json
 {
   "sessions": [
     {
       "id": "uuid-or-slug",
+      "source": "pi | claude",
       "name": "pi-seksun-KPI",
       "cwd": "/Users/me/Workspace/im-production-copy",
       "updatedAt": "2026-02-18T12:00:00.000Z",
@@ -29,7 +32,10 @@ Base URL: `http://<host>:<port>/api`（默认端口 7700）
   ]
 }
 ```
-排序：`updatedAt` 倒序。`status` 由 server 内存中的运行态决定（本进程启动的 prompt 才可能是 `running`）。
+排序：`updatedAt` 倒序（跨来源统一排序；同刻按 id 稳定排序）。`status` 由 server 内存中的运行态决定
+（本进程启动的 prompt 才可能是 `running`），否则按文件活动推断（60s 内有写盘 = running）。
+
+`source` 为 v0 新增契约字段：列表项与详情里的 `session` 均带该字段；前端按其渲染来源徽章。
 
 ### GET /api/sessions/:id
 会话详情 + **active branch** 的消息历史（渲染 chat 用）。
@@ -53,8 +59,13 @@ Base URL: `http://<host>:<port>/api`（默认端口 7700）
 说明：`role` 与 pi session-format v3 对齐；toolResult 消息折叠进产生它的 assistant 消息的 `toolCalls[]`。
 `messages` 仅含 active branch（树结构选活跃叶到根的路径）。
 
+claude 会话（`source: "claude"`）返回同构映射后的消息：transcript 的 user/assistant/tool_result
+映射到 `user`/`assistant`/`toolResult` role；同 `message.id` 的 assistant block 行聚合为一条消息，
+`tool_use` 聚合为 `toolCalls[]`（`tool_result` 折叠回填 status/resultPreview）；thinking 跳过；
+`ai-title` 行作为 `name`；不识别的行/块优雅跳过。
+
 ### POST /api/sessions
-新建会话。
+新建会话（仅 `source: "pi"`；claude 会话由 Claude Code CLI 自己创建）。
 请求：`{ "cwd": "/abs/path", "name": "可选" }`
 响应 201：`{ "session": { ...列表项... } }`
 
@@ -68,11 +79,17 @@ Base URL: `http://<host>:<port>/api`（默认端口 7700）
 响应 202：`{ "accepted": true, "mode": "..." }`
 实际输出走 WebSocket 事件流。
 
+claude 会话：server 本地 spawn
+`claude -p <text> --resume <session-id> --output-format stream-json --verbose --include-partial-messages --permission-mode manual`，
+解析 stream-json 事件映射到 §4 WS 事件；`steer`/`followUp` 降级为排队（run 结束后自动发送）；
+安全默认：`--permission-mode manual`（覆盖用户 settings，不可无人确认执行破坏性操作），
+不使用 `--dangerously-skip-permissions` / `--allowedTools`。
+
 ### POST /api/sessions/:id/abort
-中止当前运行。响应 200：`{ "aborted": true }`（空闲时也返回 true，幂等）。
+中止当前运行（claude 会话：杀 spawn 的子进程）。响应 200：`{ "aborted": true }`（空闲时也返回 true，幂等）。
 
 ### POST /api/sessions/:id/compact
-手动压缩上下文。响应 200：`{ "ok": true }`。
+手动压缩上下文（仅 pi 会话；claude 会话返回 400 `INVALID_REQUEST`，由其自身 autocompact 管理）。响应 200：`{ "ok": true }`。
 
 ### GET /api/search
 跨全部会话搜消息文本（大小写不敏感子串匹配，无需全文索引）。
@@ -131,6 +148,7 @@ Base URL: `http://<host>:<port>/api`（默认端口 7700）
 {
   "platform": "darwin | win32 | linux",
   "pi":   { "available": true,  "version": "0.87.1" },
+  "claude": { "available": true, "version": "2.1.267" },
   "tmux": { "available": true,  "version": "3.4" },
   "ttyd": { "available": false, "version": null },
   "tailscale": { "available": true, "loggedIn": true, "hostname": "my-mac" },
@@ -200,6 +218,10 @@ client → server（可选，替代 REST）：
 | `ping` | —（保活，server 回 `pong`） |
 
 断线重连：client 指数退避重连；重连后通过 `GET /api/sessions/:id` 全量对账（不做增量恢复，v0 简化）。
+
+> 两个 source（pi / claude）事件形状完全一致；claude 会话的流事件由 server 解析
+> `claude --output-format stream-json` 后映射（text_delta / tool_start / tool_end /
+> message_end / agent_settled / status / error），tail 场景由 transcript 解析器 diff 新消息补齐。
 
 ## 5. 约定
 

@@ -5,9 +5,14 @@
 
 export type SessionStatus = "idle" | "running" | "error";
 
+/** 会话来源：pi（~/.pi/agent/sessions）或 claude（~/.claude/projects） */
+export type SessionSource = "pi" | "claude";
+
 /** GET /api/sessions 列表项 */
 export interface SessionListItem {
   id: string;
+  /** 会话来源（pi | claude） */
+  source: SessionSource;
   name: string | null;
   cwd: string;
   updatedAt: string;
@@ -121,6 +126,7 @@ export interface TailscaleStatus extends ToolAvailability {
 export interface SystemInfo {
   platform: "darwin" | "win32" | "linux" | string;
   pi: ToolAvailability;
+  claude: ToolAvailability;
   tmux: ToolAvailability;
   ttyd: ToolAvailability;
   tailscale: TailscaleStatus;

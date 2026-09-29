@@ -180,6 +180,7 @@ export class SessionHub {
 
     return {
       id: sessionId,
+      source: "pi",
       name: trimmedName === "" ? null : trimmedName,
       cwd,
       updatedAt: timestamp,

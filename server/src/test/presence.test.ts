@@ -28,9 +28,11 @@ describe("presence: 文件事件驱动通知", () => {
 
   it("文件追加后 debounce 窗口内触发 onChange（多次写入合并为一次）", async () => {
     let fired = 0;
-    const watcher = new PresenceWatcher(dir, () => {
+    const watcher = new PresenceWatcher(async () => [file], () => {
       fired += 1;
-    });
+      },
+      [dir],
+    );
     try {
       await watcher.start();
       await appendFile(file, `\n${entry("m2")}`, "utf8");
@@ -47,9 +49,11 @@ describe("presence: 文件事件驱动通知", () => {
 
   it("stop 后不再触发", async () => {
     let fired = 0;
-    const watcher = new PresenceWatcher(dir, () => {
+    const watcher = new PresenceWatcher(async () => [file], () => {
       fired += 1;
-    });
+      },
+      [dir],
+    );
     await watcher.start();
     watcher.stop();
     const at = fired;

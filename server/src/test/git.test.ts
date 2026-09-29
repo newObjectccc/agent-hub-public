@@ -41,6 +41,7 @@ const sessionFixture: SessionListItem = {
   lastUserMessage: null,
   lastAssistantMessage: null,
   sessionFile: "/tmp/demo.jsonl",
+  source: "pi",
 };
 
 const systemFixture: SystemInfo = {
@@ -51,6 +52,7 @@ const systemFixture: SystemInfo = {
   tailscale: { available: false, version: null, loggedIn: false, hostname: null },
   sessionDir: "/tmp/sessions",
   workspaceRoot: "/tmp/ws",
+  claude: { available: false, version: null },
 };
 
 const fakeHub: SessionHubLike = {

@@ -3,18 +3,24 @@
  * 默认监听 127.0.0.1:7700（config/hub.config.json 可覆盖），绝不明文绑定公网。
  */
 import { existsSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import Fastify, { type FastifyInstance } from "fastify";
 import fastifyCors from "@fastify/cors";
 import fastifyStatic from "@fastify/static";
 import { VERSION } from "@earendil-works/pi-coding-agent";
+import { ClaudeAdapter } from "./adapters/claude.js";
+import { findClaudeSessionFiles } from "./adapters/claude-transcript.js";
+import { PiAdapter } from "./adapters/pi.js";
+import { SessionRegistry } from "./adapters/registry.js";
 import { loadHubConfig, type HubConfig } from "./config.js";
 import { KpiService } from "./kpi.js";
 import { configDir, webDistDir } from "./paths.js";
 import { registerRoutes, type RouteDeps, type SessionHubLike } from "./routes.js";
 import { SessionHub } from "./sessions/hub.js";
 import { PresenceWatcher } from "./sessions/presence.js";
+import { findSessionFiles } from "./sessions/scan.js";
 import { SessionTailManager } from "./sessions/tail.js";
 import { probeSystem } from "./system.js";
 import type { ServerEvent } from "./types.js";
@@ -61,7 +67,7 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
 
 export interface StartedHub {
   app: FastifyInstance;
-  hub: SessionHub;
+  hub: SessionRegistry;
   kpi: KpiService;
   config: HubConfig;
   wshub: WsHub;
@@ -76,7 +82,12 @@ export async function startHub(): Promise<StartedHub> {
 
   const wshub = new WsHub();
   const emit = (sessionId: string, event: ServerEvent): void => wshub.broadcast(sessionId, event);
-  const hub = new SessionHub(config.sessionDir, emit);
+  const piHub = new SessionHub(config.sessionDir, emit);
+  // Claude Code 会话来源：~/.claude/projects/<encoded-cwd>/<uuid>.jsonl + history.jsonl
+  const claudeProjectsDir = join(homedir(), ".claude", "projects");
+  const claudeHistoryFile = join(homedir(), ".claude", "history.jsonl");
+  const claudeAdapter = new ClaudeAdapter({ projectsDir: claudeProjectsDir, historyFile: claudeHistoryFile, emit });
+  const hub = new SessionRegistry(new PiAdapter(piHub), claudeAdapter);
   const kpi = new KpiService({ configDir, kpiRefreshMinutes: config.kpiRefreshMinutes });
 
   const app = await createApp({
@@ -94,11 +105,18 @@ export async function startHub(): Promise<StartedHub> {
   // 会话一旦由本进程接管（live），停掉文件 tail，避免双推送源产生重复气泡
   hub.onLive = (sid) => tails.detach(sid);
   wshub.attach(app.server, hub, tails);
-  // 全局存在感知：任一会话文件变化 → 广播 sessions_changed（列表实时刷新）+ 搜索索引失效
-  const presence = new PresenceWatcher(config.sessionDir, () => {
-    hub.invalidateSearch();
-    wshub.broadcastGlobal({ type: "sessions_changed" });
-  });
+  // 全局存在感知：任一会话文件（pi / claude）变化 → 广播 sessions_changed + 搜索索引失效（fs.watch 事件驱动）
+  const presence = new PresenceWatcher(
+    async () => [
+      ...(await findSessionFiles(config.sessionDir)),
+      ...(await findClaudeSessionFiles(claudeProjectsDir)),
+    ],
+    () => {
+      hub.invalidateSearch();
+      wshub.broadcastGlobal({ type: "sessions_changed" });
+    },
+    [config.sessionDir, claudeProjectsDir],
+  );
   await presence.start();
   await kpi.start();
 

@@ -5,13 +5,22 @@
 import type { IncomingMessage, Server as HttpServer } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocket, WebSocketServer } from "ws";
+import { loadClaudeSessionMessages } from "./adapters/claude-transcript.js";
 import { ErrorCodes } from "./errors.js";
-import type { SessionHub } from "./sessions/hub.js";
+import type { PromptResult } from "./sessions/hub.js";
 import type { SessionTailManager } from "./sessions/tail.js";
-import type { ServerEvent } from "./types.js";
+import type { ServerEvent, SessionListItem } from "./types.js";
 
 const WS_PATH_RE = /^\/ws\/sessions\/([^/]+)$/;
 const WS_EVENTS_PATH = "/ws/events";
+
+/** WS 层对 hub 的最小结构依赖（SessionHub / SessionRegistry 都满足） */
+export interface WsSessionHub {
+  isLive(id: string): boolean;
+  findSession(id: string): Promise<SessionListItem | null>;
+  prompt(id: string, text: unknown, modeRaw: unknown): Promise<PromptResult>;
+  abort(id: string): Promise<void>;
+}
 
 interface ClientMessage {
   type?: unknown;
@@ -68,7 +77,7 @@ export class WsHub {
   }
 
   /** 挂到 HTTP server 的 upgrade 事件；tailManager 可选，为非本进程会话提供实时文件 tail */
-  attach(server: HttpServer, hub: SessionHub, tailManager?: SessionTailManager): void {
+  attach(server: HttpServer, hub: WsSessionHub, tailManager?: SessionTailManager): void {
     const wss = new WebSocketServer({ noServer: true });
     this.wss = wss;
     this.tails = tailManager ?? null;
@@ -135,7 +144,7 @@ export class WsHub {
    * 同步注册消息监听；findSession 解析完成前到达的消息进 pending 队列，
    * 握手后统一消费。修复“连接即发的消息静默丢失”竞态。
    */
-  private handleConnection(socket: WebSocket, sessionId: string, hub: SessionHub): void {
+  private handleConnection(socket: WebSocket, sessionId: string, hub: WsSessionHub): void {
     const pending: string[] = [];
     let ready = false;
     let acquired = false;
@@ -174,9 +183,11 @@ export class WsHub {
       // 契约：连接后首条握手确认
       this.send(socket, { type: "session", id: session.id, cwd: session.cwd });
 
-      // 非本进程会话：启动文件 tail 实时推送（本进程会话由 SDK 事件流推送，避免重复）
+      // 非本进程会话：启动文件 tail 实时推送（本进程会话由 SDK/spawn 事件流推送，避免重复）。
+      // 解析器按 source 注入：pi 用 session-format v3，claude 用 transcript 格式（只认新消息即可）
       if (this.tails && !hub.isLive(sessionId) && socket.readyState === WebSocket.OPEN) {
-        this.tails.acquire(sessionId, session.sessionFile);
+        const loader = session.source === "claude" ? loadClaudeSessionMessages : undefined;
+        this.tails.acquire(sessionId, session.sessionFile, loader);
         acquired = true;
       }
 
@@ -186,7 +197,7 @@ export class WsHub {
     })();
   }
 
-  private async handleClientMessage(socket: WebSocket, sessionId: string, hub: SessionHub, raw: string): Promise<void> {
+  private async handleClientMessage(socket: WebSocket, sessionId: string, hub: WsSessionHub, raw: string): Promise<void> {
     let parsed: ClientMessage;
     try {
       parsed = JSON.parse(raw) as ClientMessage;

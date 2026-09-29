@@ -5,7 +5,11 @@
  * 并推断运行态：文件持续写入 → status:"running"，静默 → status:"idle"。
  */
 import { loadSessionMessages } from "./scan.js";
+import type { MessageDto } from "../types.js";
 import type { EmitFn } from "./hub.js";
+
+/** 消息加载器：按会话文件格式注入（pi session-format / claude transcript） */
+export type MessageLoader = (file: string) => Promise<MessageDto[]>;
 
 /** 文件静默多久后推断为 idle（与 presence 活动窗口一致：覆盖工具间思考的写盘间隙） */
 const IDLE_AFTER_MS = 60_000;
@@ -26,13 +30,13 @@ export class SessionTailManager {
     this.emit = emit;
   }
 
-  acquire(sessionId: string, file: string): void {
+  acquire(sessionId: string, file: string, loader: MessageLoader = loadSessionMessages): void {
     const existing = this.tails.get(sessionId);
     if (existing) {
       existing.ref += 1;
       return;
     }
-    const tail = new SessionTail(sessionId, file, this.emit);
+    const tail = new SessionTail(sessionId, file, this.emit, loader);
     this.tails.set(sessionId, { ref: 1, tail });
     void tail.start();
   }
@@ -75,12 +79,13 @@ class SessionTail {
     private readonly sessionId: string,
     private readonly file: string,
     private readonly emit: EmitFn,
+    private readonly loadMessages: MessageLoader = loadSessionMessages,
   ) {}
 
   /** 初始快照：把已有消息全部记入 known（不推送——客户端连接时已全量加载） */
   async start(): Promise<void> {
     try {
-      const messages = await loadSessionMessages(this.file);
+      const messages = await this.loadMessages(this.file);
       for (const m of messages) this.knownIds.add(m.id);
       this.lastChangeMs = Date.now();
     } catch {
@@ -100,7 +105,7 @@ class SessionTail {
   private async tick(): Promise<void> {
     if (this.closed) return;
     try {
-      const messages = await loadSessionMessages(this.file);
+      const messages = await this.loadMessages(this.file);
       let changed = false;
       for (const m of messages) {
         if (this.knownIds.has(m.id)) continue;
