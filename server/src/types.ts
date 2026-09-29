@@ -68,6 +68,13 @@ export interface SessionTreeDto {
   activePath: string[];
 }
 
+/** 消息内嵌图片（pi ImageContent / claude image block → data URL 或 http(s) URL） */
+export interface MessageImage {
+  /** `data:image/...;base64,...` 或 http(s) URL */
+  url: string;
+  alt: string | null;
+}
+
 /** GET /api/sessions/:id 与 WS message_end 的消息结构 */
 export interface MessageDto {
   id: string;
@@ -78,6 +85,8 @@ export interface MessageDto {
   /** 思维链全文（assistant 的 thinking 块）；无思维链为 null；claude 适配层暂缺省 */
   thinking?: string | null;
   toolCalls: ToolCallDto[];
+  /** 内嵌图片（ImageContent/image block）；无图缺省。前端按序渲染为 <img> */
+  images?: MessageImage[];
 }
 
 export interface SessionDetail {
@@ -139,6 +148,50 @@ export interface SystemInfo {
   tailscale: TailscaleStatus;
   sessionDir: string;
   workspaceRoot: string;
+}
+
+/** ===== slash 命令清单（docs/API_CONTRACT.md §8） ===== */
+
+/** GET /api/commands?source= 的命令项 */
+export interface CommandDto {
+  /** 命令名（含前导斜杠，如 "/resume" 或 "/dir:name"） */
+  name: string;
+  description: string;
+  builtin: boolean;
+  /** 仅终端可用：claude 内置命令在 `claude -p` 下无效（实测拒绝或无输出），UI 标注降级 */
+  terminalOnly: boolean;
+}
+
+export interface CommandListDto {
+  source: SessionSource;
+  commands: CommandDto[];
+}
+
+/** ===== 文件树只读 API（docs/API_CONTRACT.md §9） ===== */
+
+export type FsEntryType = "dir" | "file";
+
+/** GET /api/fs/tree 目录项 */
+export interface FsEntryDto {
+  name: string;
+  type: FsEntryType;
+  /** .git / node_modules / 点开头：默认隐藏，?hidden=1 展开 */
+  hidden: boolean;
+  /** 文件字节数；目录为 null */
+  size: number | null;
+}
+
+/** GET /api/fs/tree 响应（单层列表） */
+export interface FsTreeDto {
+  /** 根（会话 cwd，绝对路径） */
+  cwd: string;
+  /** 当前目录相对 cwd 的路径，"" 为根 */
+  path: string;
+  /** 上一层相对路径；根为 null */
+  parent: string | null;
+  entries: FsEntryDto[];
+  /** 条目超过上限被截断 */
+  truncated: boolean;
 }
 
 /** ===== git / 文件只读 API（docs/API_CONTRACT.md §6） ===== */

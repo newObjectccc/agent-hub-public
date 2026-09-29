@@ -65,6 +65,12 @@ export interface ToolCall {
   resultPreview: string | null;
 }
 
+/** 消息内嵌图片（pi ImageContent / claude image block → data URL 或 http(s) URL） */
+export interface MessageImage {
+  url: string;
+  alt: string | null;
+}
+
 export interface SessionMessage {
   id: string;
   role: MessageRole;
@@ -73,6 +79,8 @@ export interface SessionMessage {
   /** 思维链全文（thinking 块）；无思维链为 null。server 始终下发，缺省视为无 */
   thinking?: string | null;
   toolCalls: ToolCall[];
+  /** 内嵌图片（无图缺省）；按序渲染为 <img>（max-width 100%，不拦截长按） */
+  images?: MessageImage[];
 }
 
 export interface SessionDetail {
@@ -103,6 +111,40 @@ export interface SystemStatus {
 export interface PromptResult {
   accepted: boolean;
   mode: "prompt" | "steer" | "followUp";
+}
+
+/** GET /api/commands?source= 命令项（契约 §8） */
+export interface CommandItem {
+  name: string;
+  description: string;
+  builtin: boolean;
+  /** 仅终端可用（claude 内置命令在 claude -p 下无效），UI 标注降级 */
+  terminalOnly: boolean;
+}
+
+export interface CommandList {
+  source: SessionSource;
+  commands: CommandItem[];
+}
+
+/** GET /api/fs/tree 目录项（契约 §9） */
+export type FsEntryType = "dir" | "file";
+
+export interface FsEntry {
+  name: string;
+  type: FsEntryType;
+  /** .git / node_modules / 点开头：默认隐藏，hidden=1 展开 */
+  hidden: boolean;
+  size: number | null;
+}
+
+export interface FsTree {
+  cwd: string;
+  /** 当前目录相对 cwd 路径（"" = 根） */
+  path: string;
+  parent: string | null;
+  entries: FsEntry[];
+  truncated: boolean;
 }
 
 /** GET /api/dashboard/stats：运行看板卡（工作中会话的实时进度） */

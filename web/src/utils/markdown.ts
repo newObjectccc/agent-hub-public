@@ -1,7 +1,8 @@
 /**
  * 轻量 Markdown 渲染（不引入 marked 等外部依赖，控制包体积）。
- * 支持：代码块、行内代码、粗体、斜体、链接、标题、无序/有序列表、段落/换行。
- * 安全：先整体 HTML 转义，再做标记替换；链接仅放行 http(s)/mailto。
+ * 支持：代码块、行内代码、粗体、斜体、链接、图片、标题、引用块、无序/有序列表、段落/换行。
+ * 安全：先整体 HTML 转义，再做标记替换；链接仅放行 http(s)/mailto；
+ * 图片仅放行 http(s)/data:image/相对路径（拒绝 javascript: 等其它 scheme）。
  */
 
 export function escapeHtml(s: string): string {
@@ -19,6 +20,15 @@ function safeHref(raw: string): string | null {
   return null;
 }
 
+/** 图片 src 白名单：http(s)、data:image/…、相对路径；其余 scheme（javascript: 等）拒绝 */
+function safeImgSrc(raw: string): string | null {
+  const src = raw.trim();
+  if (/^https?:\/\//i.test(src)) return escapeHtml(src);
+  if (/^data:image\/(png|jpe?g|gif|webp|avif);base64,[A-Za-z0-9+/=]+$/i.test(src)) return escapeHtml(src);
+  if (!/^[a-z][a-z0-9+.-]*:/i.test(src) && src !== "") return escapeHtml(src); // 无 scheme 的相对路径
+  return null;
+}
+
 function renderInline(escaped: string): string {
   let s = escaped;
   // 行内代码（内容已转义，回填时不再二次处理）
@@ -26,6 +36,11 @@ function renderInline(escaped: string): string {
   s = s.replace(/`([^`\n]+)`/g, (_m, code: string) => {
     codeSlots.push(`<code>${code}</code>`);
     return `\u0000CODE${codeSlots.length - 1}\u0000`;
+  });
+  // 图片 ![alt](src)（在链接规则前处理，避免 `!` 干扰）
+  s = s.replace(/!\[([^\]\n]*)\]\(([^)\s]+)\)/g, (m, alt: string, url: string) => {
+    const src = safeImgSrc(url);
+    return src ? `<img class="md-img" src="${src}" alt="${alt}" loading="lazy" />` : m;
   });
   // 链接 [text](url)
   s = s.replace(/\[([^\]\n]+)\]\(([^)\s]+)\)/g, (m, text: string, url: string) => {
@@ -45,11 +60,18 @@ export function renderMarkdown(src: string): string {
   const out: string[] = [];
   let paragraph: string[] = [];
   let list: { ordered: boolean; items: string[] } | null = null;
+  let quote: string[] = [];
 
   const flushParagraph = () => {
     if (paragraph.length) {
       out.push(`<p>${paragraph.map(renderInline).join("<br/>")}</p>`);
       paragraph = [];
+    }
+  };
+  const flushQuote = () => {
+    if (quote.length) {
+      out.push(`<blockquote>${quote.map(renderInline).join("<br/>")}</blockquote>`);
+      quote = [];
     }
   };
   const flushList = () => {
@@ -62,6 +84,7 @@ export function renderMarkdown(src: string): string {
   const flushAll = () => {
     flushParagraph();
     flushList();
+    flushQuote();
   };
 
   for (let i = 0; i < lines.length; i++) {
@@ -104,12 +127,22 @@ export function renderMarkdown(src: string): string {
       continue;
     }
 
+    // 引用块 `> …`（escapeHtml 后 `>` 为 `&gt;`；连续行合并为一个 blockquote）
+    const quoteLine = line.match(/^\s*(?:>|&gt;)\s?(.*)$/);
+    if (quoteLine) {
+      flushParagraph();
+      flushList();
+      quote.push(quoteLine[1]);
+      continue;
+    }
+
     // 空行结束段落
     if (/^\s*$/.test(line)) {
       flushAll();
       continue;
     }
 
+    flushQuote();
     paragraph.push(line);
   }
   flushAll();

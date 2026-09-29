@@ -504,3 +504,75 @@ server 行为：
 - 同一会话已由本进程 SDK 接管时丢弃 live 事件（SDK 流是权威源）。
 - `text_delta`/`thinking_delta` 按会话做 100ms 节流合并广播；生命周期事件即时广播并保序。
 - 扩展侧地址可用 `AGENT_HUB_LIVE_URL` 覆盖（默认 `http://127.0.0.1:7700`）。
+## 8. Slash 命令清单（GET /api/commands）
+
+chat 输入区 `/` 触发命令面板：server 按 source 分发命令清单（内置 + 自定义）。
+发送时 `/cmd args` **原样**作为 prompt 文本走 §1 的 prompt 通道：
+pi SDK `prompt()` 原生处理内置/extension 命令（pi sdk.md）；
+claude 自定义命令（~/.claude/commands/*.md）`claude -p` 会展开执行，内置命令 print 模式不可用
+（实测 `claude -p "/help"` → "/help isn't available in this environment."），UI 按 `terminalOnly` 标注"仅终端可用"。
+
+### GET /api/commands?source=pi|claude
+
+`source` 缺失或非 `pi|claude` → 400 `INVALID_REQUEST`。
+
+```json
+{
+  "source": "claude",
+  "commands": [
+    { "name": "/clear", "description": "清空会话上下文", "builtin": true, "terminalOnly": true },
+    { "name": "/e2e", "description": "打开页面并验证", "builtin": false, "terminalOnly": false }
+  ]
+}
+```
+
+说明：
+- `pi`：返回 pi 内置清单（pi 文档 slash-commands.md 全量：/resume /new /compact /fork /tree /
+  /export /session /name /bug /model /thinking …）；全部 `terminalOnly:false`（SDK 原样处理）。
+- `claude`：内置清单（/clear /compact /config /cost /help /model /mcp …，全部 `terminalOnly:true`）
+  + 扫描 `~/.claude/commands/` 的 .md 自定义命令（一层子目录 → `/dir:name` 命名空间）。
+  `description` 取 frontmatter `description:`，缺省取首个文本行；扫描失败降级为空列表，不 500。
+- 条目上限 300/source；命令名限定 `[A-Za-z0-9][A-Za-z0-9._:-]{0,63}`（防注入响应）。
+
+## 9. 文件树（GET /api/fs/tree，只读，硬约束）
+
+chat 输入区 `@` 触发文件选择面板（多选插入 `@rel/path` 引用，pi `@path` / claude @-mentions）。
+
+> **只读硬保证**：仅 `readdir`+`stat`，无任何写入口；`cwd` 必须是存在的绝对目录；
+> `path` 参数 resolve 后必须仍在 `cwd` 内（防 `../` 穿越，与 §6 git 同口径）；
+> 单层列表，深度 ≤ 24、条目 ≤ 500（截断时 `truncated:true`）。
+
+### GET /api/fs/tree?cwd=&path=&q=&hidden=
+
+| 参数 | 说明 |
+|---|---|
+| `cwd` | 会话 cwd（绝对路径，必填） |
+| `path` | 相对 `cwd` 的目录路径，缺省 `""`（根） |
+| `q` | 文件名过滤（大小写不敏感子串，≤128 字符） |
+| `hidden` | `1`/`true` 显示默认隐藏项（`.git` / `node_modules` / 点开头） |
+
+```json
+{
+  "cwd": "/Users/me/Workspace/demo",
+  "path": "src",
+  "parent": "",
+  "entries": [
+    { "name": "utils", "type": "dir", "hidden": false, "size": null },
+    { "name": "app.ts", "type": "file", "hidden": false, "size": 1234 },
+    { "name": ".gitignore", "type": "file", "hidden": true, "size": 12 }
+  ],
+  "truncated": false
+}
+```
+
+排序：目录优先，再按名字（大小写不敏感）。`parent` 为上一层相对路径（根为 `null`，回到根为 `""`）。
+错误：`cwd` 非法/相对 → 400 `INVALID_CWD`；`cwd` 不存在/非目录 → 404 `FILE_NOT_FOUND`；
+`path` 越界或深度超限 → 400 `INVALID_PATH`。
+
+## 10. 消息内嵌图片（MessageDto.images，§1 补充）
+
+消息 DTO 新增可选字段 `images`（无图**缺省**，向后兼容）：pi `ImageContent` / claude `image` block
+统一映射为 `{ "url": "data:image/…;base64,… | https://…", "alt": null }`，每消息最多 8 张。
+text 仍为纯文本（claude 纯图消息 text 为 `[image]` 占位）；前端渲染为 `<img>`（max-width 100%，
+不拦截长按，保留 Android Chrome 原生"保存图片"菜单）。markdown 正文中的 `![alt](src)` 同样渲染
+（src 白名单：http(s) / data:image / 相对路径）。

@@ -22,6 +22,7 @@ import { inferExternalStatus } from "./tail.js";
 import { loadSessionTree } from "./tree.js";
 import {
   assistantToolCalls,
+  contentToImages,
   contentToText,
   contentToThinking,
   encodeCwdDirName,
@@ -438,8 +439,9 @@ export class SessionHub {
     const timestamp = typeof message.timestamp === "number" ? message.timestamp : (live.currentMessageStartTs ?? Date.now());
     const text = contentToText(message.content);
     const thinking = contentToThinking(message.content);
+    const images = contentToImages(message.content) ?? undefined;
     if (role !== "assistant") {
-      return { id: fallbackId, role, timestamp, text, thinking, toolCalls: [] };
+      return { id: fallbackId, role, timestamp, text, thinking, toolCalls: [], ...(images ? { images } : {}) };
     }
     const { toolCalls, byCallId } = assistantToolCalls(message);
     for (const [callId, ref] of byCallId) {
@@ -449,7 +451,7 @@ export class SessionHub {
         ref.dto.resultPreview = result.text === "" ? null : result.text;
       }
     }
-    return { id: fallbackId, role, timestamp, text, thinking, toolCalls };
+    return { id: fallbackId, role, timestamp, text, thinking, toolCalls, ...(images ? { images } : {}) };
   }
 
   /** 从已持久化 entries 中按消息对象 identity / 时间戳解析 entry id */

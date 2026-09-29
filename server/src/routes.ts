@@ -4,15 +4,20 @@
  */
 import { timingSafeEqual } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import type { CommandsApi } from "./commands.js";
+import { createCommandsApi } from "./commands.js";
 import type { HubConfig } from "./config.js";
 import type { DashboardServiceLike } from "./dashboard.js";
 import { ErrorCodes, HubError, toErrorEnvelope } from "./errors.js";
+import { listDir, type ListDirOptions } from "./fs-tree.js";
 import { createGitApi, type GitApi } from "./git.js";
 import type { KpiService } from "./kpi.js";
 import type { LiveIngestLike } from "./live.js";
 import type { PromptResult } from "./sessions/hub.js";
 import { fullPage, paginateMessages, parseLimit } from "./sessions/paginate.js";
 import type {
+  CommandListDto,
+  FsTreeDto,
   MessageDto,
   SearchResultDto,
   SessionListItem,
@@ -45,7 +50,12 @@ export interface RouteDeps {
   /** pi 扩展 live-feed 接入（可选，缺省时 /api/live 返回 503） */
   live?: LiveIngestLike;
   /** 首页工作台统计 + 通知（docs/API_CONTRACT.md §4-§5） */
-  dashboard: DashboardServiceLike;}
+  dashboard: DashboardServiceLike;
+  /** slash 命令清单（可注入 mock；缺省真实扫描 ~/.claude/commands） */
+  commands?: CommandsApi;
+  /** 文件树只读列表（可注入 mock；缺省真实 fs） */
+  fsTree?: { listDir(cwd: string, options: ListDirOptions): Promise<FsTreeDto> };
+}
 
 function tokenMatches(headerValue: string, expected: string): boolean {
   const a = Buffer.from(headerValue);
@@ -73,6 +83,8 @@ function requireAbsoluteCwd(body: unknown): { cwd: string; name?: string } {
 export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Promise<void> {
   const { hub, kpi, config, dashboard } = deps;
   const git = deps.git ?? createGitApi();
+  const commands: CommandsApi = deps.commands ?? createCommandsApi();
+  const fsTree = deps.fsTree ?? { listDir: (cwd: string, options: ListDirOptions) => listDir(cwd, options) };
   // auth.token 预留：enabled 时校验 Bearer（v0 默认关闭）
   if (config.auth.enabled && config.auth.token !== "") {
     app.addHook("onRequest", async (req: FastifyRequest, reply: FastifyReply) => {
@@ -326,6 +338,36 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
     try {
       const path = typeof req.query.path === "string" ? req.query.path.trim() : "";
       return reply.send(await git.fileContent(queryCwd(req.query), path));
+    } catch (err) {
+      return handle(reply, err);
+    }
+  });
+
+  // GET /api/commands?source=pi|claude（契约 §8：slash 命令清单，pi 内置 + claude 内置/自定义）
+  app.get<{ Querystring: { source?: string } }>("/api/commands", async (req, reply) => {
+    try {
+      const source = req.query.source;
+      if (source !== "pi" && source !== "claude") {
+        throw new HubError(ErrorCodes.INVALID_REQUEST, "source 必须是 pi|claude");
+      }
+      const list: CommandListDto = await commands.list(source);
+      return reply.send(list);
+    } catch (err) {
+      return handle(reply, err);
+    }
+  });
+
+  // GET /api/fs/tree?cwd=&path=&q=&hidden=（契约 §9：只读单层目录列表，防路径穿越）
+  app.get<{ Querystring: GitQuery & { q?: string; hidden?: string } }>("/api/fs/tree", async (req, reply) => {
+    try {
+      const path = typeof req.query.path === "string" ? req.query.path : undefined;
+      if (req.query.path !== undefined && path === undefined) {
+        throw new HubError(ErrorCodes.INVALID_REQUEST, "path 必须是字符串");
+      }
+      const q = typeof req.query.q === "string" ? req.query.q : undefined;
+      const hiddenRaw = req.query.hidden;
+      const hidden = hiddenRaw === "1" || hiddenRaw === "true";
+      return reply.send(await fsTree.listDir(queryCwd(req.query), { path, q, hidden }));
     } catch (err) {
       return handle(reply, err);
     }

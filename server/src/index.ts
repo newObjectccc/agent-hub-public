@@ -46,6 +46,8 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
     systemInfo: options.systemInfo,
     git: options.git,
     live: options.live,
+    commands: options.commands,
+    fsTree: options.fsTree,
     dashboard: options.dashboard,
   });
   // 静态托管 web/dist（存在时），单进程即可服务 PWA

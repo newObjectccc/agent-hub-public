@@ -9,7 +9,9 @@ import { after, before, describe, it } from "node:test";
 import {
   buildMessages,
   buildSessionSummary,
+  contentToImages,
   encodeCwdDirName,
+  MAX_MESSAGE_IMAGES,
   parseSessionJsonl,
   scanSessions,
   selectActiveBranch,
@@ -204,5 +206,60 @@ describe("scan: 确定性排序 tiebreaker（AC3-a）", () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("scan: 图片内容块（ImageContent → MessageDto.images）", () => {
+  const base64Block = { type: "image", source: { type: "base64", media_type: "image/png", data: "aGVsbG8=" } };
+
+  it("contentToImages：base64→data URL、url source、块内 url、非 image 跳过", () => {
+    const images = contentToImages([
+      { type: "text", text: "看图" },
+      base64Block,
+      { type: "image", source: { type: "url", url: "https://x.test/a.png" } },
+      { type: "image", url: "https://x.test/b.png" },
+      { type: "tool_use", id: "t1" },
+    ]);
+    assert.deepEqual(images, [
+      { url: "data:image/png;base64,aGVsbG8=", alt: null },
+      { url: "https://x.test/a.png", alt: null },
+      { url: "https://x.test/b.png", alt: null },
+    ]);
+  });
+
+  it("contentToImages：无图返回 null；超上限截断到 MAX_MESSAGE_IMAGES", () => {
+    assert.equal(contentToImages("文本"), null);
+    assert.equal(contentToImages([{ type: "text", text: "x" }]), null);
+    const many = Array.from({ length: MAX_MESSAGE_IMAGES + 3 }, () => base64Block);
+    assert.equal(contentToImages(many)?.length, MAX_MESSAGE_IMAGES);
+  });
+
+  it("buildMessages：user/assistant 消息附 images，text 保持纯文本", () => {
+    const parsed = parseSessionJsonl(
+      [
+        JSON.stringify(header),
+        JSON.stringify({
+          type: "message",
+          id: "img1",
+          parentId: null,
+          timestamp: "2026-02-18T10:00:01.000Z",
+          message: { role: "user", content: [{ type: "text", text: "看这个图" }, base64Block], timestamp: 1733234401000 },
+        }),
+        JSON.stringify({
+          type: "message",
+          id: "img2",
+          parentId: "img1",
+          timestamp: "2026-02-18T10:00:02.000Z",
+          message: { role: "assistant", content: [{ type: "image", source: { type: "url", url: "https://x.test/c.png" } }], timestamp: 1733234402000 },
+        }),
+      ].join("\n") + "\n",
+    );
+    const messages = buildMessages(parsed.entries);
+    assert.equal(messages.length, 2);
+    assert.equal(messages[0].text, "看这个图");
+    assert.deepEqual(messages[0].images, [{ url: "data:image/png;base64,aGVsbG8=", alt: null }]);
+    assert.deepEqual(messages[1].images, [{ url: "https://x.test/c.png", alt: null }]);
+    // 无图消息字段缺省（向后兼容）
+    assert.equal(messages[0].thinking, null);
   });
 });

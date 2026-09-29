@@ -2603,3 +2603,427 @@ button.git-bar:active {  transform: translate(2px, 2px);
 .badge.flash {
   animation: nb-flash 150ms ease-out;
 }
+
+/* ---------- r4：slash 命令面板 / @ 文件树面板 / 引用条 / 消息图片 ---------- */
+
+/* 输入框容器：占满剩余宽度（320 窄屏不横向溢出） */
+.chat-textarea-wrap {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ---------- 引用条（长按消息 → 引用；发送时拼 Markdown `> `） ---------- */
+.quote-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  min-height: 44px;
+  padding: 2px 2px 2px 10px;
+  background: var(--muted);
+  color: var(--muted-foreground);
+  border: 2px solid var(--border);
+  border-left-width: 6px;
+  border-radius: var(--nb-radius);
+}
+
+.quote-label {
+  flex-shrink: 0;
+  font-family: var(--nb-font-head);
+  font-weight: 900;
+  font-size: 11.5px;
+  color: var(--foreground);
+}
+
+.quote-text {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quote-cancel {
+  flex-shrink: 0;
+  width: 44px;
+  height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--card);
+  color: var(--card-foreground);
+  border: 2px solid var(--border);
+  border-radius: var(--nb-radius);
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.quote-cancel:active {
+  transform: translate(1px, 1px);
+}
+
+/* ---------- slash 命令面板 + @ 文件树面板：输入框上方浮层（320-1024 响应式） ---------- */
+.slash-panel,
+.ft-panel {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  left: 0;
+  right: 0;
+  width: 100%;
+  margin-inline: auto;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  max-height: min(60vh, 480px);
+  background: var(--card);
+  color: var(--card-foreground);
+  border: 3px solid var(--border);
+  border-radius: var(--nb-radius);
+  box-shadow: var(--shadow-card);
+  animation: nb-fade-up 180ms ease-out;
+}
+
+@media (min-width: 768px) {
+  .slash-panel,
+  .ft-panel {
+    width: min(720px, 100%);
+  }
+}
+
+.slash-head,
+.ft-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  border-bottom: 2px solid var(--border);
+}
+
+.slash-title,
+.ft-title {
+  flex-shrink: 0;
+  font-family: var(--nb-font-head);
+  font-weight: 900;
+  font-size: 13px;
+}
+
+.slash-close,
+.ft-close {
+  flex-shrink: 0;
+  width: 44px;
+  height: 44px;
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--muted);
+  color: var(--foreground);
+  border: 2px solid var(--border);
+  border-radius: var(--nb-radius);
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.slash-close:active,
+.ft-close:active {
+  transform: translate(1px, 1px);
+}
+
+.slash-hint,
+.ft-hint {
+  padding: 12px 10px;
+  font-size: 12.5px;
+  color: var(--muted-foreground);
+}
+
+.slash-hint.error,
+.ft-hint.error {
+  color: var(--destructive-foreground);
+  background: var(--destructive);
+}
+
+.slash-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  overflow-y: auto;
+}
+
+.slash-item {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 10px;
+  text-align: left;
+  background: var(--accent);
+  color: var(--accent-foreground);
+  border: 2px solid var(--border);
+  border-radius: var(--nb-radius);
+  box-shadow: var(--shadow-xs);
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.slash-item.first {
+  outline: 2px solid var(--primary);
+}
+
+.slash-item:active {
+  transform: translate(1px, 1px);
+  box-shadow: none;
+}
+
+.slash-name {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-weight: 800;
+}
+
+.slash-tag {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  font-size: 10.5px;
+  font-weight: 700;
+  background: var(--info);
+  color: var(--info-foreground);
+  border: 2px solid var(--border);
+}
+
+.slash-tag.warn {
+  background: var(--warn);
+}
+
+.slash-desc {
+  flex: 1 1 100%;
+  min-width: 0;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------- @ 文件树面板 ---------- */
+.ft-cwd {
+  flex: 1;
+  min-width: 0;
+  font-size: 10.5px;
+  color: var(--muted-foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.ft-crumbs {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 4px 10px;
+  border-bottom: 2px solid var(--border);
+}
+
+.ft-sep {
+  color: var(--muted-foreground);
+  font-weight: 700;
+}
+
+.ft-crumb {
+  min-height: 44px;
+  padding: 4px 8px;
+  background: transparent;
+  color: var(--foreground);
+  border: 2px solid transparent;
+  cursor: pointer;
+  font-size: 12.5px;
+  font-weight: 700;
+}
+
+.ft-crumb.active {
+  background: var(--accent);
+  color: var(--accent-foreground);
+  border-color: var(--border);
+}
+
+.ft-search {
+  display: block;
+  width: calc(100% - 20px);
+  min-height: 44px;
+  margin: 8px 10px;
+  padding: 8px 10px;
+  background: var(--card);
+  color: var(--foreground);
+  border: 2px solid var(--border);
+  border-radius: var(--nb-radius);
+  font-size: 13px;
+}
+
+.ft-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 10px 10px;
+  overflow-y: auto;
+}
+
+.ft-row.hidden {
+  opacity: 0.62;
+}
+
+.ft-dir,
+.ft-file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 10px;
+  text-align: left;
+  background: var(--muted);
+  color: var(--foreground);
+  border: 2px solid var(--border);
+  border-radius: var(--nb-radius);
+  cursor: pointer;
+  font-size: 13.5px;
+}
+
+.ft-file.checked {
+  background: var(--accent);
+  color: var(--accent-foreground);
+  box-shadow: var(--shadow-xs);
+}
+
+.ft-dir:active,
+.ft-file:active {
+  transform: translate(1px, 1px);
+}
+
+.ft-icon,
+.ft-check {
+  flex-shrink: 0;
+  width: 20px;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.ft-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.ft-tag {
+  flex-shrink: 0;
+  padding: 0 5px;
+  font-size: 10px;
+  font-weight: 700;
+  background: var(--card);
+  color: var(--muted-foreground);
+  border: 2px solid var(--border);
+}
+
+.ft-foot {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 10px calc(8px + var(--safe-bottom));
+  border-top: 2px solid var(--border);
+}
+
+.ft-toggle,
+.ft-clear {
+  min-height: 44px;
+  padding: 6px 10px;
+  background: var(--muted);
+  color: var(--foreground);
+  border: 2px solid var(--border);
+  border-radius: var(--nb-radius);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.ft-toggle.active {
+  background: var(--info);
+  color: var(--info-foreground);
+}
+
+.ft-selected {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted-foreground);
+}
+
+.ft-insert {
+  margin-left: auto;
+  min-height: 44px;
+  padding: 8px 16px;
+  background: var(--primary);
+  color: var(--primary-foreground);
+  border: 2px solid var(--border);
+  border-radius: var(--nb-radius);
+  box-shadow: var(--shadow-xs);
+  cursor: pointer;
+  font-family: var(--nb-font-head);
+  font-weight: 900;
+  font-size: 13px;
+}
+
+.ft-insert:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.ft-insert:active:not(:disabled) {
+  transform: translate(1px, 1px);
+  box-shadow: none;
+}
+
+/* ---------- 消息图片：max-width 100%；不加 user-select/pointer 拦截（长按出系统菜单） ---------- */
+.md img,
+.msg-img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 6px 0;
+  border: 2px solid var(--border);
+  border-radius: var(--nb-radius);
+  background: var(--muted);
+}
+
+.msg-images {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+/* markdown 引用块（引用回复渲染） */
+.md blockquote {
+  margin: 6px 0;
+  padding: 4px 10px;
+  background: var(--muted);
+  color: var(--muted-foreground);
+  border-left: 4px solid var(--border);
+}
+
+/* ---------- 动效克制：系统开启“减少动态效果”时关闭动画/过渡 ---------- */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

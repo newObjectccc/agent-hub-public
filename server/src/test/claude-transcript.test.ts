@@ -341,3 +341,54 @@ describe("claude transcript: 摘要与扫描", () => {
     assert.deepEqual(sessions, []);
   });
 });
+
+describe("claude transcript: image block → MessageDto.images", () => {
+  const B64 = "aGVsbG8=";
+
+  it("纯图 user 行：占位文本 + images；文本+图：text + images", () => {
+    const lines = [
+      JSON.stringify({
+        parentUuid: null,
+        isSidechain: false,
+        type: "user",
+        message: {
+          role: "user",
+          content: [{ type: "image", source: { type: "base64", media_type: "image/jpeg", data: B64 } }],
+        },
+        uuid: "u-img1",
+        timestamp: "2026-09-29T09:17:33.525Z",
+        cwd: CWD,
+        sessionId: SID,
+      }),
+      JSON.stringify({
+        parentUuid: "u-img1",
+        isSidechain: false,
+        type: "user",
+        message: {
+          role: "user",
+          content: [
+            { type: "text", text: "看这个截图" },
+            { type: "image", source: { type: "base64", media_type: "image/png", data: B64 } },
+          ],
+        },
+        uuid: "u-img2",
+        timestamp: "2026-09-29T09:18:33.525Z",
+        cwd: CWD,
+        sessionId: SID,
+      }),
+    ];
+    const parsed = parseClaudeTranscript(lines.join("\n"));
+    assert.equal(parsed.messages.length, 2);
+    assert.equal(parsed.messages[0].text, "[image]");
+    assert.deepEqual(parsed.messages[0].images, [{ url: `data:image/jpeg;base64,${B64}`, alt: null }]);
+    assert.equal(parsed.messages[1].text, "看这个截图");
+    assert.deepEqual(parsed.messages[1].images, [{ url: `data:image/png;base64,${B64}`, alt: null }]);
+  });
+
+  it("无图消息不带 images 字段（向后兼容）", () => {
+    const parsed = parseClaudeTranscript(fixtureLines.join("\n"));
+    for (const m of parsed.messages) {
+      assert.equal(m.images, undefined, m.id);
+    }
+  });
+});

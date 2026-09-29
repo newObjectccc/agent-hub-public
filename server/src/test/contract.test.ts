@@ -510,3 +510,92 @@ describe("contract: GET /api/sessions/:id 消息分页（?before=&limit=）", ()
     }
   });
 });
+
+describe("contract: GET /api/commands 与 GET /api/fs/tree（§8/§9）", () => {
+  let app: Awaited<ReturnType<typeof createApp>>;
+  let fsRoot: string;
+
+  before(async () => {
+    fsRoot = await mkdtemp(join(tmpdir(), "agent-hub-fstree-"));
+    await mkdir(join(fsRoot, "src"), { recursive: true });
+    await mkdir(join(fsRoot, ".git"), { recursive: true });
+    await writeFile(join(fsRoot, "README.md"), "# hi");
+    app = await createApp({
+      hub: makeFakeHub({ accepted: true, mode: "prompt" }),
+      dashboard: makeFakeDashboard(),
+      kpi: { getCards: () => [] },
+      config: { ...DEFAULT_CONFIG },
+      systemInfo: async () => systemFixture,
+      commands: {
+        list: async (source) => ({
+          source,
+          commands:
+            source === "pi"
+              ? [{ name: "/name", description: "设置会话显示名", builtin: true, terminalOnly: false }]
+              : [
+                  { name: "/clear", description: "清空上下文", builtin: true, terminalOnly: true },
+                  { name: "/probe", description: "自定义命令", builtin: false, terminalOnly: false },
+                ],
+        }),
+      },
+    });
+  });
+
+  after(async () => {
+    await app.close();
+    await rm(fsRoot, { recursive: true, force: true });
+  });
+
+  it("GET /api/commands?source=pi|claude 返回契约结构", async () => {
+    const pi = await app.inject({ method: "GET", url: "/api/commands?source=pi" });
+    assert.equal(pi.statusCode, 200);
+    const piBody = pi.json() as { source: string; commands: Array<{ name: string; description: string; builtin: boolean; terminalOnly: boolean }> };
+    assert.equal(piBody.source, "pi");
+    assert.equal(piBody.commands[0].name, "/name");
+    assert.equal(piBody.commands[0].terminalOnly, false);
+    const claude = await app.inject({ method: "GET", url: "/api/commands?source=claude" });
+    const claudeBody = claude.json() as typeof piBody;
+    assert.equal(claudeBody.commands.length, 2);
+    assert.equal(claudeBody.commands[0].terminalOnly, true, "claude 内置命令必须标注仅终端可用");
+    assert.equal(claudeBody.commands[1].builtin, false);
+  });
+
+  it("source 缺失/非法 → 400 INVALID_REQUEST 错误信封", async () => {
+    for (const url of ["/api/commands", "/api/commands?source=openai"]) {
+      const res = await app.inject({ method: "GET", url });
+      assert.equal(res.statusCode, 400, url);
+      const body = res.json() as { error: { code: string; message: string } };
+      assert.equal(body.error.code, "INVALID_REQUEST", url);
+      assert.equal(typeof body.error.message, "string");
+    }
+  });
+
+  it("GET /api/fs/tree 列目录：隐藏默认、hidden=1 展开、q 过滤", async () => {
+    const res = await app.inject({ method: "GET", url: `/api/fs/tree?cwd=${encodeURIComponent(fsRoot)}` });
+    assert.equal(res.statusCode, 200);
+    const body = res.json() as { cwd: string; path: string; parent: string | null; entries: Array<{ name: string; type: string }>; truncated: boolean };
+    assert.equal(body.path, "");
+    assert.equal(body.parent, null);
+    assert.deepEqual(body.entries.map((e) => e.name), ["src", "README.md"]);
+    const hidden = await app.inject({ method: "GET", url: `/api/fs/tree?cwd=${encodeURIComponent(fsRoot)}&hidden=1` });
+    assert.ok((hidden.json() as typeof body).entries.some((e) => e.name === ".git"));
+    const q = await app.inject({ method: "GET", url: `/api/fs/tree?cwd=${encodeURIComponent(fsRoot)}&q=readme` });
+    assert.deepEqual((q.json() as typeof body).entries.map((e) => e.name), ["README.md"]);
+  });
+
+  it("防路径穿越：path=../.. → 400 INVALID_PATH 信封", async () => {
+    const res = await app.inject({ method: "GET", url: `/api/fs/tree?cwd=${encodeURIComponent(fsRoot)}&path=..%2F..` });
+    assert.equal(res.statusCode, 400);
+    const body = res.json() as { error: { code: string } };
+    assert.equal(body.error.code, "INVALID_PATH");
+  });
+
+  it("cwd 非法/不存在 → INVALID_CWD 400 / FILE_NOT_FOUND 404", async () => {
+    const rel = await app.inject({ method: "GET", url: "/api/fs/tree?cwd=relative" });
+    assert.equal(rel.statusCode, 400);
+    assert.equal((rel.json() as { error: { code: string } }).error.code, "INVALID_CWD");
+    const missing = await app.inject({ method: "GET", url: "/api/fs/tree?cwd=%2Fno%2Fsuch%2Fdir" });
+    assert.equal(missing.statusCode, 404);
+    assert.equal((missing.json() as { error: { code: string } }).error.code, "FILE_NOT_FOUND");
+  });
+});
