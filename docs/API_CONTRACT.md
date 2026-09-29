@@ -507,10 +507,16 @@ server 行为：
 ## 8. Slash 命令清单（GET /api/commands）
 
 chat 输入区 `/` 触发命令面板：server 按 source 分发命令清单（内置 + 自定义）。
-发送时 `/cmd args` **原样**作为 prompt 文本走 §1 的 prompt 通道：
-pi SDK `prompt()` 原生处理内置/extension 命令（pi sdk.md）；
-claude 自定义命令（~/.claude/commands/*.md）`claude -p` 会展开执行，内置命令 print 模式不可用
-（实测 `claude -p "/help"` → "/help isn't available in this environment."），UI 按 `terminalOnly` 标注"仅终端可用"。
+发送时 `/cmd args` **原样**作为 prompt 文本走 §1 的 prompt 通道，但注意（真实 CLI + SDK 实测）：
+
+- **pi**：SDK `prompt()` 只处理 extension 命令、`/skill:name` 与 prompt template
+  （sdk.md："prompt() handles extension commands"）；**内置会话命令不处理**（实测 `/name test`
+  被当普通消息发给模型）。因此 pi 内置命令全部标注 `terminalOnly:true`（UI "仅终端可用"），
+  唯一例外 `/compact [instructions]`——prompt 路由特判转发官方 SDK `session.compact(instructions)`，
+  响应 `202 {"accepted":true,"mode":"prompt","handled":"compact"}`。
+- **claude**：自定义命令（~/.claude/commands/*.md）`claude -p` 会展开执行；内置命令 print 模式
+  不可用（实测 `claude -p "/help"` → "/help isn't available in this environment."，`/compact` `/clear`
+  静默无输出），UI 按 `terminalOnly` 标注"仅终端可用"并给降级提示。
 
 ### GET /api/commands?source=pi|claude
 
@@ -528,9 +534,11 @@ claude 自定义命令（~/.claude/commands/*.md）`claude -p` 会展开执行�
 
 说明：
 - `pi`：返回 pi 内置清单（pi 文档 slash-commands.md 全量：/resume /new /compact /fork /tree /
-  /export /session /name /bug /model /thinking …）；全部 `terminalOnly:false`（SDK 原样处理）。
+  /export /session /name /bug /model /thinking …）；除 `/compact` 外全部 `terminalOnly:true`
+  （见上文实测结论）。
 - `claude`：内置清单（/clear /compact /config /cost /help /model /mcp …，全部 `terminalOnly:true`）
-  + 扫描 `~/.claude/commands/` 的 .md 自定义命令（一层子目录 → `/dir:name` 命名空间）。
+  + 扫描 `~/.claude/commands/` 的 .md 自定义命令（一层子目录 → `/dir:name` 命名空间，
+  `terminalOnly:false`）。
   `description` 取 frontmatter `description:`，缺省取首个文本行；扫描失败降级为空列表，不 500。
 - 条目上限 300/source；命令名限定 `[A-Za-z0-9][A-Za-z0-9._:-]{0,63}`（防注入响应）。
 

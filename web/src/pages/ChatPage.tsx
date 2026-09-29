@@ -202,7 +202,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
     focusAt(result.cursor);
     const item = commands.find((c) => c.name === name);
     if (item?.terminalOnly) {
-      showToast("该命令仅终端可用（claude -p 无法执行），已插入供参考");
+      showToast("该命令仅终端可用（当前通道无法执行，发送会成为普通消息），已插入供参考");
     }
   };
 

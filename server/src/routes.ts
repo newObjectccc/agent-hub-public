@@ -37,7 +37,8 @@ export interface SessionHubLike {
   createSession(cwd: string, name?: string): Promise<SessionListItem>;
   prompt(id: string, text: unknown, modeRaw: unknown): Promise<PromptResult>;
   abort(id: string): Promise<void>;
-  compact(id: string): Promise<void>;
+  /** 手动压缩上下文（pi 专用；instructions 透传 SDK session.compact()） */
+  compact(id: string, instructions?: string): Promise<void>;
 }
 
 export interface RouteDeps {
@@ -184,6 +185,31 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   app.post<{ Params: { id: string } }>("/api/sessions/:id/prompt", async (req, reply) => {
     try {
       const body = (typeof req.body === "object" && req.body !== null ? req.body : {}) as { text?: unknown; mode?: unknown };
+      const text = body.text;
+      // pi slash 命令 `/compact [instructions]`：SDK prompt() 不处理内置命令（实测透传成普通消息），
+      // 改走官方 SDK session.compact() 通道（契约 §8）；其余命令原样作为 prompt 文本发送
+      if (typeof text === "string") {
+        const compactMatch = text.match(/^\/compact(?:\s+([\s\S]*))?$/);
+        if (compactMatch) {
+          const session = await hub.findSession(req.params.id);
+          if (!session) {
+            throw new HubError(ErrorCodes.SESSION_NOT_FOUND, `会话不存在: ${req.params.id}`, 404);
+          }
+          if (session.source === "pi") {
+            try {
+              await hub.compact(req.params.id, (compactMatch[1] ?? "").trim() || undefined);
+            } catch (err) {
+              // SDK 报 “Nothing to compact”（会话太小）等语义错误 → 400，不进 500
+              const message = err instanceof Error ? err.message : String(err);
+              if (/nothing to compact/i.test(message)) {
+                throw new HubError(ErrorCodes.INVALID_REQUEST, message, 400);
+              }
+              throw err;
+            }
+            return reply.status(202).send({ accepted: true, mode: "prompt", handled: "compact" });
+          }
+        }
+      }
       const result = await hub.prompt(req.params.id, body.text, body.mode);
       if (result.busy) {
         throw new HubError(ErrorCodes.SESSION_BUSY, "会话正在运行中；可指定 mode=steer|followUp 或先 abort", 409);

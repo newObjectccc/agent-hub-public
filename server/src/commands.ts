@@ -1,9 +1,13 @@
 /**
  * Slash 命令清单（GET /api/commands?source=，docs/API_CONTRACT.md §8）。
  *
- * 调研结论（2026-02，真实 CLI 实测）：
- * - pi：SDK `prompt()` 原生处理内置/extension 命令（pi sdk.md："prompt() handles extension
- *   commands"）；内置清单以随包文档 slash-commands.md（pi 0.87.1）为准，逐条抄录描述。
+ * 调研结论（2026-02，真实 CLI + SDK 实测）：
+ * - pi：SDK `prompt()` 只处理 **extension 命令 / /skill:name / prompt template**
+ *   （sdk.md："prompt() handles extension commands"；源码 agent-session.prompt 证实）；
+ *   **内置会话命令（/name /resume /tree …）不处理**——实测 `/name test` 被当普通消息发给
+ *   模型。故内置清单（pi 文档 slash-commands.md 全量）除 `/compact` 外全部标记
+ *   terminalOnly=true，UI 标注"仅终端可用"。`/compact [instructions]` 由 server 转发官方
+ *   SDK `session.compact(instructions)`（prompt 路由特判，契约 §8）。
  * - claude：`claude -p` 对**自定义**命令（~/.claude/commands/*.md）会展开执行（实测 `/ping`
  *   正常输出）；对**内置**命令不可用（实测 `claude -p "/help"` →
  *   "/help isn't available in this environment."，`/compact` `/clear` 静默无输出）。
@@ -25,37 +29,41 @@ export const DESCRIPTION_LIMIT = 120;
 /** frontmatter / 正文扫描字节上限 */
 const COMMAND_FILE_LIMIT = 16 * 1024;
 
-/** pi 内置命令（pi 文档 slash-commands.md 全量清单；description 为文档描述的中文转述） */
+/**
+ * pi 内置命令（pi 文档 slash-commands.md 全量清单；description 为文档描述的中文转述）。
+ * terminalOnly：SDK prompt() 通道不支持（会成普通消息）；仅 `/compact` 走 server 转发的
+ * SDK session.compact() 真实可用。
+ */
 export const PI_BUILTIN_COMMANDS: readonly CommandDto[] = [
   // 模型与设置
-  { name: "/settings", description: "打开设置", builtin: true, terminalOnly: false },
-  { name: "/model", description: "选择模型（provider/model）", builtin: true, terminalOnly: false },
-  { name: "/thinking", description: "设置思考等级（off…max）", builtin: true, terminalOnly: false },
-  { name: "/scoped-models", description: "配置交互循环使用的模型", builtin: true, terminalOnly: false },
-  { name: "/login", description: "添加 provider 认证", builtin: true, terminalOnly: false },
-  { name: "/logout", description: "移除 provider 认证", builtin: true, terminalOnly: false },
-  { name: "/llama", description: "管理 llama.cpp 路由上的模型", builtin: true, terminalOnly: false },
+  { name: "/settings", description: "打开设置", builtin: true, terminalOnly: true },
+  { name: "/model", description: "选择模型（provider/model）", builtin: true, terminalOnly: true },
+  { name: "/thinking", description: "设置思考等级（off…max）", builtin: true, terminalOnly: true },
+  { name: "/scoped-models", description: "配置交互循环使用的模型", builtin: true, terminalOnly: true },
+  { name: "/login", description: "添加 provider 认证", builtin: true, terminalOnly: true },
+  { name: "/logout", description: "移除 provider 认证", builtin: true, terminalOnly: true },
+  { name: "/llama", description: "管理 llama.cpp 路由上的模型", builtin: true, terminalOnly: true },
   // 会话与上下文
-  { name: "/new", description: "开始新会话", builtin: true, terminalOnly: false },
-  { name: "/resume", description: "切换到另一个已保存会话", builtin: true, terminalOnly: false },
-  { name: "/name", description: "设置会话显示名（缺省显示当前名）", builtin: true, terminalOnly: false },
-  { name: "/session", description: "显示当前会话信息与统计", builtin: true, terminalOnly: false },
-  { name: "/tree", description: "导航会话树", builtin: true, terminalOnly: false },
-  { name: "/fork", description: "从更早的用户消息创建新会话", builtin: true, terminalOnly: false },
-  { name: "/clone", description: "复制当前会话到新会话", builtin: true, terminalOnly: false },
+  { name: "/new", description: "开始新会话", builtin: true, terminalOnly: true },
+  { name: "/resume", description: "切换到另一个已保存会话", builtin: true, terminalOnly: true },
+  { name: "/name", description: "设置会话显示名（缺省显示当前名）", builtin: true, terminalOnly: true },
+  { name: "/session", description: "显示当前会话信息与统计", builtin: true, terminalOnly: true },
+  { name: "/tree", description: "导航会话树", builtin: true, terminalOnly: true },
+  { name: "/fork", description: "从更早的用户消息创建新会话", builtin: true, terminalOnly: true },
+  { name: "/clone", description: "复制当前会话到新会话", builtin: true, terminalOnly: true },
   { name: "/compact", description: "压缩当前上下文（可附保留指令）", builtin: true, terminalOnly: false },
-  { name: "/import", description: "导入并恢复 JSONL 会话", builtin: true, terminalOnly: false },
+  { name: "/import", description: "导入并恢复 JSONL 会话", builtin: true, terminalOnly: true },
   // 导出与分享
-  { name: "/copy", description: "复制最后一条助手消息", builtin: true, terminalOnly: false },
-  { name: "/export", description: "导出会话为 HTML/JSONL", builtin: true, terminalOnly: false },
-  { name: "/share", description: "上传会话并返回查看链接", builtin: true, terminalOnly: false },
-  { name: "/bug", description: "准备私密 bug 报告", builtin: true, terminalOnly: false },
+  { name: "/copy", description: "复制最后一条助手消息", builtin: true, terminalOnly: true },
+  { name: "/export", description: "导出会话为 HTML/JSONL", builtin: true, terminalOnly: true },
+  { name: "/share", description: "上传会话并返回查看链接", builtin: true, terminalOnly: true },
+  { name: "/bug", description: "准备私密 bug 报告", builtin: true, terminalOnly: true },
   // 运行时与项目
-  { name: "/trust", description: "保存项目信任决定", builtin: true, terminalOnly: false },
-  { name: "/reload", description: "重新加载扩展/技能/模板/上下文", builtin: true, terminalOnly: false },
-  { name: "/hotkeys", description: "显示快捷键", builtin: true, terminalOnly: false },
-  { name: "/changelog", description: "显示更新日志", builtin: true, terminalOnly: false },
-  { name: "/quit", description: "退出 pi", builtin: true, terminalOnly: false },
+  { name: "/trust", description: "保存项目信任决定", builtin: true, terminalOnly: true },
+  { name: "/reload", description: "重新加载扩展/技能/模板/上下文", builtin: true, terminalOnly: true },
+  { name: "/hotkeys", description: "显示快捷键", builtin: true, terminalOnly: true },
+  { name: "/changelog", description: "显示更新日志", builtin: true, terminalOnly: true },
+  { name: "/quit", description: "退出 pi", builtin: true, terminalOnly: true },
 ];
 
 /**

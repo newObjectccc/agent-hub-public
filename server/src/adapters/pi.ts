@@ -46,8 +46,8 @@ export class PiAdapter implements SessionAdapter {
     return this.hub.createSession(cwd, name);
   }
 
-  compact(id: string): Promise<void> {
-    return this.hub.compact(id);
+  compact(id: string, instructions?: string): Promise<void> {
+    return this.hub.compact(id, instructions);
   }
 
   search(query: string, limit?: number): Promise<import("../types.js").SearchResultDto[]> {

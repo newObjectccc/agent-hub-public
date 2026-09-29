@@ -560,6 +560,63 @@ describe("contract: GET /api/commands 与 GET /api/fs/tree（§8/§9）", () => 
     assert.equal(claudeBody.commands[1].builtin, false);
   });
 
+  it("pi 会话 /compact [指令] → 转发 SDK session.compact()（202 handled=compact）", async () => {
+    const calls: Array<string | undefined> = [];
+    const compactApp = await createApp({
+      hub: makeFakeHub({ accepted: true, mode: "prompt" }, {
+        compact: async (_id: string, instructions?: string) => {
+          calls.push(instructions);
+        },
+      }),
+      dashboard: makeFakeDashboard(),
+      kpi: { getCards: () => [] },
+      config: { ...DEFAULT_CONFIG },
+      systemInfo: async () => systemFixture,
+    });
+    const res = await compactApp.inject({
+      method: "POST",
+      url: "/api/sessions/sess-1/prompt",
+      payload: { text: "/compact 保留 KPI 结论" },
+    });
+    assert.equal(res.statusCode, 202);
+    assert.deepEqual(res.json(), { accepted: true, mode: "prompt", handled: "compact" });
+    assert.deepEqual(calls, ["保留 KPI 结论"]);
+
+    // 非命令文本不走 compact 通道
+    const plain = await compactApp.inject({
+      method: "POST",
+      url: "/api/sessions/sess-1/prompt",
+      payload: { text: "继续分析" },
+    });
+    assert.equal(plain.statusCode, 202);
+    assert.deepEqual(calls, ["保留 KPI 结论"]);
+    await compactApp.close();
+  });
+
+  it("compact 语义错误（Nothing to compact）→ 400 而非 500", async () => {
+    const compactApp = await createApp({
+      hub: makeFakeHub({ accepted: true, mode: "prompt" }, {
+        compact: async () => {
+          throw new Error("Nothing to compact (session too small)");
+        },
+      }),
+      dashboard: makeFakeDashboard(),
+      kpi: { getCards: () => [] },
+      config: { ...DEFAULT_CONFIG },
+      systemInfo: async () => systemFixture,
+    });
+    const res = await compactApp.inject({
+      method: "POST",
+      url: "/api/sessions/sess-1/prompt",
+      payload: { text: "/compact" },
+    });
+    assert.equal(res.statusCode, 400);
+    const body = res.json() as { error: { code: string; message: string } };
+    assert.equal(body.error.code, "INVALID_REQUEST");
+    assert.match(body.error.message, /Nothing to compact/);
+    await compactApp.close();
+  });
+
   it("source 缺失/非法 → 400 INVALID_REQUEST 错误信封", async () => {
     for (const url of ["/api/commands", "/api/commands?source=openai"]) {
       const res = await app.inject({ method: "GET", url });

@@ -44,7 +44,7 @@ function fakeFs(tree: Record<string, { entries?: Dirent[]; content?: string; fai
 }
 
 describe("commands: 内置清单", () => {
-  it("pi 清单：25 条内置命令、名字唯一且带 /、全部可发送", () => {
+  it("pi 清单：25 条内置命令（slash-commands.md 全量）；仅 /compact 在 hub 通道可执行", () => {
     assert.equal(PI_BUILTIN_COMMANDS.length, 25);
     const names = new Set<string>();
     for (const cmd of PI_BUILTIN_COMMANDS) {
@@ -53,7 +53,8 @@ describe("commands: 内置清单", () => {
       names.add(cmd.name);
       assert.ok(cmd.description.length > 0, cmd.name);
       assert.equal(cmd.builtin, true);
-      assert.equal(cmd.terminalOnly, false);
+      // SDK prompt() 只处理 extension/skill/template；内置命令仅 /compact 走 session.compact()
+      assert.equal(cmd.terminalOnly, cmd.name !== "/compact", cmd.name);
     }
     // 任务点名的命令必须在列
     for (const required of ["/resume", "/new", "/compact", "/fork", "/tree", "/export", "/session", "/name", "/bug"]) {
@@ -142,12 +143,13 @@ describe("commands: scanClaudeCustomCommands", () => {
 });
 
 describe("commands: createCommandsApi", () => {
-  it("pi 只返回内置清单", async () => {
+  it("pi 只返回内置清单（含 terminalOnly 标注）", async () => {
     const api = createCommandsApi(fakeFs({}), "/cmd");
     const list = await api.list("pi");
     assert.equal(list.source, "pi");
     assert.equal(list.commands.length, PI_BUILTIN_COMMANDS.length);
     assert.ok(list.commands.every((c) => c.builtin));
+    assert.equal(list.commands.find((c) => c.name === "/compact")?.terminalOnly, false);
   });
 
   it("claude = 内置 + 自定义（内置在前）", async () => {

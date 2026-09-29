@@ -314,10 +314,10 @@ export class SessionHub {
     this.onActivity?.(id, { kind: "done", text: "已手动中止本轮运行" });
   }
 
-  /** 手动压缩上下文 */
-  async compact(id: string): Promise<void> {
+  /** 手动压缩上下文（可带自定义保留指令，透传 SDK session.compact()） */
+  async compact(id: string, instructions?: string): Promise<void> {
     const session = await this.ensureLive(id);
-    await session.compact();
+    await session.compact(instructions === undefined || instructions === "" ? undefined : instructions);
   }
 
   /** 进程退出：dispose 所有 AgentSession 实例 */
