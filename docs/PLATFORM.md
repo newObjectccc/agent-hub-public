@@ -3,17 +3,26 @@
 ## 通用（三平台一致）
 
 1. 安装 Node.js ≥ 20（Windows 建议官方安装包，macOS/Linux 建议 nvm）。
-2. `pnpm install && node cli/setup.js && node cli/start.js`。
+2. `node cli/setup.js && node cli/start.js`。
+   - `setup`：环境检测（node/pi/tmux/ttyd/tailscale）+ 生成 `config/hub.config.json`；
+     pi 缺失只提示 `npm i -g @earendil-works/pi-coding-agent` 或 npx 方式，不自动安装。
+   - `start`：node_modules 缺失时自动 `pnpm install`（pnpm 缺失回退 `npm install`），
+     再构建 web（vite build）与 server（tsc），最后启动 `server/dist/index.js`。
 3. 浏览器打开 `http://127.0.0.1:7700`。
+
+> 所有步骤均可用 `--dry-run` 预演（不写盘、不安装、不启动）；
+> `node cli/cli.js check` 为只读环境检测报告。
 
 ## macOS
 
 ```bash
 brew install tmux ttyd tailscale   # 全部可选
 sudo pmset -c sleep 0              # 插电不睡眠（远程访问需要，可选）
-node cli/setup.js --autostart      # 写入 ~/Library/LaunchAgents（可选）
+node cli/setup.js --autostart      # 写入 ~/Library/LaunchAgents/com.agent-hub.plist 并 launchctl load（可选）
 ```
-Tailscale Serve（手机远程）：
+手动命令（注册失败时）：`launchctl load ~/Library/LaunchAgents/com.agent-hub.plist`
+
+Tailscale Serve（手机远程，`node cli/start.js --tailscale` 会自动引导）：
 ```bash
 /Applications/Tailscale.app/Contents/MacOS/Tailscale serve --bg --https=443 http://127.0.0.1:7700
 ```
@@ -23,7 +32,7 @@ Tailscale Serve（手机远程）：
 ```bash
 sudo apt install tmux ttyd         # Debian/Ubuntu；其余发行版用对应包管理器
 curl -fsSL https://tailscale.com/install.sh | sh
-node cli/setup.js --autostart      # 写入 ~/.config/systemd/user/agent-hub.service（可选）
+node cli/setup.js --autostart      # 写入 ~/.config/systemd/user/agent-hub.service 并 systemctl --user enable --now（可选）
 ```
 
 ## Windows
@@ -33,7 +42,8 @@ node cli/setup.js --autostart      # 写入 ~/.config/systemd/user/agent-hub.ser
   1. 跳过（chat 功能不受影响）；
   2. 装 WSL：`wsl --install`，然后在 WSL 内 `sudo apt install tmux`。
 - Tailscale 官方安装包：https://tailscale.com/download/windows
-- 自启：`cli/setup.js --autostart` 写入任务计划程序（schtasks）。
+- 自启：`node cli/setup.js --autostart` 用 schtasks 注册任务计划 `agent-hub`（ONLOGON 启动）；
+  失败仅提示，可按输出的确切命令手动注册。
 
 ## 远程访问三种模式
 

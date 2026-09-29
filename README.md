@@ -21,14 +21,26 @@
 ```bash
 git clone https://github.com/newObjectccc/agent-hub.git
 cd agent-hub
-pnpm install
-node cli/setup.js        # 检测环境、生成 config、安装 pi
-node cli/start.js        # 启动 server + 构建 web，默认 http://127.0.0.1:7700
+node cli/setup.js        # 检测环境、生成 config（pi 缺失只提示安装方式，不自动安装）
+node cli/start.js        # 自动装依赖（pnpm/npm）→ 构建 web/server → 启动，默认 http://127.0.0.1:7700
 ```
+
+常用命令（`node cli/cli.js <cmd>` 与 `node cli/<cmd>.js` 等价）：
+
+| 命令 | 作用 |
+|---|---|
+| `node cli/cli.js setup [--port <n>] [--session-dir <p>] [--workspace-root <p>] [--autostart] [--dry-run]` | 环境检测、生成 config、可选自启注册 |
+| `node cli/cli.js start [--lan] [--tailscale] [--port <n>] [--skip-build] [--dry-run]` | 装依赖、构建并启动 |
+| `node cli/cli.js check` | 只读环境检测报告 |
+| `node cli/cli.js open [url]` | 浏览器打开面板 |
 
 手机远程访问（可选）：
 ```bash
-node cli/start.js --tailscale    # 自动探测 tailscale serve，输出 ts.net 地址
+node cli/start.js --tailscale    # 自动探测/引导 tailscale serve，输出 ts.net 地址
+```
+局域网访问（可选）：
+```bash
+node cli/start.js --lan          # 绑 0.0.0.0 并打印本机局域网 IP
 ```
 详见 [docs/PLATFORM.md](docs/PLATFORM.md)（三平台安装细则）与
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。

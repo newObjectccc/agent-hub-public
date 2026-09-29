@@ -8,7 +8,7 @@
   },
   "scripts": {
     "build": "node -e \"process.exit(0)\"",
-    "test": "node --test || exit 0",
-    "lint": "node --check cli.js && node --check setup.js && node --check start.js"
+    "test": "node --test",
+    "lint": "node --check cli.js && node --check setup.js && node --check start.js && node --check check.js && node --check lib/args.js && node --check lib/color.js && node --check lib/config.js && node --check lib/detect.js && node --check lib/net.js && node --check lib/paths.js && node --check lib/process.js && node --check lib/autostart.js && node --check test/paths.test.js && node --check test/config.test.js && node --check test/detect.test.js && node --check test/net.test.js && node --check test/autostart.test.js"
   }
 }
