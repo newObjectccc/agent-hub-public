@@ -36,6 +36,7 @@ import type { MessageDto, SessionListItem, ToolCallDto } from "../types.js";
 import {
   LAST_MESSAGE_LIMIT,
   RESULT_PREVIEW_LIMIT,
+  contentToImages,
   contentToText,
   hasSubAgentPreambleMarker,
   isSubAgentName,
@@ -71,7 +72,7 @@ function isMetaText(text: string): boolean {
   return META_TEXT_PREFIXES.some((p) => t.startsWith(p));
 }
 
-/** image block → 占位文本（契约 MessageDto.text 只承载文本） */
+/** image block → 占位文本（契约 MessageDto.text 只承载文本；真图走 MessageDto.images） */
 const IMAGE_PLACEHOLDER = "[image]";
 
 export interface ParsedClaudeTranscript {
@@ -178,7 +179,6 @@ export function parseClaudeTranscript(
         if (!Array.isArray(contentBlocks)) break;
 
         const textParts: string[] = [];
-        let sawImage = false;
         let sawToolResult = false;
         for (const block of contentBlocks) {
           if (!isRecord(block)) continue;
@@ -205,10 +205,11 @@ export function parseClaudeTranscript(
           }
           if (block.type === "text" && typeof block.text === "string") {
             textParts.push(block.text);
-          } else if (block.type === "image") {
-            sawImage = true;
           }
         }
+        // image block → MessageDto.images（data URL），与 pi ImageContent 同口径
+        const images = contentToImages(contentBlocks) ?? undefined;
+        const extra = images ? { images } : {};
         const text = textParts.join("\n").trim();
         if (text !== "" && !isMetaText(text)) {
           messages.push({
@@ -217,14 +218,16 @@ export function parseClaudeTranscript(
             timestamp,
             text: textParts.join("\n"),
             toolCalls: [],
+            ...extra,
           });
-        } else if (sawImage && !sawToolResult) {
+        } else if (images && !sawToolResult) {
           messages.push({
             id: typeof row.uuid === "string" ? row.uuid : nextId("user"),
             role: "user",
             timestamp,
             text: IMAGE_PLACEHOLDER,
             toolCalls: [],
+            ...extra,
           });
         }
         break;

@@ -3,7 +3,9 @@
  * 错误统一为 { error: { code, message } }，这里归一为 ApiError。
  */
 import type {
+  CommandList,
   DashboardStats,
+  FsTree,
   NotificationListResponse,
   PromptResult,
   SearchResponse,
@@ -155,5 +157,21 @@ export const api = {
 
   getFileContent(cwd: string, path: string): Promise<FileContentResult> {
     return request(`/api/files/content?cwd=${encodeURIComponent(cwd)}&path=${encodeURIComponent(path)}`);
+  },
+
+  /* ===== slash 命令清单 + 文件树（契约 §8/§9） ===== */
+
+  /** GET /api/commands?source=pi|claude */
+  getCommands(source: SessionSource): Promise<CommandList> {
+    return request(`/api/commands?source=${encodeURIComponent(source)}`);
+  },
+
+  /** GET /api/fs/tree?cwd=&path=&q=&hidden=（只读单层目录） */
+  getFsTree(cwd: string, opts: { path?: string; q?: string; hidden?: boolean } = {}): Promise<FsTree> {
+    const params = new URLSearchParams({ cwd });
+    if (opts.path) params.set("path", opts.path);
+    if (opts.q) params.set("q", opts.q);
+    if (opts.hidden) params.set("hidden", "1");
+    return request(`/api/fs/tree?${params.toString()}`);
   },
 };

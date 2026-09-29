@@ -23,6 +23,7 @@ import { inferExternalStatus } from "./tail.js";
 import { loadSessionTree } from "./tree.js";
 import {
   assistantToolCalls,
+  contentToImages,
   contentToText,
   contentToThinking,
   encodeCwdDirName,
@@ -364,10 +365,10 @@ export class SessionHub {
     this.onActivity?.(id, { kind: "done", text: "已手动中止本轮运行" });
   }
 
-  /** 手动压缩上下文 */
-  async compact(id: string): Promise<void> {
+  /** 手动压缩上下文（可带自定义保留指令，透传 SDK session.compact()） */
+  async compact(id: string, instructions?: string): Promise<void> {
     const session = await this.ensureLive(id);
-    await session.compact();
+    await session.compact(instructions === undefined || instructions === "" ? undefined : instructions);
   }
 
   /** 进程退出：dispose 所有 AgentSession 实例 */
@@ -489,8 +490,9 @@ export class SessionHub {
     const timestamp = typeof message.timestamp === "number" ? message.timestamp : (live.currentMessageStartTs ?? Date.now());
     const text = contentToText(message.content);
     const thinking = contentToThinking(message.content);
+    const images = contentToImages(message.content) ?? undefined;
     if (role !== "assistant") {
-      return { id: fallbackId, role, timestamp, text, thinking, toolCalls: [] };
+      return { id: fallbackId, role, timestamp, text, thinking, toolCalls: [], ...(images ? { images } : {}) };
     }
     const { toolCalls, byCallId } = assistantToolCalls(message);
     for (const [callId, ref] of byCallId) {
@@ -500,7 +502,7 @@ export class SessionHub {
         ref.dto.resultPreview = result.text === "" ? null : result.text;
       }
     }
-    return { id: fallbackId, role, timestamp, text, thinking, toolCalls };
+    return { id: fallbackId, role, timestamp, text, thinking, toolCalls, ...(images ? { images } : {}) };
   }
 
   /** 从已持久化 entries 中按消息对象 identity / 时间戳解析 entry id */

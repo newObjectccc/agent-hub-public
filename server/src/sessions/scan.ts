@@ -9,7 +9,7 @@
 import { createReadStream } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
-import type { MessageDto, MessageRole, SessionListItem, ToolCallDto } from "../types.js";
+import type { MessageDto, MessageImage, MessageRole, SessionListItem, ToolCallDto } from "../types.js";
 
 export const LAST_MESSAGE_LIMIT = 120;
 export const RESULT_PREVIEW_LIMIT = 500;
@@ -85,6 +85,32 @@ export function contentToThinking(content: unknown): string | null {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+/** 单条消息内嵌图片上限（防 base64 大响应拖垮手机端） */
+export const MAX_MESSAGE_IMAGES = 8;
+
+/**
+ * content（ImageContent 块）→ 内嵌图片列表（data URL 或 http(s) URL）。
+ * 无图返回 null（DTO 字段缺省，向后兼容）；text 块仍由 contentToText 提取。
+ */
+export function contentToImages(content: unknown): MessageImage[] | null {
+  if (!Array.isArray(content)) return null;
+  const out: MessageImage[] = [];
+  for (const block of content) {
+    if (out.length >= MAX_MESSAGE_IMAGES) break;
+    if (!isRecord(block) || block.type !== "image") continue;
+    const source = isRecord(block.source) ? block.source : null;
+    if (source && source.type === "base64" && typeof source.data === "string") {
+      const media = typeof source.media_type === "string" && source.media_type.startsWith("image/") ? source.media_type : "image/png";
+      out.push({ url: `data:${media};base64,${source.data}`, alt: null });
+    } else if (source && source.type === "url" && typeof source.url === "string") {
+      out.push({ url: source.url, alt: null });
+    } else if (typeof block.url === "string") {
+      out.push({ url: block.url, alt: null });
+    }
+  }
+  return out.length > 0 ? out : null;
 }
 
 /** 工具调用摘要：bash→command，读写类→路径，其余紧凑 JSON */
@@ -186,8 +212,18 @@ function entryTimestampMs(entry: RawEntry, message?: Record<string, unknown>): n
   return 0;
 }
 
-function toDto(id: string, role: MessageRole, timestamp: number, text: string, toolCalls: ToolCallDto[] = [], thinking: string | null = null): MessageDto {
-  return { id, role, timestamp, text, thinking, toolCalls };
+function toDto(
+  id: string,
+  role: MessageRole,
+  timestamp: number,
+  text: string,
+  toolCalls: ToolCallDto[] = [],
+  thinking: string | null = null,
+  images: MessageImage[] | null = null,
+): MessageDto {
+  return images === null
+    ? { id, role, timestamp, text, thinking, toolCalls }
+    : { id, role, timestamp, text, thinking, toolCalls, images };
 }
 
 /**
@@ -232,13 +268,13 @@ export function buildMessages(entries: RawEntry[]): MessageDto[] {
 
     switch (message.role) {
       case "user": {
-        messages.push(toDto(entryId, "user", timestamp, contentToText(message.content)));
+        messages.push(toDto(entryId, "user", timestamp, contentToText(message.content), [], null, contentToImages(message.content)));
         break;
       }
       case "assistant": {
         const { toolCalls, byCallId } = assistantToolCalls(message);
         for (const [callId, ref] of byCallId) toolCallOwners.set(callId, ref.dto);
-        messages.push(toDto(entryId, "assistant", timestamp, contentToText(message.content), toolCalls, contentToThinking(message.content)));
+        messages.push(toDto(entryId, "assistant", timestamp, contentToText(message.content), toolCalls, contentToThinking(message.content), contentToImages(message.content)));
         break;
       }
       case "toolResult": {

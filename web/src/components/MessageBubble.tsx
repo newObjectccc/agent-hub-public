@@ -50,21 +50,32 @@ function ThinkingBlock({ text }: { text: string }) {
 /**
  * 消息气泡：user 右侧，assistant 左侧（markdown 渲染），思维链折叠块 + toolCalls 折叠卡片。
  * highlight=true 时高亮（搜索定位 ?q= 跳转命中消息）；onOpenFile 点击文件引用打开弹层。
- * 长按气泡 → 复制菜单（触屏 long-press；桌面右键同入口），复制成功出 toast。
+ * 长按气泡 → 操作菜单（复制文本 / 引用；触屏 long-press；桌面右键同入口）；
+ * 图片例外：不拦截长按/右键，让 Android Chrome 原生"保存图片"菜单工作。
  */
 export function MessageBubble({
   message,
   highlight,
   onOpenFile,
+  onQuote,
 }: {
   message: SessionMessage;
   highlight?: boolean;
   onOpenFile?: (ref: FileRef) => void;
+  /** 长按菜单"引用"：把消息文本送入输入框引用条 */
+  onQuote?: (message: SessionMessage) => void;
 }) {
   const thinking = message.thinking ?? "";
   const [menuOpen, setMenuOpen] = useState(false);
   const suppressClickRef = useRef(false);
   const hasText = message.text.trim() !== "";
+  const images = message.images ?? [];
+  /** 引用消息以 Markdown 引用块开头（`> `），用 markdown 渲染让两端 agent 口径一致 */
+  const isQuoted = /^>\s?/.test(message.text);
+
+  // 图片目标不进入长按状态机（交还系统菜单）
+  const isImageTarget = (target: EventTarget | null): boolean =>
+    target instanceof HTMLElement && target.tagName === "IMG";
 
   // 长按识别：纯状态机（定时器默认实现；单测直接测 LongPressDetector）
   const detector = useMemo(
@@ -79,12 +90,17 @@ export function MessageBubble({
     showToast(ok ? COPY_SUCCESS_TOAST : COPY_FAIL_TOAST);
   };
 
+  const handleQuote = () => {
+    setMenuOpen(false);
+    onQuote?.(message);
+  };
+
   return (
     <div id={`msg-${message.id}`} className={`msg-row ${message.role}${highlight ? " search-hit" : ""}`}>
       <div
         className="msg-body"
         onPointerDown={(e) => {
-          if (!hasText || menuOpen) return;
+          if (!hasText || menuOpen || isImageTarget(e.target)) return;
           detector.start(e.clientX, e.clientY);
         }}
         onPointerMove={(e) => detector.move(e.clientX, e.clientY)}
@@ -93,6 +109,8 @@ export function MessageBubble({
         }}
         onPointerCancel={() => detector.cancel()}
         onContextMenu={(e) => {
+          // 图片：不拦截，交给系统长按菜单（Android Chrome “保存图片”）
+          if (isImageTarget(e.target)) return;
           if (!hasText) return;
           // 抑制系统长按/右键菜单，走自带复制菜单
           e.preventDefault();
@@ -113,17 +131,35 @@ export function MessageBubble({
             <>
               {thinking && <ThinkingBlock text={thinking} />}
               {message.text && <Markdown text={message.text} />}
+              {images.length > 0 && (
+                <div className="msg-images">
+                  {images.map((img, i) => (
+                    <img key={`${message.id}-img-${i}`} className="msg-img" src={img.url} alt={img.alt ?? "图片"} loading="lazy" />
+                  ))}
+                </div>
+              )}
               {message.toolCalls.map((tc, i) => (
                 <ToolCallCard key={`${message.id}-tool-${i}`} toolCall={tc} onOpenFile={onOpenFile} />
               ))}
-              {!message.text && message.toolCalls.length === 0 && !thinking && (
+              {!message.text && message.toolCalls.length === 0 && !thinking && images.length === 0 && (
                 <span className="hint-text">（无内容）</span>
               )}
             </>
           ) : (
             <>
               {thinking && <ThinkingBlock text={thinking} />}
-              <span style={{ whiteSpace: "pre-wrap" }}>{message.text}</span>
+              {isQuoted ? (
+                <Markdown text={message.text} />
+              ) : (
+                <span style={{ whiteSpace: "pre-wrap" }}>{message.text}</span>
+              )}
+              {images.length > 0 && (
+                <div className="msg-images">
+                  {images.map((img, i) => (
+                    <img key={`${message.id}-img-${i}`} className="msg-img" src={img.url} alt={img.alt ?? "图片"} loading="lazy" />
+                  ))}
+                </div>
+              )}
               {message.toolCalls.map((tc, i) => (
                 <ToolCallCard key={`${message.id}-tool-${i}`} toolCall={tc} onOpenFile={onOpenFile} />
               ))}
@@ -139,6 +175,11 @@ export function MessageBubble({
               <button type="button" role="menuitem" className="msg-menu-item" onClick={() => void handleCopy()}>
                 复制文本
               </button>
+              {onQuote && (
+                <button type="button" role="menuitem" className="msg-menu-item" onClick={handleQuote}>
+                  引用
+                </button>
+              )}
               <button type="button" role="menuitem" className="msg-menu-item" onClick={() => setMenuOpen(false)}>
                 关闭
               </button>
