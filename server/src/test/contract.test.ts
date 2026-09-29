@@ -167,6 +167,7 @@ describe("contract: WS 事件 type 集合与字段名（契约 §4 表格）", (
     "session",
     "message_start",
     "text_delta",
+    "thinking_delta",
     "tool_start",
     "tool_end",
     "message_end",
@@ -282,13 +283,13 @@ describe("contract: WS 事件 type 集合与字段名（契约 §4 表格）", (
     assert.equal(te.toolCall.status, "done");
     assert.equal(te.toolCall.resultPreview, "ok");
 
-    // message_end: {message:{id, role, timestamp, text, toolCalls}}
+    // message_end: {message:{id, role, timestamp, text, thinking, toolCalls}}
     const ends = byType.get("message_end") ?? [];
     assert.equal(ends.length, 2);
     for (const e of ends) {
       const ev = e as { type: string; message: Record<string, unknown> };
       assert.deepEqual(Object.keys(ev), ["type", "message"]);
-      assert.deepEqual(Object.keys(ev.message).sort(), ["id", "role", "text", "timestamp", "toolCalls"]);
+      assert.deepEqual(Object.keys(ev.message).sort(), ["id", "role", "text", "thinking", "timestamp", "toolCalls"]);
     }
     const assistantEnd = ends[1] as unknown as { message: { role: string; toolCalls: Array<Record<string, unknown>> } };
     assert.equal(assistantEnd.message.role, "assistant");

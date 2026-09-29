@@ -56,6 +56,102 @@ describe("applyWsEvent（WS 流式事件）", () => {
     const msgs = base();
     expect(applyWsEvent(msgs, { type: "agent_settled" })).toBe(msgs);
     expect(applyWsEvent(msgs, { type: "text_delta", messageId: "nope", delta: "x" })).toBe(msgs);
+    expect(applyWsEvent(msgs, { type: "thinking_delta", messageId: "nope", delta: "x" })).toBe(msgs);
+  });
+});
+
+describe("thinking_delta 思维链累积", () => {
+  it("thinking_delta 累积到消息 thinking 字段，与 text_delta 互不干扰", () => {
+    let msgs = applyWsEvent(base(), {
+      type: "message_start",
+      message: { id: "m1", role: "assistant", timestamp: 1000 },
+    });
+    msgs = applyWsEvent(msgs, { type: "thinking_delta", messageId: "m1", delta: "先想" });
+    msgs = applyWsEvent(msgs, { type: "text_delta", messageId: "m1", delta: "回答" });
+    msgs = applyWsEvent(msgs, { type: "thinking_delta", messageId: "m1", delta: "一下" });
+    expect(msgs[0].thinking).toBe("先想一下");
+    expect(msgs[0].text).toBe("回答");
+  });
+
+  it("message_end 带 thinking 时一并显示（整体替换）", () => {
+    let msgs = applyWsEvent(base(), {
+      type: "message_start",
+      message: { id: "m1", role: "assistant", timestamp: 1000 },
+    });
+    msgs = applyWsEvent(msgs, { type: "thinking_delta", messageId: "m1", delta: "流式思维" });
+    msgs = applyWsEvent(msgs, {
+      type: "message_end",
+      message: { id: "m1", role: "assistant", timestamp: 1000, text: "正文", thinking: "权威思维链", toolCalls: [] },
+    });
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0].thinking).toBe("权威思维链");
+    expect(msgs[0].text).toBe("正文");
+  });
+
+  it("message_end 未带 thinking 时保留流式累积的思维链（不被抹掉）", () => {
+    let msgs = applyWsEvent(base(), {
+      type: "message_start",
+      message: { id: "m1", role: "assistant", timestamp: 1000 },
+    });
+    msgs = applyWsEvent(msgs, { type: "thinking_delta", messageId: "m1", delta: "流式思维" });
+    msgs = applyWsEvent(msgs, {
+      type: "message_end",
+      message: { id: "m1", role: "assistant", timestamp: 1000, text: "正文", toolCalls: [] },
+    });
+    expect(msgs[0].thinking).toBe("流式思维");
+  });
+
+  it("无思维链消息 thinking 为 null（MessageBubble 不渲染折叠块）", () => {
+    const msgs = applyWsEvent(base(), {
+      type: "message_end",
+      message: { id: "m1", role: "assistant", timestamp: 1000, text: "正文", thinking: null, toolCalls: [] },
+    });
+    expect(msgs[0].thinking).toBeNull();
+  });
+});
+
+describe("tool_start 合并 pending 工具卡（pi 真实时序：工具执行在 message_end 之后）", () => {
+  it("message_end 已带 pending 工具卡时，tool_start/tool_end 更新同一张卡，不重复追加", () => {
+    let msgs = applyWsEvent(base(), {
+      type: "message_end",
+      message: {
+        id: "live-2",
+        role: "assistant",
+        timestamp: 1,
+        text: "我要执行命令",
+        thinking: null,
+        toolCalls: [{ name: "bash", summary: "echo hi", status: "pending", resultPreview: null }],
+      },
+    });
+    msgs = applyWsEvent(msgs, { type: "tool_start", messageId: "live-2", toolCall: { name: "bash", summary: "echo hi" } });
+    expect(msgs[0].toolCalls).toHaveLength(1);
+    expect(msgs[0].toolCalls[0].status).toBe("running");
+    msgs = applyWsEvent(msgs, {
+      type: "tool_end",
+      messageId: "live-2",
+      toolCall: { name: "bash", summary: "echo hi", status: "done", resultPreview: "hi" },
+    });
+    expect(msgs[0].toolCalls).toHaveLength(1);
+    expect(msgs[0].toolCalls[0]).toEqual({ name: "bash", summary: "echo hi", status: "done", resultPreview: "hi" });
+  });
+
+  it("没有同名 pending 卡时 tool_start 照旧追加新卡", () => {
+    let msgs = applyWsEvent(base(), {
+      type: "message_start",
+      message: { id: "m1", role: "assistant", timestamp: 1 },
+    });
+    msgs = applyWsEvent(msgs, {
+      type: "tool_start",
+      messageId: "m1",
+      toolCall: { name: "bash", summary: "ls" },
+    });
+    msgs = applyWsEvent(msgs, {
+      type: "tool_start",
+      messageId: "m1",
+      toolCall: { name: "read", summary: "a.txt" },
+    });
+    expect(msgs[0].toolCalls).toHaveLength(2);
+    expect(msgs[0].toolCalls.map((t) => t.name)).toEqual(["bash", "read"]);
   });
 });
 

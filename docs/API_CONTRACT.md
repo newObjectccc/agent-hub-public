@@ -43,6 +43,7 @@ Base URL: `http://<host>:<port>/api`（默认端口 7700）
       "role": "user | assistant | toolResult | custom",
       "timestamp": 1733234401000,
       "text": "纯文本/markdown 原文",
+      "thinking": "思维链全文（assistant 的 thinking 块，无则 null）",
       "toolCalls": [
         { "name": "bash", "summary": "ls -la", "status": "pending|running|done|error", "resultPreview": "…" }
       ]
@@ -52,6 +53,7 @@ Base URL: `http://<host>:<port>/api`（默认端口 7700）
 ```
 说明：`role` 与 pi session-format v3 对齐；toolResult 消息折叠进产生它的 assistant 消息的 `toolCalls[]`。
 `messages` 仅含 active branch（树结构选活跃叶到根的路径）。
+`thinking` 服务端保证不省略（无思维链为 `null`）；客户端兼容旧数据缺省（视为无思维链）。
 
 ### POST /api/sessions
 新建会话。
@@ -135,9 +137,10 @@ server → client（每条一个 JSON 对象）：
 | `session` | `id, cwd` | 连接后首条，握手确认 |
 | `message_start` | `message: {id, role, timestamp}` | 消息开始 |
 | `text_delta` | `messageId, delta` | 流式文本增量 |
+| `thinking_delta` | `messageId, delta` | 流式思维链增量（累积到消息 `thinking` 字段） |
 | `tool_start` | `messageId, toolCall: {name, summary}` | 工具开始 |
-| `tool_end` | `messageId, toolCall: {name, summary, status, resultPreview}` | 工具结束 |
-| `message_end` | `message: {同 GET 详情的 message 结构}` | 消息完成（权威数据） |
+| `tool_end` | `messageId, toolCall: {name, summary, status, resultPreview}` | 工具结束；`status:"running"` 时为执行中快照（`resultPreview` 为部分结果，前端按 `name` 合并进同一工具卡） |
+| `message_end` | `message: {同 GET 详情的 message 结构（含 thinking）}` | 消息完成（权威数据） |
 | `agent_settled` | — | 本轮工作全部结束（UI 恢复输入框） |
 | `status` | `status: "idle\|running\|error"` | 状态变化 |
 | `error` | `code, message` | 运行期错误 |
@@ -156,3 +159,35 @@ client → server（可选，替代 REST）：
 - 时间一律 ISO 8601 UTC（`timestamp` 毫秒为 pi 原始值）。
 - 所有列表字段缺省 `[]`，对象缺省 `null`，不得省略字段。
 - 端口、session 目录、workspace root 可由 `config/hub.config.json` 覆盖。
+
+## 6. pi 实时旁观接入（live ingest，2026-02 新增）
+
+### POST /api/live/:sessionId
+
+pi 扩展 `integrations/pi-live-feed/live-feed.ts` 把**任意终端 pi 会话**的实时事件流
+（思维链/流式回复/工具执行，token 级）推给 server，server 转成 §4 的 WS 事件广播到
+`/ws/sessions/:sessionId`。fire-and-forget 语义：扩展侧失败静默，server 侧坏数据丢弃，绝不 500。
+
+请求体（三种形态等价）：
+
+```json
+{ "events": [ { "type": "text_delta", "messageId": "live-1-…", "delta": "你" } ] }
+```
+
+事件对象即 §4 的 server→client 事件子集：`message_start` / `text_delta` / `thinking_delta` /
+`tool_start` / `tool_end`（含 `status:"running"` 执行中快照）/ `message_end`（message 含 `thinking`）/
+`agent_settled` / `status`。未知 `type`、缺关键字段的条目静默丢弃。
+
+响应 202：`{ "accepted": <接受条数> }`。
+
+鉴权：`config/hub.config.json` 的 `auth.token` **非空**时校验 `Authorization: Bearer <token>`
+（401 `{error:{code:"UNAUTHORIZED"}}`）；为空则放行（tailnet 内网场景）。扩展侧通过环境变量
+`AGENT_HUB_LIVE_TOKEN` 提供 token。
+
+server 行为：
+
+- 首个 live 事件将该会话标记为 live（10 分钟活跃窗口）：停掉/不再启动文件 tail，
+  防止 tail 与 live 双推送产生重复气泡。
+- 同一会话已由本进程 SDK 接管时丢弃 live 事件（SDK 流是权威源）。
+- `text_delta`/`thinking_delta` 按会话做 100ms 节流合并广播；生命周期事件即时广播并保序。
+- 扩展侧地址可用 `AGENT_HUB_LIVE_URL` 覆盖（默认 `http://127.0.0.1:7700`）。

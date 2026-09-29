@@ -37,6 +37,8 @@ export interface MessageDto {
   /** 毫秒时间戳（pi 原始值） */
   timestamp: number;
   text: string;
+  /** 思维链全文（assistant 的 thinking 块）；无思维链为 null */
+  thinking: string | null;
   toolCalls: ToolCallDto[];
 }
 
@@ -50,6 +52,7 @@ export type ServerEvent =
   | { type: "session"; id: string; cwd: string }
   | { type: "message_start"; message: { id: string; role: MessageRole; timestamp: number } }
   | { type: "text_delta"; messageId: string; delta: string }
+  | { type: "thinking_delta"; messageId: string; delta: string }
   | { type: "tool_start"; messageId: string; toolCall: { name: string; summary: string } }
   | {
       type: "tool_end";

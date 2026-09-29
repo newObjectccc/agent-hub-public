@@ -65,6 +65,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
       switch (event.type) {
         case "message_start":
         case "text_delta":
+        case "thinking_delta":
         case "tool_start":
         case "tool_end":
         case "message_end":

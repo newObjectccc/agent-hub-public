@@ -10,6 +10,7 @@ export const ErrorCodes = {
   INTERNAL: "INTERNAL",
   PROMPT_FAILED: "PROMPT_FAILED",
   INVALID_MESSAGE: "INVALID_MESSAGE",
+  UNAUTHORIZED: "UNAUTHORIZED",
 } as const;
 
 export type ErrorCode = (typeof ErrorCodes)[keyof typeof ErrorCodes];

@@ -3,6 +3,7 @@
  *
  * - message_start：占位消息（打字机从空文本开始）
  * - text_delta：追加文本（打字机）
+ * - thinking_delta：追加思维链（累积到消息 thinking 字段）
  * - tool_start / tool_end：更新/追加 toolCalls
  * - message_end：用权威消息替换（同 id 覆盖）
  * - 其余事件由 UI 层另行处理（status / agent_settled / error）
@@ -26,8 +27,15 @@ function normalizeMessage(m: Partial<SessionMessage> & { id: string }): SessionM
     role: m.role ?? "assistant",
     timestamp: m.timestamp ?? Date.now(),
     text: m.text ?? "",
+    thinking: typeof m.thinking === "string" ? m.thinking : null,
     toolCalls: m.toolCalls ?? [],
   };
+}
+
+/** 权威消息替换时保留已流式的思维链（权威数据未带 thinking 时不抹掉增量累积） */
+function withThinkingFallback(authoritative: SessionMessage, previous: SessionMessage): SessionMessage {
+  const thinking = authoritative.thinking && authoritative.thinking !== "" ? authoritative.thinking : (previous.thinking ?? null);
+  return { ...authoritative, thinking };
 }
 
 function updateMessage(
@@ -80,6 +88,13 @@ export function applyWsEvent(messages: SessionMessage[], event: WsEvent): Sessio
         text: m.text + (event.delta ?? ""),
       }));
     }
+    case "thinking_delta": {
+      if (!event.messageId) return messages;
+      return updateMessage(messages, event.messageId, (m) => ({
+        ...m,
+        thinking: (m.thinking ?? "") + (event.delta ?? ""),
+      }));
+    }
     case "tool_start": {
       if (!event.messageId || !event.toolCall) return messages;
       const tc: ToolCall = {
@@ -88,10 +103,23 @@ export function applyWsEvent(messages: SessionMessage[], event: WsEvent): Sessio
         status: event.toolCall.status ?? "running",
         resultPreview: event.toolCall.resultPreview ?? null,
       };
-      return updateMessage(messages, event.messageId, (m) => ({
-        ...m,
-        toolCalls: [...m.toolCalls, tc],
-      }));
+      return updateMessage(messages, event.messageId, (m) => {
+        // message_end（权威）已带 pending 工具卡时，tool_start 是同一张卡的“开始执行”，
+        // 合并进首个同名 pending 卡而非重复追加（双卡 bug）；没有才追加新卡
+        const idx = m.toolCalls.findIndex((t) => t.name === tc.name && t.status === "pending");
+        if (idx >= 0) {
+          const toolCalls = m.toolCalls.slice();
+          const old = toolCalls[idx];
+          toolCalls[idx] = {
+            name: tc.name,
+            summary: tc.summary !== "" ? tc.summary : old.summary,
+            status: tc.status,
+            resultPreview: tc.resultPreview ?? old.resultPreview,
+          };
+          return { ...m, toolCalls };
+        }
+        return { ...m, toolCalls: [...m.toolCalls, tc] };
+      });
     }
     case "tool_end": {
       if (!event.messageId || !event.toolCall) return messages;
@@ -115,7 +143,7 @@ export function applyWsEvent(messages: SessionMessage[], event: WsEvent): Sessio
       const idx = messages.findIndex((m) => m.id === authoritative.id);
       if (idx >= 0) {
         const next = messages.slice();
-        next[idx] = authoritative;
+        next[idx] = withThinkingFallback(authoritative, messages[idx]);
         return next;
       }
       // 纯防御去重：仅合并列表末尾的流式/乐观占位（同 role+同非空 text），
@@ -123,7 +151,7 @@ export function applyWsEvent(messages: SessionMessage[], event: WsEvent): Sessio
       const dupIdx = findTailPlaceholder(messages, authoritative);
       if (dupIdx >= 0) {
         const next = messages.slice();
-        next[dupIdx] = authoritative;
+        next[dupIdx] = withThinkingFallback(authoritative, messages[dupIdx]);
         return next;
       }
       return [...messages, authoritative];
