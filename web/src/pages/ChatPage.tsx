@@ -35,7 +35,7 @@ import {
 } from "../utils/slashInput";
 import { showToast } from "../utils/toast";
 import { findMessageByText } from "../utils/search";
-import { chatPath, currentLocate, navigate, treePath } from "../utils/router";
+import { chatPath, chatReturnPath, currentLocate, navigate, treePath } from "../utils/router";
 
 /**
  * 权威消息合并已并入 messageStream.applyWsEvent 的 message_end 分支：
@@ -400,8 +400,8 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
           variant="outline"
           size="icon"
           className="back"
-          onClick={() => navigate("/")}
-          aria-label="返回面板"
+          onClick={() => navigate(chatReturnPath())}
+          aria-label="返回列表"
         >
           <BackIcon />
         </Button>

@@ -28,7 +28,8 @@ Base URL: `http://<host>:<port>/api`（默认端口 7700）
       "lastUserMessage": "帮我检查周报 KPI 口径（截断 120 字符）",
       "lastAssistantMessage": "好的，我先查 ETL 水位…（截断 120 字符）",
       "sessionFile": "/Users/me/.pi/agent/sessions/--Users-me-.../2026-02-18_xxx.jsonl",
-      "isSubAgent": false
+      "isSubAgent": false,
+      "parentSessionId": null
     }
   ]
 }
@@ -43,6 +44,12 @@ Base URL: `http://<host>:<port>/api`（默认端口 7700）
 （如 `developer#abc123` / `acceptance-reviewer#f81d33aa`），或入口消息含 pi-subagents
 派生特征（system preamble 中的 `<sub_agent_context>` / `<active_agent name=` 等）。
 前端按其渲染 🤖“子代理”徽章、分组折叠展示，主会话排前。
+
+`parentSessionId` 为本轮新增契约字段（列表项与详情里的 `session` 均带，可缺省）：pi 会话
+header 的 `parentSession`（文件路径）解析出的父会话 id（文件名末段）。pi-subagents 派生
+子代理与 fork 分支均带血缘；claude 侧无独立父子会话文件恒 `null`；解析不出为 `null`。
+前端按 `isSubAgent && parentSessionId` 将子代理以树形子行挂到父会话下，识别不出的归
+“未归组子代理”兜底分组。
 
 ### GET /api/sessions/:id
 会话详情 + **active branch** 的消息历史（渲染 chat 用）。

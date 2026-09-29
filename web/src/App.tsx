@@ -1,5 +1,9 @@
 import { useEffect, useState } from "react";
+import { AppShell } from "./components/AppShell";
 import { HomePage } from "./pages/HomePage";
+import { SessionsPage } from "./pages/SessionsPage";
+import { SystemPage } from "./pages/SystemPage";
+import { SettingsPage } from "./pages/SettingsPage";
 import { ChatPage } from "./pages/ChatPage";
 import { TreePage } from "./pages/TreePage";
 import { ToastHost } from "./components/ToastHost";
@@ -28,17 +32,36 @@ export function App() {
 
   useEffect(() => onRouteChange(() => setRoute(parseRoute(window.location.pathname))), []);
 
+  // chat/树页保持全屏原布局（顶栏返回/复制菜单/子代理标记），不套导航框架
+  if (route.name === "chat" || route.name === "tree") {
+    return (
+      <>
+        <NoticeBanner />
+        {route.name === "chat" ? (
+          <ChatPage key={route.id} sessionId={route.id} />
+        ) : (
+          <TreePage key={route.id} sessionId={route.id} />
+        )}
+        <ToastHost />
+      </>
+    );
+  }
+
   return (
     <>
       {/* 会话完结提醒横幅（应用内全局，含震动/提示音逻辑） */}
       <NoticeBanner />
-      {route.name === "chat" ? (
-        <ChatPage key={route.id} sessionId={route.id} />
-      ) : route.name === "tree" ? (
-        <TreePage key={route.id} sessionId={route.id} />
-      ) : (
-        <HomePage />
-      )}
+      <AppShell route={route}>
+        {route.name === "sessions" ? (
+          <SessionsPage />
+        ) : route.name === "system" ? (
+          <SystemPage />
+        ) : route.name === "settings" ? (
+          <SettingsPage />
+        ) : (
+          <HomePage />
+        )}
+      </AppShell>
       <ToastHost />
     </>
   );

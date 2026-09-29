@@ -354,6 +354,20 @@ export function isSubAgentSession(name: string | null, entries: RawEntry[]): boo
   return isSubAgentName(name) || hasSubAgentMarker(entries);
 }
 
+/**
+ * 父会话文件路径 → 父会话 id（文件名 `<timestamp>_<sessionId>.jsonl` 取末段）。
+ * 事实源是 pi 会话 header 的 `parentSession` 字段（pi-subagents 派生与 fork 分支都写）：
+ * 真实样本调研（68 个会话）中 38 个子代理会话全部命中且父会话均可解析，
+ * 优于反向匹配父会话的 Agent toolCall（其 arguments 不含子会话 id，无法定位）。
+ * 无法解析返回 null（前端归"未归组子代理"兜底分组）。
+ */
+export function parentSessionIdFromPath(parentSession: unknown): string | null {
+  if (typeof parentSession !== "string") return null;
+  const base = parentSession.split(/[\\/]/).pop() ?? "";
+  const m = /_([0-9a-zA-Z-]+)\.jsonl$/.exec(base);
+  return m && m[1] !== "" ? m[1] : null;
+}
+
 /** 会话摘要（列表项，status 由 server 运行态注入） */
 export function buildSessionSummary(file: string, parsed: ParsedSession, mtimeMs: number): Omit<SessionListItem, "status"> | null {
   const { header, entries } = parsed;
@@ -404,6 +418,7 @@ export function buildSessionSummary(file: string, parsed: ParsedSession, mtimeMs
     lastAssistantMessage,
     sessionFile: file,
     isSubAgent: isSubAgentSession(name, entries),
+    parentSessionId: parentSessionIdFromPath(header.parentSession),
   };
 }
 

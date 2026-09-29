@@ -1,10 +1,12 @@
 import { Fragment, useEffect, useRef, useState, type ReactNode, type MutableRefObject } from "react";
-import { computeVirtualWindow } from "../utils/virtualList";
+import { computeVariableWindow, computeVirtualWindow } from "../utils/virtualList";
 
 export interface VirtualListProps<T> {
   items: T[];
   /** 固定行高（px，含行间距），必须与 CSS 实际行高一致 */
   itemHeight: number;
+  /** 可变行高（树形展开时行高可变）；提供后 itemHeight 仅作缺省值 */
+  getItemHeight?: (item: T, index: number) => number;
   getKey: (item: T, index: number) => string;
   renderItem: (item: T, index: number) => ReactNode;
   /** 滚动容器 class */
@@ -30,6 +32,7 @@ export interface VirtualListProps<T> {
 export function VirtualList<T>({
   items,
   itemHeight,
+  getItemHeight,
   getKey,
   renderItem,
   className,
@@ -80,13 +83,20 @@ export function VirtualList<T>({
     }
   }, [items.length, initialScrollTop]);
 
-  const win = computeVirtualWindow({
-    count: items.length,
-    itemHeight,
-    scrollTop,
-    viewportHeight: viewportHeight ?? measuredHeight,
-    overscan,
-  });
+  const win = getItemHeight
+    ? computeVariableWindow({
+        heights: items.map((item, i) => getItemHeight(item, i)),
+        scrollTop,
+        viewportHeight: viewportHeight ?? measuredHeight,
+        overscan,
+      })
+    : computeVirtualWindow({
+        count: items.length,
+        itemHeight,
+        scrollTop,
+        viewportHeight: viewportHeight ?? measuredHeight,
+        overscan,
+      });
 
   return (
     <div

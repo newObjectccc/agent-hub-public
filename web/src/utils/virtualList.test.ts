@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computeVirtualWindow } from "./virtualList";
+import { computeVariableWindow, computeVirtualWindow } from "./virtualList";
 
 describe("computeVirtualWindow（虚拟列表窗口计算）", () => {
   it("300 条会话只渲染视口附近若干行（几百会话流畅的关键）", () => {
@@ -66,5 +66,36 @@ describe("computeVirtualWindow（虚拟列表窗口计算）", () => {
     });
     const win = computeVirtualWindow({ count: 10, itemHeight: 100, scrollTop: -50, viewportHeight: 300, overscan: 0 });
     expect(win.start).toBe(0);
+  });
+});
+
+describe("computeVariableWindow（树形可变行高窗口）", () => {
+  it("行高不等：窗口按前缀和定位，padding 为窗口外行高之和", () => {
+    // 5 行：高度 [100, 200, 100, 200, 100]，总 700
+    const heights = [100, 200, 100, 200, 100];
+    const win = computeVariableWindow({ heights, scrollTop: 150, viewportHeight: 250, overscan: 0 });
+    // 视口 [150, 400)：第 1 行(100-300)、第 2 行(300-400)、第 3 行起点 400 不含
+    expect(win.start).toBe(1);
+    expect(win.end).toBe(3);
+    expect(win.paddingTop).toBe(100);
+    expect(win.paddingBottom).toBe(300);
+  });
+
+  it("展开行高变大（主行+子行）后窗口随之平移，占位高度总量守恒", () => {
+    const collapsed = [128, 128, 128];
+    const expanded = [128 + 2 * 76, 128, 128];
+    const a = computeVariableWindow({ heights: collapsed, scrollTop: 0, viewportHeight: 200, overscan: 0 });
+    const b = computeVariableWindow({ heights: expanded, scrollTop: 0, viewportHeight: 200, overscan: 0 });
+    expect(a.end).toBeGreaterThan(b.end); // 行高变大后同屏渲染行数变少
+    const rendered = (hs: number[], w: { start: number; end: number }) =>
+      hs.slice(w.start, w.end).reduce((s, h) => s + h, 0);
+    expect(a.paddingTop + rendered(collapsed, a) + a.paddingBottom).toBe(384);
+    expect(b.paddingTop + rendered(expanded, b) + b.paddingBottom).toBe(536);
+  });
+
+  it("视口不可测量 / 行高非法：保守全量渲染", () => {
+    expect(computeVariableWindow({ heights: [100, 200], scrollTop: 0, viewportHeight: 0 }).end).toBe(2);
+    expect(computeVariableWindow({ heights: [100, 0], scrollTop: 0, viewportHeight: 600 }).end).toBe(2);
+    expect(computeVariableWindow({ heights: [], scrollTop: 0, viewportHeight: 600 }).end).toBe(0);
   });
 });

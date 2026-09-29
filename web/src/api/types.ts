@@ -24,6 +24,11 @@ export interface SessionSummary {
    * 或入口消息含派生特征）。渲染容错：缺省按主会话（`!== true`）处理。
    */
   isSubAgent: boolean;
+  /**
+   * 血缘父会话 id（pi header.parentSession 解析）：pi-subagents 派生 / fork 分支均带；
+   * claude 恒 null，识别不出为 null（归"未归组子代理"兜底分组）。渲染容错：`?? null`。
+   */
+  parentSessionId?: string | null;
 }
 
 export type MessageRole = "user" | "assistant" | "toolResult" | "custom";

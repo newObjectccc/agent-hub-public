@@ -26,6 +26,12 @@ export interface SessionListItem {
    * 或入口消息含 pi-subagents 派生特征）。主会话恒 false。
    */
   isSubAgent: boolean;
+  /**
+   * 血缘父会话 id（pi 会话 header.parentSession 解析，文件名末段即会话 id）：
+   * pi-subagents 派生子代理与 fork 分支均带；claude 侧无独立父子会话文件恒 null。
+   * 识别不出 / 跨机父文件缺失为 null（前端归"未归组子代理"兜底分组）。
+   */
+  parentSessionId?: string | null;
 }
 
 export type ToolCallStatus = "pending" | "running" | "done" | "error";

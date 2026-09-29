@@ -36,14 +36,14 @@
 
   --radius: var(--nb-radius);
 
-  /* 硬偏移阴影：无模糊，偏移量即边框视觉延伸 */
-  --shadow-xs: 1px 1px 0 0 var(--border);
-  --shadow-sm: 2px 2px 0 0 var(--border);
-  --shadow: 3px 3px 0 0 var(--border);
-  --shadow-md: 4px 4px 0 0 var(--border);
-  --shadow-lg: 6px 6px 0 0 var(--border);
-  --shadow-xl: 10px 10px 0 1px var(--border);
-  --shadow-2xl: 16px 16px 0 1px var(--border);
+  /* 硬偏移阴影：无模糊，偏移量即边框视觉延伸（紧凑野兽派：偏移降一档） */
+  --shadow-xs: var(--nb-shadow-xs);
+  --shadow-sm: var(--nb-shadow-sm);
+  --shadow: var(--nb-shadow);
+  --shadow-md: var(--nb-shadow-md);
+  --shadow-lg: var(--nb-shadow-hover);
+  --shadow-xl: var(--nb-shadow-xl);
+  --shadow-2xl: var(--nb-shadow-2xl);
 
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -72,6 +72,27 @@
 /* ---------- 运行时 palette：亮色（米白底 + 亮黄 / 电光蓝 + 黑描边） ---------- */
 :root {
   --nb-radius: 0;
+  /* ===== 紧凑野兽派密度 token（标准档，≥768px；<768px 见文末密度断点） ===== */
+  /* 描边：3px→2px（粗描边识别度保留，圆角仍 0） */
+  --bw: 2px;
+  /* 硬偏移阴影：无模糊；4-6px→2-3px（hover 抬起也只到 3px） */
+  --nb-shadow-xs: 1px 1px 0 0 var(--border);
+  --nb-shadow-sm: 2px 2px 0 0 var(--border);
+  --nb-shadow: 2px 2px 0 0 var(--border);
+  --nb-shadow-md: 3px 3px 0 0 var(--border);
+  --nb-shadow-hover: 3px 3px 0 0 var(--border);
+  --nb-shadow-card: 3px 3px 0 0 var(--border);
+  --nb-shadow-btn: 3px 3px 0 0 var(--border);
+  --nb-shadow-xl: 4px 4px 0 0 var(--border);
+  --nb-shadow-2xl: 5px 5px 0 0 var(--border);
+  /* 卡片/面板 padding（标准档；新布局与主要容器用 token，存量已全局 -25%） */
+  --pad-card: 9px;
+  --pad-btn-x: 12px;
+  --pad-btn-y: 6px;
+  /* 会话列表行高（含行间距，与 SessionList 常量同步） */
+  --row-h: 128px;
+  --row-h-sub: 76px;
+  --row-gap: 10px;
   /* Archivo Black 只有 400 字重：禁止拉丁字形被合成加粗，中文回落字形用真实粗字重 */
   font-synthesis-weight: none;
   --nb-font-head: "Archivo Black", "PingFang SC", "Noto Sans SC",
@@ -107,8 +128,8 @@
   --bubble-user: var(--info);
   --bubble-user-text: #000000;
   --bubble-assistant: var(--card);
-  --shadow-card: 4px 4px 0 0 var(--border);
-  --shadow-btn: 4px 4px 0 0 var(--border);
+  --shadow-card: var(--nb-shadow-card);
+  --shadow-btn: var(--nb-shadow-btn);
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
   --safe-left: env(safe-area-inset-left, 0px);
@@ -147,8 +168,8 @@
     --bubble-user: var(--info);
     --bubble-user-text: #000000;
     --bubble-assistant: var(--card);
-    --shadow-card: 4px 4px 0 0 var(--border);
-    --shadow-btn: 4px 4px 0 0 var(--border);
+    --shadow-card: var(--nb-shadow-card);
+    --shadow-btn: var(--nb-shadow-btn);
   }
 }
 
@@ -182,8 +203,8 @@
   --bubble-user: var(--info);
   --bubble-user-text: #000000;
   --bubble-assistant: var(--card);
-  --shadow-card: 4px 4px 0 0 var(--border);
-  --shadow-btn: 4px 4px 0 0 var(--border);
+  --shadow-card: var(--nb-shadow-card);
+  --shadow-btn: var(--nb-shadow-btn);
 }
 
 /* ---------- 基础 ---------- */
@@ -199,7 +220,7 @@ body {
   color: var(--foreground);
   font-family: var(--nb-font-sans);
   font-size: 15px;
-  line-height: 1.55;
+  line-height: 1.45;
   -webkit-tap-highlight-color: transparent;
 }
 
@@ -242,7 +263,7 @@ a {
   /* 窄屏（≤380px）按钮多时整体换行，绝不横向溢出 */
   flex-wrap: wrap;
   gap: clamp(8px, 2vw, 12px);  margin-bottom: 16px;
-  gap: 8px;
+  gap: 6px;
   margin-bottom: 16px;}
 
 .app-title {
@@ -259,7 +280,7 @@ a {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;  padding: 8px 12px;
+  white-space: nowrap;  padding: 6px 9px;
   /* 与右侧 icon 按钮同高（44px 行高内），整行紧凑；字号流式 clamp（≈17-18px@手机） */
   font-size: clamp(0.9667rem, 4.5vw, 1.2rem); /* ≈14.5px → 18px（root 15px） */
   line-height: 1;
@@ -274,7 +295,7 @@ a {
   white-space: nowrap;
   text-overflow: ellipsis;  background: var(--primary);
   color: var(--primary-foreground);
-  border: 3px solid var(--border);
+  border: var(--bw) solid var(--border);
   box-shadow: var(--shadow-card);
 }
 
@@ -286,8 +307,8 @@ a {
   color: var(--foreground);
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 4px 10px;
+  gap: 6px;
+  padding: 3px 8px;
   background: var(--secondary);
   color: var(--secondary-foreground);
   border: 2px solid var(--border);
@@ -298,7 +319,7 @@ a {
 .card {
   background: var(--card);
   color: var(--card-foreground);
-  border: 3px solid var(--border);
+  border: var(--bw) solid var(--border);
   border-radius: var(--nb-radius);
   box-shadow: var(--shadow-card);
 }
@@ -308,8 +329,8 @@ a {
 .sysbar {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  padding: 12px;
+  gap: 6px;
+  padding: 9px;
   font-size: 12.5px;
 }
 
@@ -429,8 +450,8 @@ a {
 .syschip {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
+  gap: 5px;
+  padding: 3px 8px;
   border: 2px solid var(--border);
   border-radius: var(--nb-radius);
   background: var(--accent);
@@ -474,7 +495,7 @@ a {
   gap: 0.6rem;
   margin-top: clamp(0.55rem, 2.2vw, 0.85rem);
   padding: clamp(0.6rem, 2.6vw, 0.85rem) clamp(0.85rem, 3.4vw, 1.15rem);
-  border: 3px solid var(--border);
+  border: var(--bw) solid var(--border);
   border-radius: var(--nb-radius);
   background: var(--secondary);
   color: var(--secondary-foreground);
@@ -488,7 +509,7 @@ a {
 
 .subagent-toggle:hover {
   transform: translate(-1px, -1px);
-  box-shadow: 3px 3px 0 0 var(--border);
+  box-shadow: var(--nb-shadow-sm);
 }
 
 .subagent-toggle:active {
@@ -510,11 +531,11 @@ a {
 .kpi-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-  gap: 14px;
+  gap: 11px;
 }
 
 .kpi-card {
-  padding: 12px 14px;
+  padding: 9px 10px;
   display: block;
   text-decoration: none;
   color: inherit;
@@ -537,7 +558,7 @@ a {
 
 .kpi-card.clickable:hover {
   transform: translate(-2px, -2px);
-  box-shadow: 6px 6px 0 0 var(--border);
+  box-shadow: var(--nb-shadow-hover);
 }
 
 .kpi-card.clickable:active {
@@ -560,7 +581,7 @@ a {
 .kpi-value-row {
   display: flex;
   align-items: baseline;
-  gap: 8px;
+  gap: 6px;
 }
 
 .kpi-value {
@@ -634,11 +655,16 @@ a {
   gap: 0;
 }
 
-/* 固定行高：138px 卡片 + 12px 行距，与 SESSION_ITEM_HEIGHT 一致 */
+/* 固定行高：卡片 + 行距，与 SessionList 的 SESSION_ITEM_HEIGHT 同步（密度断点可调） */
 .session-row {
-  height: 150px;
+  height: var(--row-h);
   box-sizing: border-box;
-  padding-bottom: 12px;
+  padding-bottom: var(--row-gap);
+}
+
+/* 子代理子行（树形缩进，更矮更紧凑） */
+.session-row.sub-row {
+  height: var(--row-h-sub);
 }
 
 .session-row .session-item {
@@ -648,13 +674,13 @@ a {
 }
 
 .session-item {
-  padding: 12px 14px;
+  padding: var(--pad-card) calc(var(--pad-card) + 2px);
   text-align: left;
   width: 100%;
   min-height: 44px;
   background: var(--card);
   color: var(--card-foreground);
-  border: 3px solid var(--border);
+  border: var(--bw) solid var(--border);
   border-radius: var(--nb-radius);
   box-shadow: var(--shadow-card);
   display: block;
@@ -667,7 +693,7 @@ a {
 
 .session-item:hover {
   transform: translate(-2px, -2px);
-  box-shadow: 6px 6px 0 0 var(--border);
+  box-shadow: var(--nb-shadow-hover);
 }
 
 .session-item:active {
@@ -680,7 +706,7 @@ a {
   align-items: center;
   /* 320px 小屏多徽章不横向溢出：允许换行 */
   flex-wrap: wrap;
-  gap: 6px 8px;
+  gap: 5px 6px;
 }
 
 .session-name {
@@ -717,7 +743,7 @@ a {
   color: var(--foreground);
   background: var(--muted);
   border: 2px solid var(--border);
-  padding: 5px 8px;
+  padding: 4px 6px;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
@@ -729,7 +755,7 @@ a {
   font-weight: 900;
   font-size: 10.5px;
   letter-spacing: 0.03em;
-  padding: 3px 8px;
+  padding: 2px 6px;
   border: 2px solid var(--border);
   border-radius: var(--nb-radius);
   white-space: nowrap;
@@ -746,15 +772,15 @@ a {
 
 /* ---------- 表单 ---------- */
 .form-card {
-  padding: 14px;
+  padding: 10px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
 }
 
 .form-row {
   display: flex;
-  gap: 10px;
+  gap: 8px;
 }
 
 .form-row > * {
@@ -765,7 +791,7 @@ a {
   color: var(--destructive-foreground);
   background: var(--destructive);
   border: 2px solid var(--border);
-  padding: 6px 10px;
+  padding: 4px 8px;
   font-size: 13px;
   font-weight: 600;
 }
@@ -797,13 +823,13 @@ a {
   font-weight: 700;
   pointer-events: none;
   overflow: hidden;
-  padding-top: 6px;
+  padding-top: 4px;
 }
 
 /* 下拉刷新指示标签：野兽派小色块 */
 .ptr-pill {
   display: inline-block;
-  padding: 3px 10px;
+  padding: 2px 8px;
   background: var(--primary);
   color: var(--primary-foreground);
   border: 2px solid var(--border);
@@ -823,9 +849,9 @@ a {
 .chat-header {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 14px;
-  border-bottom: 3px solid var(--border);
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: var(--bw) solid var(--border);
   background: var(--primary);
   color: var(--primary-foreground);
 }
@@ -835,7 +861,7 @@ a {
   color: var(--card-foreground);
   border: 2px solid var(--border);
   box-shadow: var(--shadow-sm);
-  padding: 6px 8px;
+  padding: 4px 6px;
   min-width: 40px;
   min-height: 40px;
   display: inline-flex;
@@ -874,18 +900,18 @@ a {
 }
 
 .chat-notice {
-  padding: 8px 14px;
+  padding: 6px 10px;
   font-size: 12.5px;
   font-weight: 600;
   background: var(--info);
   color: var(--info-foreground);
-  border-bottom: 3px solid var(--border);
+  border-bottom: var(--bw) solid var(--border);
 }
 
 .chat-messages {
   flex: 1;
   overflow-y: auto;
-  padding: 14px;
+  padding: 10px;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
   /* 前插历史自己做锚点恢复，关闭浏览器 scroll anchoring */
@@ -896,7 +922,7 @@ a {
 .chat-stream {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 11px;
 }
 
 .msg-row {
@@ -919,8 +945,8 @@ a {
 .msg-row.custom { justify-content: flex-start; }
 
 .bubble {
-  padding: 10px 13px;
-  border: 3px solid var(--border);
+  padding: 8px 10px;
+  border: var(--bw) solid var(--border);
   border-radius: var(--nb-radius);
   box-shadow: var(--shadow-card);
   overflow-wrap: break-word;
@@ -932,7 +958,7 @@ a {
 .msg-row.user .bubble {
   background: var(--bubble-user);
   color: var(--bubble-user-text);
-  box-shadow: 4px 4px 0 0 var(--border);
+  box-shadow: var(--nb-shadow-card);
 }
 
 .msg-row.assistant .bubble {
@@ -966,7 +992,7 @@ a {
 .md pre {
   background: var(--muted);
   color: var(--foreground);
-  padding: 10px;
+  padding: 8px;
   border: 2px solid var(--border);
   border-radius: var(--nb-radius);
   overflow-x: auto;
@@ -977,7 +1003,7 @@ a {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.92em;
   background: var(--muted);
-  padding: 1px 5px;
+  padding: 1px 4px;
   border: 1px solid var(--border);
 }
 .md pre code {
@@ -985,7 +1011,7 @@ a {
   border: none;
   padding: 0;
 }
-.md ul, .md ol { margin: 6px 0; padding-left: 22px; }
+.md ul, .md ol { margin: 6px 0; padding-left: 16px; }
 .md h1, .md h2, .md h3, .md h4, .md h5, .md h6 {
   font-family: var(--nb-font-head);
   font-weight: 900;
@@ -1011,8 +1037,8 @@ a {
 .tool-head {
   display: flex;
   align-items: center;
-  gap: 7px;
-  padding: 8px 10px;
+  gap: 6px;
+  padding: 6px 8px;
   min-height: 40px;
   cursor: pointer;
   user-select: none;
@@ -1042,7 +1068,7 @@ a {
   color: var(--card-foreground);
   border: 2px solid var(--border);
   border-radius: var(--nb-radius);
-  padding: 8px;
+  padding: 6px;
   overflow-x: auto;
   font-size: 11.5px;
   max-height: 260px;
@@ -1074,8 +1100,8 @@ a {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  padding: 8px 10px;
+  gap: 6px;
+  padding: 6px 8px;
   min-height: 40px;
   cursor: pointer;
   user-select: none;
@@ -1101,7 +1127,7 @@ a {
 
 /* 输入区 */
 .chat-input {
-  border-top: 3px solid var(--border);
+  border-top: var(--bw) solid var(--border);
   background: var(--card);
   color: var(--card-foreground);
   padding: 12px 12px calc(12px + var(--safe-bottom));
@@ -1109,7 +1135,7 @@ a {
 
 .chat-input-row {
   display: flex;
-  gap: 10px;
+  gap: 8px;
   align-items: flex-end;
 }
 
@@ -1126,7 +1152,7 @@ a {
   margin-bottom: 8px;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
 }
 
 .spinner {
@@ -1143,7 +1169,7 @@ a {
 
 /* 空态 / 错误态 */
 .empty {
-  padding: 26px 16px;
+  padding: 20px 12px;
   text-align: center;
   color: var(--muted-foreground);
   font-size: 13.5px;
@@ -1156,8 +1182,8 @@ a {
 }
 
 .error-banner {
-  padding: 12px 14px;
-  border: 3px solid var(--border);
+  padding: 9px 10px;
+  border: var(--bw) solid var(--border);
   border-radius: var(--nb-radius);
   background: var(--destructive);
   color: var(--foreground);
@@ -1165,7 +1191,7 @@ a {
   font-weight: 600;
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -1264,7 +1290,7 @@ a {
 .skeleton.session-item {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
 }
 
 /* stale-while-revalidate 顶部细进度条 */
@@ -1339,7 +1365,7 @@ a {
 
 .search-bar {
   display: flex;
-  gap: 10px;
+  gap: 8px;
   align-items: center;
   margin-bottom: 12px;
 }
@@ -1347,12 +1373,12 @@ a {
 .search-input {
   flex: 1;
   min-height: 44px;
-  padding: 8px 12px;
+  padding: 6px 9px;
   font: inherit;
   font-size: 16px; /* iOS 防自动缩放 */
   color: var(--foreground);
   background: var(--input);
-  border: 3px solid var(--border);
+  border: var(--bw) solid var(--border);
   box-shadow: var(--shadow-sm);
   border-radius: 0;
 }
@@ -1366,7 +1392,7 @@ a {
 .load-older {
   align-self: center;
   min-height: 40px;
-  padding: 6px 14px;
+  padding: 4px 10px;
   font-family: var(--nb-font-head);
   font-weight: 900;
   font-size: 12px;
@@ -1402,7 +1428,7 @@ a {
   margin-top: 7px;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 11.5px;
   color: var(--muted-foreground);
@@ -1477,7 +1503,7 @@ a {
   overflow-y: auto;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
-  padding: 12px;
+  padding: 9px;
   background: var(--card);
   color: var(--card-foreground);
   animation: nb-fade-up 180ms ease-out;
@@ -1487,7 +1513,7 @@ a {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: 8px;
   margin-bottom: 8px;
 }
 
@@ -1503,7 +1529,7 @@ a {
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   max-height: 52vh;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -1516,8 +1542,8 @@ a {
   white-space: normal;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 8px 10px;
+  gap: 3px;
+  padding: 6px 8px;
   background: var(--muted);
   color: var(--foreground);
   border: 2px solid var(--border);
@@ -1548,7 +1574,7 @@ a {
 .mode-switch {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 6px;
   margin-bottom: 10px;
 }
 
@@ -1560,7 +1586,7 @@ a {
 .notif-item-head {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 
 .notif-session {
@@ -1584,7 +1610,7 @@ a {
 .notif-skeleton {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   padding: 6px 0 10px;
 }
 
@@ -1593,7 +1619,7 @@ a {
   font-weight: 900;
   font-size: 10px;
   letter-spacing: 0.03em;
-  padding: 2px 6px;
+  padding: 2px 4px;
   border: 2px solid var(--border);
   border-radius: var(--nb-radius);
   white-space: nowrap;
@@ -1624,7 +1650,7 @@ a {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: 8px;
   min-height: 40px;
   font-size: 13px;
   font-weight: 600;
@@ -1640,7 +1666,7 @@ a {
 .theme-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 6px;
 }
 
 /* ---------- 会话完结提醒横幅 ---------- */
@@ -1652,12 +1678,12 @@ a {
   z-index: 100;
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
+  gap: 8px;
+  padding: 8px 9px;
   text-align: left;
   background: var(--primary);
   color: var(--primary-foreground);
-  border: 3px solid var(--border);
+  border: var(--bw) solid var(--border);
   border-radius: var(--nb-radius);
   box-shadow: var(--shadow-lg);
   cursor: pointer;
@@ -1700,15 +1726,15 @@ a {
 .week-card {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
-  gap: 12px;
-  padding: 12px 14px;
+  gap: 10px;
+  padding: 9px 10px;
   margin-top: 12px;
 }
 
 .week-cell {
   border: 2px solid var(--border);
   border-radius: var(--nb-radius);
-  padding: 8px 10px;
+  padding: 6px 8px;
   background: var(--accent);
   color: var(--accent-foreground);
   box-shadow: var(--shadow-xs);
@@ -1727,7 +1753,7 @@ a {
 .week-cell-label {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   font-size: 11.5px;
   font-weight: 700;
   color: inherit;
@@ -1757,7 +1783,7 @@ a {
   -webkit-overflow-scrolling: touch;
   scrollbar-width: none;
   /* 竖向留 padding：滑块硬阴影不被横向滚动容器裁切；负 margin 抵消布局占位 */
-  padding: 4px 2px 8px;
+  padding: 3px 2px 6px;
   margin: -4px -2px 0;
 }
 
@@ -1769,7 +1795,7 @@ a {
   position: relative;
   display: flex;
   flex-wrap: nowrap;
-  gap: 8px;
+  gap: 6px;
   width: max-content;
 }
 
@@ -1795,9 +1821,9 @@ a {
 .tab-btn {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   min-height: 44px;
-  padding: 6px 10px;
+  padding: 4px 8px;
   position: relative;
   z-index: 1;
   flex-shrink: 0;
@@ -1892,7 +1918,7 @@ a {
   bottom: 52px;
   right: 0;
   max-width: 180px;
-  padding: 4px 8px;
+  padding: 3px 6px;
   font-size: 11.5px;
   background: var(--card);
   color: var(--card-foreground);
@@ -1906,7 +1932,7 @@ a {
 
 @keyframes nb-pulse {
   0%, 100% { transform: scale(1); box-shadow: var(--shadow-sm); }
-  50% { transform: scale(1.12); box-shadow: 6px 6px 0 0 var(--border); }
+  50% { transform: scale(1.12); box-shadow: var(--nb-shadow-hover); }
 }
 
 /* ---------- 快捷指令面板 ---------- */
@@ -1919,10 +1945,10 @@ a {
   overflow-y: auto;
   background: var(--card);
   color: var(--card-foreground);
-  border: 3px solid var(--border);
+  border: var(--bw) solid var(--border);
   border-radius: var(--nb-radius);
   box-shadow: var(--shadow-card);
-  padding: 10px;
+  padding: 8px;
   z-index: 30;
   animation: nb-fade-up 180ms ease-out;
 }
@@ -1953,12 +1979,12 @@ a {
 .quick-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
 }
 
 .quick-item {
   display: flex;
-  gap: 8px;
+  gap: 6px;
   align-items: stretch;
 }
 
@@ -1966,7 +1992,7 @@ a {
   flex: 1;
   min-height: 44px;
   text-align: left;
-  padding: 8px 10px;
+  padding: 6px 8px;
   font-size: 13.5px;
   font-weight: 600;
   background: var(--accent);
@@ -1995,14 +2021,14 @@ a {
 
 .quick-add {
   display: flex;
-  gap: 8px;
+  gap: 6px;
   margin-top: 10px;
 }
 
 .quick-input {
   flex: 1;
   min-height: 44px;
-  padding: 8px 10px;
+  padding: 6px 8px;
   font-size: 13.5px;
   background: var(--input);
   color: var(--foreground);
@@ -2020,7 +2046,7 @@ a {
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
 }
 
 .search-result {
@@ -2029,11 +2055,11 @@ a {
   overflow: hidden;
   width: 100%;
   text-align: left;
-  padding: 10px 12px;
+  padding: 8px 9px;
   min-height: 44px;
   background: var(--card);
   color: var(--card-foreground);
-  border: 3px solid var(--border);
+  border: var(--bw) solid var(--border);
   box-shadow: var(--shadow-sm);
   cursor: pointer;
   font: inherit;
@@ -2051,7 +2077,7 @@ a {
 
 .quick-add-btn {
   min-height: 44px;
-  padding: 8px 14px;
+  padding: 6px 10px;
   font-family: var(--nb-font-head);
   font-weight: 900;
   font-size: 12.5px;
@@ -2091,7 +2117,7 @@ a {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   padding: 4px 0;
   border: none;
   background: transparent;
@@ -2105,7 +2131,7 @@ button.git-bar {
   border: 2px solid var(--border);
   background: var(--muted);
   color: var(--foreground);
-  padding: 5px 8px;
+  padding: 4px 6px;
   box-shadow: var(--shadow-xs);
   min-height: 40px;
   transition: transform 0.12s ease, box-shadow 0.12s ease;
@@ -2119,7 +2145,7 @@ button.git-bar:active {  transform: translate(2px, 2px);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: 6px;
   margin-bottom: 4px;
 }
 
@@ -2135,7 +2161,7 @@ button.git-bar:active {  transform: translate(2px, 2px);
 .search-result-meta {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   flex-shrink: 0;
 }
 
@@ -2167,7 +2193,7 @@ button.git-bar:active {  transform: translate(2px, 2px);
 
 .tree-toolbar {
   display: flex;
-  gap: 6px;
+  gap: 5px;
 }
 
 .tree-scroll {
@@ -2236,9 +2262,9 @@ button.git-bar:active {  transform: translate(2px, 2px);
   min-width: 0; /* 允许文本收缩出省略号，防横向溢出 */
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   min-height: 44px;
-  padding: 6px 8px;
+  padding: 4px 6px;
   background: transparent;
   border: none;
   color: inherit;
@@ -2268,7 +2294,7 @@ button.git-bar:active {  transform: translate(2px, 2px);
   flex-shrink: 0;
   font-size: 11px;
   font-weight: 700;
-  padding: 1px 6px;
+  padding: 1px 4px;
   background: var(--primary);
   color: var(--primary-foreground);
   border: 2px solid var(--border);
@@ -2290,7 +2316,7 @@ button.git-bar:active {  transform: translate(2px, 2px);
   bottom: 0;
   background: var(--card);
   color: var(--card-foreground);
-  border: 3px solid var(--border);
+  border: var(--bw) solid var(--border);
   box-shadow: var(--shadow-card);
   padding: 10px 12px calc(10px + var(--safe-bottom));
   margin: 8px -14px calc(-16px - var(--safe-bottom));
@@ -2299,14 +2325,14 @@ button.git-bar:active {  transform: translate(2px, 2px);
 .tree-preview-head {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   margin-bottom: 8px;
 }
 
 .tree-preview-role {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   font-family: var(--nb-font-head);
   font-weight: 900;
   font-size: 13px;
@@ -2319,8 +2345,8 @@ button.git-bar:active {  transform: translate(2px, 2px);
   white-space: pre-wrap;
   word-break: break-word;
   font-size: 14px;
-  line-height: 1.55;
-  padding: 8px;
+  line-height: 1.45;
+  padding: 6px;
   background: var(--muted);
   color: var(--foreground);
   border: 2px solid var(--border);
@@ -2330,12 +2356,12 @@ button.git-bar:active {  transform: translate(2px, 2px);
 .tree-preview-actions {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
 }
 
 .tag-wip {
   border: 2px dashed var(--border);
-  padding: 1px 6px;
+  padding: 1px 4px;
 }
 
 .chat-tree-btn {
@@ -2361,15 +2387,15 @@ button.git-bar:active {  transform: translate(2px, 2px);
 }
 
 .git-bar.compact {
-  gap: 5px;
+  gap: 4px;
   padding: 2px 0;
 }
 
 .git-chip {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 2px 7px;
+  gap: 3px;
+  padding: 2px 5px;
   border: 2px solid var(--border);
   border-radius: var(--nb-radius);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -2389,9 +2415,9 @@ button.git-bar:active {  transform: translate(2px, 2px);
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
-  padding: 8px 14px;
-  border-bottom: 3px solid var(--border);
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: var(--bw) solid var(--border);
   background: var(--card);
   color: var(--card-foreground);
 }
@@ -2415,7 +2441,7 @@ button.git-bar:active {  transform: translate(2px, 2px);
   flex-direction: column;
   background: var(--card);
   color: var(--card-foreground);
-  border: 3px solid var(--border);
+  border: var(--bw) solid var(--border);
   border-bottom: none;
   box-shadow: var(--shadow-xl);
   animation: nb-sheet-up 200ms ease-out;
@@ -2429,9 +2455,9 @@ button.git-bar:active {  transform: translate(2px, 2px);
 .sheet-head {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
-  border-bottom: 3px solid var(--border);
+  gap: 8px;
+  padding: 8px 9px;
+  border-bottom: var(--bw) solid var(--border);
   background: var(--primary);
   color: var(--primary-foreground);
 }
@@ -2480,11 +2506,11 @@ button.git-bar:active {  transform: translate(2px, 2px);
 .sheet-body {
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 12px;
+  padding: 9px;
 }
 
 .sheet-foot {
-  border-top: 3px solid var(--border);
+  border-top: var(--bw) solid var(--border);
   padding: 10px 12px calc(10px + var(--safe-bottom));
 }
 
@@ -2497,13 +2523,13 @@ button.git-bar:active {  transform: translate(2px, 2px);
 @media (min-width: 768px) {
   .sheet-overlay {
     align-items: center;
-    padding: 24px;
+    padding: 18px;
   }
 
   .sheet {
     width: min(560px, 100%);
     max-height: min(84dvh, 720px);
-    border-bottom: 3px solid var(--border);
+    border-bottom: var(--bw) solid var(--border);
     box-shadow: 8px 8px 0 0 var(--border);
     animation: nb-modal-in 180ms ease-out;
   }
@@ -2529,7 +2555,7 @@ button.git-bar:active {  transform: translate(2px, 2px);
 /* source 分段按钮（pi / claude 单选，野兽派） */
 .segment {
   display: flex;
-  border: 3px solid var(--border);
+  border: var(--bw) solid var(--border);
   box-shadow: var(--shadow-card, 4px 4px 0 0 var(--border));
 }
 
@@ -2544,7 +2570,7 @@ button.git-bar:active {  transform: translate(2px, 2px);
   background: var(--card);
   color: var(--card-foreground);
   border: none;
-  border-right: 3px solid var(--border);
+  border-right: var(--bw) solid var(--border);
   cursor: pointer;
 }
 
@@ -2565,7 +2591,7 @@ button.git-bar:active {  transform: translate(2px, 2px);
 /* cwd 输入行 + 最近使用目录下拉 */
 .cwd-row {
   display: flex;
-  gap: 8px;
+  gap: 6px;
   align-items: stretch;
 }
 
@@ -2576,7 +2602,7 @@ button.git-bar:active {  transform: translate(2px, 2px);
 
 .cwd-recent {
   margin-top: 8px;
-  border: 3px solid var(--border);
+  border: var(--bw) solid var(--border);
   background: var(--card);
   max-height: min(40dvh, 260px);
   overflow-y: auto;
@@ -2587,7 +2613,7 @@ button.git-bar:active {  transform: translate(2px, 2px);
   display: block;
   width: 100%;
   min-height: 44px;
-  padding: 10px 12px;
+  padding: 8px 9px;
   text-align: left;
   background: var(--card);
   color: var(--card-foreground);
@@ -2626,7 +2652,7 @@ button.git-bar:active {  transform: translate(2px, 2px);
   right: max(8px, env(safe-area-inset-right, 0px));
   z-index: 60;
   min-width: min(220px, calc(100vw - 16px));
-  border: 3px solid var(--border);
+  border: var(--bw) solid var(--border);
   background: var(--card);
   color: var(--card-foreground);
   box-shadow: var(--shadow-card, 4px 4px 0 0 var(--border));
@@ -2635,10 +2661,10 @@ button.git-bar:active {  transform: translate(2px, 2px);
 .action-menu-item {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   width: 100%;
   min-height: 44px;
-  padding: 10px 12px;
+  padding: 8px 9px;
   font-family: var(--nb-font-head);
   font-weight: 900;
   font-size: clamp(0.85rem, 1.2vw + 0.65rem, 1rem);
@@ -2663,13 +2689,13 @@ button.git-bar:active {  transform: translate(2px, 2px);
 /* git 面板 tabs */
 .git-tabs {
   display: flex;
-  gap: 8px;
+  gap: 6px;
   margin-bottom: 12px;
 }
 
 .git-tab {
   min-height: 40px;
-  padding: 6px 16px;
+  padding: 4px 12px;
   border: 2px solid var(--border);
   background: var(--muted);
   color: var(--muted-foreground);
@@ -2687,7 +2713,7 @@ button.git-bar:active {  transform: translate(2px, 2px);
 .diff-summary {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   margin: 2px 0 10px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12px;
@@ -2698,7 +2724,7 @@ button.git-bar:active {  transform: translate(2px, 2px);
 .diff-del { color: var(--diff-del-fg); font-weight: 800; }
 
 .diff-file {
-  border: 3px solid var(--border);
+  border: var(--bw) solid var(--border);
   box-shadow: var(--shadow-sm);
   background: var(--card);
   margin-bottom: 14px;
@@ -2707,8 +2733,8 @@ button.git-bar:active {  transform: translate(2px, 2px);
 .diff-file-head {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 7px 10px;
+  gap: 6px;
+  padding: 5px 8px;
   border-bottom: 2px solid var(--border);
   background: var(--accent);
   color: var(--accent-foreground);
@@ -2728,7 +2754,7 @@ button.git-bar:active {  transform: translate(2px, 2px);
 .diff-counts {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   white-space: nowrap;
 }
 
@@ -2741,7 +2767,7 @@ button.git-bar:active {  transform: translate(2px, 2px);
   min-width: max-content;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 13px;
-  line-height: 1.55;
+  line-height: 1.45;
 }
 
 .dl {
@@ -2787,17 +2813,17 @@ button.git-bar:active {  transform: translate(2px, 2px);
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
 }
 
 .log-item {
   display: flex;
-  gap: 10px;
+  gap: 8px;
   align-items: flex-start;
   border: 2px solid var(--border);
   background: var(--card);
   box-shadow: var(--shadow-xs);
-  padding: 9px 10px;
+  padding: 7px 8px;
 }
 
 .log-hash {
@@ -2808,7 +2834,7 @@ button.git-bar:active {  transform: translate(2px, 2px);
   background: var(--secondary);
   color: var(--secondary-foreground);
   border: 2px solid var(--border);
-  padding: 2px 6px;
+  padding: 2px 4px;
 }
 
 .log-main { min-width: 0; }
@@ -2833,16 +2859,16 @@ button.git-bar:active {  transform: translate(2px, 2px);
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
 }
 
 .branch-item {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   border: 2px solid var(--border);
   background: var(--card);
-  padding: 8px 10px;
+  padding: 6px 8px;
   min-height: 40px;
 }
 
@@ -2890,7 +2916,7 @@ button.git-bar:active {  transform: translate(2px, 2px);
   align-items: center;
   min-height: 30px;
   margin: 0 2px;
-  padding: 1px 6px;
+  padding: 1px 4px;
   border: 2px solid var(--border);
   border-radius: var(--nb-radius);
   background: var(--info);
@@ -2919,11 +2945,11 @@ button.git-bar:active {  transform: translate(2px, 2px);
   transform: translate(-50%, -50%);
   z-index: 40;
   display: flex;
-  gap: 8px;
-  padding: 8px;
+  gap: 6px;
+  padding: 6px;
   background: var(--card);
   color: var(--card-foreground);
-  border: 3px solid var(--border);
+  border: var(--bw) solid var(--border);
   border-radius: var(--nb-radius);
   box-shadow: var(--shadow-card);
   animation: nb-fade-up 150ms ease-out;
@@ -2931,7 +2957,7 @@ button.git-bar:active {  transform: translate(2px, 2px);
 
 .msg-menu-item {
   min-height: 40px;
-  padding: 8px 12px;
+  padding: 6px 9px;
   font-family: var(--nb-font-head);
   font-weight: 900;
   font-size: 12.5px;
@@ -2960,7 +2986,7 @@ button.git-bar:active {  transform: translate(2px, 2px);
   font-size: 11px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
-  padding: 1px 6px;
+  padding: 1px 4px;
   border: 2px solid var(--border);  background: var(--muted);
   color: var(--muted-foreground);
 }
@@ -2979,13 +3005,13 @@ button.git-bar:active {  transform: translate(2px, 2px);
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   z-index: 60;
   pointer-events: none;
 }
 
 .toast {
-  padding: 8px 14px;
+  padding: 6px 10px;
   font-family: var(--nb-font-head);
   font-weight: 900;
   font-size: 12.5px;
@@ -3052,7 +3078,7 @@ button.git-bar:active {  transform: translate(2px, 2px);
   font-size: 0.75rem; /* ≈11px */
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
-  padding: 1px 5px;
+  padding: 1px 4px;
   background: var(--warn);
   color: var(--primary-foreground);
   border: 2px solid var(--border);
@@ -3080,7 +3106,7 @@ button.git-bar:active {  transform: translate(2px, 2px);
 /* 超小屏（≤360px）：收紧头部间距让标题完整可读（触控目标仍 ≥44px） */
 @media (max-width: 360px) {
   .app-header {
-    gap: 4px;
+    gap: 3px;
   }
 
   .app-title {
@@ -3128,10 +3154,10 @@ button.git-bar:active {  transform: translate(2px, 2px);
 .quote-bar {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   margin-bottom: 8px;
   min-height: 44px;
-  padding: 2px 2px 2px 10px;
+  padding: 2px 2px 2px 8px;
   background: var(--muted);
   color: var(--muted-foreground);
   border: 2px solid var(--border);
@@ -3190,7 +3216,7 @@ button.git-bar:active {  transform: translate(2px, 2px);
   max-height: min(60vh, 480px);
   background: var(--card);
   color: var(--card-foreground);
-  border: 3px solid var(--border);
+  border: var(--bw) solid var(--border);
   border-radius: var(--nb-radius);
   box-shadow: var(--shadow-card);
   animation: nb-fade-up 180ms ease-out;
@@ -3207,8 +3233,8 @@ button.git-bar:active {  transform: translate(2px, 2px);
 .ft-head {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 4px 10px;
+  gap: 6px;
+  padding: 3px 8px;
   border-bottom: 2px solid var(--border);
 }
 
@@ -3244,7 +3270,7 @@ button.git-bar:active {  transform: translate(2px, 2px);
 
 .slash-hint,
 .ft-hint {
-  padding: 12px 10px;
+  padding: 9px 8px;
   font-size: 12.5px;
   color: var(--muted-foreground);
 }
@@ -3258,8 +3284,8 @@ button.git-bar:active {  transform: translate(2px, 2px);
 .slash-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 8px;
+  gap: 5px;
+  padding: 6px;
   overflow-y: auto;
 }
 
@@ -3267,10 +3293,10 @@ button.git-bar:active {  transform: translate(2px, 2px);
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 6px 8px;
+  gap: 5px 6px;
   width: 100%;
   min-height: 44px;
-  padding: 8px 10px;
+  padding: 6px 8px;
   text-align: left;
   background: var(--accent);
   color: var(--accent-foreground);
@@ -3297,7 +3323,7 @@ button.git-bar:active {  transform: translate(2px, 2px);
 
 .slash-tag {
   flex-shrink: 0;
-  padding: 1px 6px;
+  padding: 1px 4px;
   font-size: 10.5px;
   font-weight: 700;
   background: var(--info);
@@ -3336,7 +3362,7 @@ button.git-bar:active {  transform: translate(2px, 2px);
   align-items: center;
   flex-wrap: wrap;
   gap: 2px;
-  padding: 4px 10px;
+  padding: 3px 8px;
   border-bottom: 2px solid var(--border);
 }
 
@@ -3347,7 +3373,7 @@ button.git-bar:active {  transform: translate(2px, 2px);
 
 .ft-crumb {
   min-height: 44px;
-  padding: 4px 8px;
+  padding: 3px 6px;
   background: transparent;
   color: var(--foreground);
   border: 2px solid transparent;
@@ -3367,7 +3393,7 @@ button.git-bar:active {  transform: translate(2px, 2px);
   width: calc(100% - 20px);
   min-height: 44px;
   margin: 8px 10px;
-  padding: 8px 10px;
+  padding: 6px 8px;
   background: var(--card);
   color: var(--foreground);
   border: 2px solid var(--border);
@@ -3378,7 +3404,7 @@ button.git-bar:active {  transform: translate(2px, 2px);
 .ft-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 5px;
   padding: 0 10px 10px;
   overflow-y: auto;
 }
@@ -3391,10 +3417,10 @@ button.git-bar:active {  transform: translate(2px, 2px);
 .ft-file {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   width: 100%;
   min-height: 44px;
-  padding: 8px 10px;
+  padding: 6px 8px;
   text-align: left;
   background: var(--muted);
   color: var(--foreground);
@@ -3446,7 +3472,7 @@ button.git-bar:active {  transform: translate(2px, 2px);
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 6px;
   padding: 8px 10px calc(8px + var(--safe-bottom));
   border-top: 2px solid var(--border);
 }
@@ -3454,7 +3480,7 @@ button.git-bar:active {  transform: translate(2px, 2px);
 .ft-toggle,
 .ft-clear {
   min-height: 44px;
-  padding: 6px 10px;
+  padding: 4px 8px;
   background: var(--muted);
   color: var(--foreground);
   border: 2px solid var(--border);
@@ -3478,7 +3504,7 @@ button.git-bar:active {  transform: translate(2px, 2px);
 .ft-insert {
   margin-left: auto;
   min-height: 44px;
-  padding: 8px 16px;
+  padding: 6px 12px;
   background: var(--primary);
   color: var(--primary-foreground);
   border: 2px solid var(--border);
@@ -3515,14 +3541,14 @@ button.git-bar:active {  transform: translate(2px, 2px);
 .msg-images {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   margin-top: 8px;
 }
 
 /* markdown 引用块（引用回复渲染） */
 .md blockquote {
   margin: 6px 0;
-  padding: 4px 10px;
+  padding: 3px 8px;
   background: var(--muted);
   color: var(--muted-foreground);
   border-left: 4px solid var(--border);
@@ -3537,5 +3563,379 @@ button.git-bar:active {  transform: translate(2px, 2px);
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
+  }
+}
+/* ============================================================
+ * 导航框架（AppShell）：移动端 header + drawer / 大屏 sidebar
+ * ============================================================ */
+.app-shell {
+  min-height: 100vh;
+}
+
+/* 固定顶部 header（移动端）：汉堡 + 标题 + 搜索 + 通知铃铛 */
+.shell-header {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: calc(8px + var(--safe-top)) clamp(10px, 3vw, 16px) 8px;
+  background: var(--primary);
+  color: var(--primary-foreground);
+  border-bottom: var(--bw) solid var(--border);
+}
+
+.shell-title {
+  font-family: var(--nb-font-head);
+  font-weight: 900;
+  font-size: clamp(0.95rem, 4vw, 1.15rem);
+  line-height: 1;
+  margin: 0;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shell-burger-slot {
+  width: 8px;
+  flex: 0 0 auto;
+}
+
+/* 一级菜单列表（drawer / sidebar 共用） */
+.nav-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 44px;
+  padding: 6px 10px;
+  font-family: var(--nb-font-head);
+  font-weight: 900;
+  font-size: 0.95rem;
+  text-align: left;
+  background: var(--card);
+  color: var(--card-foreground);
+  border: var(--bw) solid var(--border);
+  box-shadow: var(--nb-shadow-sm);
+  cursor: pointer;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+
+.nav-item:hover {
+  transform: translate(-1px, -1px);
+  box-shadow: var(--nb-shadow-hover);
+}
+
+.nav-item:active {
+  transform: translate(1px, 1px);
+  box-shadow: none;
+}
+
+/* 当前页：亮黄撞色 + 硬阴影（野兽派选中态） */
+.nav-item.active {
+  background: var(--primary);
+  color: var(--primary-foreground);
+}
+
+.nav-icon {
+  font-size: 1.05rem;
+  line-height: 1;
+}
+
+/* 移动端抽屉（<768px）：220ms 开合，reduced-motion 由全局降级块接管 */
+.drawer-root {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.drawer-root.open {
+  visibility: visible;
+  pointer-events: auto;
+}
+
+.drawer-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  opacity: 0;
+  transition: opacity 220ms ease;
+}
+
+.drawer-root.open .drawer-overlay {
+  opacity: 1;
+}
+
+.drawer-panel {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: min(78vw, 250px);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: calc(12px + var(--safe-top)) 12px calc(12px + var(--safe-bottom));
+  background: var(--background);
+  border-right: var(--bw) solid var(--border);
+  box-shadow: var(--nb-shadow-hover);
+  transform: translateX(-100%);
+  transition: transform 220ms ease;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.drawer-root.open .drawer-panel {
+  transform: translateX(0);
+}
+
+.drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.drawer-brand,
+.sidebar-brand {
+  font-family: var(--nb-font-head);
+  font-weight: 900;
+  font-size: 1.05rem;
+  padding: 6px 10px;
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  border: var(--bw) solid var(--border);
+  box-shadow: var(--nb-shadow-sm);
+}
+
+.drawer-create,
+.sidebar-create {
+  margin-top: auto;
+}
+
+/* 大屏 sidebar（≥768px）：常驻固定左侧 */
+.shell-sidebar {
+  display: none;
+}
+
+@media (min-width: 768px) {
+  .shell-sidebar {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: 220px;
+    padding: 16px 12px calc(16px + var(--safe-bottom));
+    background: var(--card);
+    border-right: var(--bw) solid var(--border);
+    overflow-y: auto;
+    z-index: 60;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .drawer-root {
+    display: none;
+  }
+
+  .shell-header {
+    margin-left: 220px;
+    padding-top: calc(12px + var(--safe-top));
+  }
+
+  /* 内容区居中限宽（sidebar 右侧剩余空间内居中） */
+  .shell-content {
+    margin-left: 220px;
+  }
+}
+
+.shell-content {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 12px clamp(12px, 3.5vw, 24px) calc(20px + var(--safe-bottom));
+}
+
+.page {
+  display: block;
+}
+
+/* ============================================================
+ * 会话管理页 / 树形子代理行
+ * ============================================================ */
+.sessions-toolbar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.more-link {
+  margin: 8px 0 4px;
+}
+
+/* 树形 item：主行 + 展开按钮 + 缩进子行（展开高度已计入虚拟窗口） */
+.session-tree-item {
+  position: relative;
+}
+
+.session-tree-item .session-head {
+  /* 右上角展开按钮热区预留，不遮时间 */
+  padding-right: 62px;
+}
+
+.session-expand {
+  position: absolute;
+  right: 6px;
+  top: 6px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: 44px;
+  min-width: 44px;
+  padding: 2px 8px;
+  font-family: var(--nb-font-head);
+  font-weight: 900;
+  font-size: 11px;
+  background: var(--accent);
+  color: var(--accent-foreground);
+  border: var(--bw) solid var(--border);
+  box-shadow: var(--nb-shadow-xs);
+  cursor: pointer;
+}
+
+.session-expand:active {
+  transform: translate(1px, 1px);
+  box-shadow: none;
+}
+
+/* 子代理子行：缩进 + 父子连线（像文件树） */
+.session-tree-item .session-row.sub-row {
+  position: relative;
+}
+
+.session-tree-item .session-row.sub-row::before {
+  content: "";
+  position: absolute;
+  left: 10px;
+  top: -2px;
+  bottom: var(--row-gap);
+  border-left: var(--bw) solid var(--border);
+}
+
+.session-tree-item .session-row.sub-row:last-child::before {
+  bottom: calc(var(--row-gap) + 40%);
+}
+
+.session-tree-item .session-row.sub-row .session-item {
+  position: relative;
+  margin-left: 26px;
+  width: calc(100% - 26px);
+  background: var(--muted);
+}
+
+.session-tree-item .session-row.sub-row .session-item::before {
+  content: "";
+  position: absolute;
+  left: -16px;
+  top: 20px;
+  width: 14px;
+  border-top: var(--bw) solid var(--border);
+}
+
+.session-tree-item .session-row.sub-row .session-summary {
+  -webkit-line-clamp: 1;
+}
+
+/* ============================================================
+ * 设置页
+ * ============================================================ */
+.settings-panel-page {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.settings-section {
+  padding: var(--pad-card);
+}
+
+.settings-about {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.settings-about-name {
+  font-family: var(--nb-font-head);
+  font-weight: 900;
+  font-size: 1.05rem;
+}
+
+.settings-about-version {
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+}
+
+/* ============================================================
+ * 紧凑野兽派密度断点：<768px 再紧一档（阴影 2px / padding 再收 / 字号 clamp 下限）
+ * ≥768px 保持上面的标准密度
+ * ============================================================ */
+@media (max-width: 767px) {
+  :root {
+    --nb-shadow-md: 2px 2px 0 0 var(--border);
+    --nb-shadow-hover: 2px 2px 0 0 var(--border);
+    --nb-shadow-card: 2px 2px 0 0 var(--border);
+    --nb-shadow-btn: 2px 2px 0 0 var(--border);
+    --nb-shadow-xl: 3px 3px 0 0 var(--border);
+    --nb-shadow-2xl: 3px 3px 0 0 var(--border);
+    --pad-card: 7px;
+    --pad-btn-x: 10px;
+    --pad-btn-y: 5px;
+    --row-h: 112px;
+    --row-h-sub: 66px;
+    --row-gap: 8px;
+  }
+
+  html,
+  body {
+    /* rem 基准降一档：clamp() 字号整体取下限，纵向空间多留给内容 */
+    font-size: 14px;
+  }
+
+  .shell-header {
+    gap: 6px;
+    padding: calc(6px + var(--safe-top)) 8px 6px;
+  }
+
+  .shell-content {
+    padding: 8px 10px calc(16px + var(--safe-bottom));
+  }
+
+  .session-tree-item .session-head {
+    padding-right: 58px;
+  }
+}
+
+/* 触控底线：粗指针设备按钮热区不因紧凑化而跌破 44px */
+@media (pointer: coarse) {
+  button {
+    min-height: 44px;
   }
 }

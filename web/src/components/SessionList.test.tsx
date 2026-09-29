@@ -2,6 +2,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SessionSummary } from "../api/types";
+import { filterSessionsByTab } from "../utils/sessionTabs";
 import { SessionList, SESSION_ITEM_HEIGHT, sortSessions } from "./SessionList";
 
 declare global {
@@ -347,5 +348,109 @@ describe("SessionList 子代理区分（isSubAgent）", () => {
       rows[0].dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ id: "s1" }));
+  });
+});
+
+describe("SessionList 子代理树形（parentSessionId 挂父会话下）", () => {
+  const parent = makeSession({ id: "p1", name: "父会话甲", updatedAt: new Date(NOW - 60_000).toISOString() });
+  const kid1 = makeSession({
+    id: "k1",
+    name: "developer#aaa111",
+    isSubAgent: true,
+    parentSessionId: "p1",
+    updatedAt: new Date(NOW - 30_000).toISOString(),
+  });
+  const kid2 = makeSession({
+    id: "k2",
+    name: "acceptance-reviewer#bbb222",
+    isSubAgent: true,
+    parentSessionId: "p1",
+    updatedAt: new Date(NOW - 40_000).toISOString(),
+  });
+
+  it("主行带展开按钮（有子时），展开后子代理缩进行渲染在父行下", () => {
+    const el = render(<SessionList sessions={[parent, kid1, kid2]} onSelect={() => {}} now={NOW} />);
+    const toggle = el.querySelector(".session-expand") as HTMLButtonElement;
+    expect(toggle).not.toBeNull();
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    // 默认收起：子行不渲染
+    expect(el.querySelectorAll(".session-row.sub-row")).toHaveLength(0);
+    act(() => {
+      toggle.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    const subRows = el.querySelectorAll(".session-row.sub-row");
+    expect(subRows).toHaveLength(2);
+    // 子代理 🤖 徽章保留
+    expect(el.querySelectorAll(".session-row.sub-row .badge.subagent")).toHaveLength(2);
+    expect(el.textContent).toContain("developer#aaa111");
+    expect(el.textContent).toContain("acceptance-reviewer#bbb222");
+  });
+
+  it("折叠/展开状态 localStorage 持久（重挂载仍展开）", () => {
+    localStorage.removeItem("agent-hub.sessions.expanded");
+    const el = render(<SessionList sessions={[parent, kid1]} onSelect={() => {}} now={NOW} />);
+    act(() => {
+      (el.querySelector(".session-expand") as HTMLButtonElement).dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(localStorage.getItem("agent-hub.sessions.expanded")).toContain("p1");
+    // 重挂载（模拟页面往返）
+    act(() => {
+      root?.unmount();
+    });
+    container?.remove();
+    const el2 = render(<SessionList sessions={[parent, kid1]} onSelect={() => {}} now={NOW} />);
+    expect(el2.querySelectorAll(".session-row.sub-row")).toHaveLength(1);
+    localStorage.removeItem("agent-hub.sessions.expanded");
+  });
+
+  it("未归组子代理（无 parentSessionId）仍走 🤖 兜底折叠分组", () => {
+    const orphan = makeSession({ id: "o1", name: "developer#ccc333", isSubAgent: true, parentSessionId: null });
+    const el = render(<SessionList sessions={[parent, orphan]} onSelect={() => {}} now={NOW} />);
+    expect(el.querySelector(".session-expand")).toBeNull();
+    expect(el.querySelector(".subagent-toggle")).not.toBeNull();
+  });
+});
+
+describe("sortSessions：子代理跟随父会话 + 全部 tab 优先级", () => {
+  const iso = (offsetMin: number) => new Date(NOW - offsetMin * 60_000).toISOString();
+
+  it("已归组子代理不单独占优先级位：随父会话位置（组内主行在前）", () => {
+    const input = [
+      makeSession({ id: "plain", status: "idle", updatedAt: iso(1) }),
+      makeSession({ id: "p-attn", status: "idle", updatedAt: iso(30) }),
+      makeSession({ id: "sub-run", status: "running", isSubAgent: true, parentSessionId: "p-attn", updatedAt: iso(0) }),
+    ];
+    const sorted = sortSessions(input, {
+      attentionIds: new Set(["p-attn"]),
+      isRunning: (s) => s.status === "running",
+    });
+    // 父是等你处理 → 整组排最前；子代理虽 running 不占"工作中"位
+    expect(sorted.map((s) => s.id)).toEqual(["p-attn", "sub-run", "plain"]);
+  });
+
+  it("「全部」tab（无过滤）也按 等你处理 > 工作中 > 其他 排序", () => {
+    const sessions = [
+      makeSession({ id: "other-new", status: "idle", updatedAt: iso(1) }),
+      makeSession({ id: "run-old", status: "running", updatedAt: iso(30) }),
+      makeSession({ id: "attn-old", status: "idle", updatedAt: iso(60) }),
+    ];
+    const attentionIds = new Set(["attn-old"]);
+    // 全部 tab = filterSessionsByTab 原样返回，排序仍由 sortSessions 生效
+    const all = filterSessionsByTab(sessions, "all", { attentionIds, doneIds: new Set() });
+    const sorted = sortSessions(all, { attentionIds, isRunning: (s) => s.status === "running" });
+    expect(sorted.map((s) => s.id)).toEqual(["attn-old", "run-old", "other-new"]);
+  });
+
+  it("子代理树内组内 updatedAt desc + id tiebreaker", () => {
+    const input = [
+      makeSession({ id: "b", isSubAgent: true, parentSessionId: "p", updatedAt: iso(5) }),
+      makeSession({ id: "a", isSubAgent: true, parentSessionId: "p", updatedAt: iso(5) }),
+      makeSession({ id: "c", isSubAgent: true, parentSessionId: "p", updatedAt: iso(1) }),
+      makeSession({ id: "p", updatedAt: iso(9) }),
+    ];
+    const sorted = sortSessions(input);
+    // 组内 updatedAt desc（c 最新）+ id tiebreaker（a、b 同刻 a 在前）
+    expect(sorted.map((s) => s.id)).toEqual(["p", "c", "a", "b"]);
   });
 });

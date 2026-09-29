@@ -14,6 +14,7 @@ import {
   hasSubAgentPreambleMarker,
   isSubAgentName,
   isSubAgentSession,
+  parentSessionIdFromPath,
   MAX_MESSAGE_IMAGES,  parseSessionJsonl,
   scanSessions,
   selectActiveBranch,
@@ -358,4 +359,89 @@ describe("scan: 图片内容块（ImageContent → MessageDto.images）", () => 
     assert.deepEqual(messages[1].images, [{ url: "https://x.test/c.png", alt: null }]);
     // 无图消息字段缺省（向后兼容）
     assert.equal(messages[0].thinking, null);  });
+});
+
+describe("scan: 父子关联（parentSessionId）", () => {
+  it("parentSessionIdFromPath：解析 pi header.parentSession 文件名末段", () => {
+    assert.equal(
+      parentSessionIdFromPath(
+        "/Users/me/.pi/agent/sessions/--Users-me-x--/2026-09-29T08-08-16-291Z_01a0ec35-12a2-7707-9635-73fe933b060e.jsonl",
+      ),
+      "01a0ec35-12a2-7707-9635-73fe933b060e",
+    );
+    // Windows 路径分隔符同样兼容
+    assert.equal(parentSessionIdFromPath("C:\\x\\2026-01-01T00-00-00-000Z_abc123.jsonl"), "abc123");
+  });
+
+  it("parentSessionIdFromPath：无效输入返回 null（不抛错）", () => {
+    assert.equal(parentSessionIdFromPath(undefined), null);
+    assert.equal(parentSessionIdFromPath(null), null);
+    assert.equal(parentSessionIdFromPath(""), null);
+    assert.equal(parentSessionIdFromPath("/tmp/无文件名规律.txt"), null);
+    assert.equal(parentSessionIdFromPath("/tmp/x.jsonl"), null);
+  });
+
+  it("buildSessionSummary：header.parentSession 注入 parentSessionId；缺失为 null", () => {
+    const childHeader = {
+      ...header,
+      id: "sess-child",
+      parentSession: "/Users/me/.pi/agent/sessions/--x--/2026-02-18T09-00-00-000Z_sess-0001.jsonl",
+    };
+    const child = buildSessionSummary(
+      "/tmp/child.jsonl",
+      parseSessionJsonl([JSON.stringify(childHeader), entriesLines[0]].join("\n")),
+      Date.parse("2026-02-18T10:00:01.000Z"),
+    );
+    assert.equal(child?.parentSessionId, "sess-0001");
+
+    const orphan = buildSessionSummary(
+      "/tmp/x.jsonl",
+      parseSessionJsonl([JSON.stringify(header), entriesLines[0]].join("\n")),
+      Date.parse("2026-02-18T10:00:01.000Z"),
+    );
+    assert.equal(orphan?.parentSessionId, null);
+  });
+
+  it("scanSessions：子代理会话带 parentSessionId 且父子同批可见（树形分组基础）", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agent-hub-parent-"));
+    try {
+      const ts = "2026-02-18T12:00:00.000Z";
+      // parentSession 指向真实命名格式的父文件（`<timestamp>_<sessionId>.jsonl`）
+      const parentFile = join(dir, "2026-02-18T11-00-00-000Z_p-1.jsonl");
+      await writeFile(
+        parentFile,
+        [
+          JSON.stringify({ type: "session", version: 3, id: "p-1", timestamp: ts, cwd: "/tmp/x" }),
+          JSON.stringify({ type: "message", id: "m1", parentId: null, timestamp: ts, message: { role: "user", content: "hi" } }),
+        ].join("\n"),
+        "utf8",
+      );
+      await writeFile(
+        join(dir, "child.jsonl"),
+        [
+          JSON.stringify({
+            type: "session",
+            version: 3,
+            id: "c-1",
+            timestamp: ts,
+            cwd: "/tmp/x",
+            parentSession: parentFile,
+          }),
+          JSON.stringify({ type: "session_info", id: "si", parentId: null, timestamp: ts, name: "developer#abc123" }),
+          JSON.stringify({ type: "message", id: "m2", parentId: null, timestamp: ts, message: { role: "user", content: "sub" } }),
+        ].join("\n"),
+        "utf8",
+      );
+      const items = await scanSessions(dir);
+      const child = items.find((x) => x.id === "c-1");
+      assert.ok(child);
+      assert.equal(child.parentSessionId, "p-1");
+      assert.equal(child.isSubAgent, true);
+      const parent = items.find((x) => x.id === "p-1");
+      assert.equal(parent?.parentSessionId, null);
+      assert.equal(parent?.isSubAgent, false);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });

@@ -1,19 +1,54 @@
 /**
  * 极简客户端路由（history API）：
- *   "/"            面板
+ *   "/"            工作台（首页：概览 + 本周统计 + 工作中/等你处理精华）
+ *   "/sessions"    会话（会话列表 + tab + 新建/搜索）
+ *   "/system"      系统（指标 + 环境）
+ *   "/settings"    设置（主题/提醒通道 + 关于）
  *   "/s/:id"       chat（可带 ?q=&m= 定位参数）
  *   "/s/:id/tree"  会话分支树
  * 不引入 react-router，控制依赖体积。
  */
 
-export type Route = { name: "home" } | { name: "chat"; id: string } | { name: "tree"; id: string };
+export type Route =
+  | { name: "home" }
+  | { name: "sessions" }
+  | { name: "system" }
+  | { name: "settings" }
+  | { name: "chat"; id: string }
+  | { name: "tree"; id: string };
+
+/** 一级菜单路径（导航/深链用） */
+export const HOME_PATH = "/";
+export const SESSIONS_PATH = "/sessions";
+export const SYSTEM_PATH = "/system";
+export const SETTINGS_PATH = "/settings";
 
 export function parseRoute(pathname: string): Route {
   const tree = pathname.match(/^\/s\/([^/]+)\/tree\/?$/);
   if (tree) return { name: "tree", id: decodeURIComponent(tree[1]) };
   const m = pathname.match(/^\/s\/([^/]+)\/?$/);
   if (m) return { name: "chat", id: decodeURIComponent(m[1]) };
+  const normalized = pathname.replace(/\/+$/, "") || "/";
+  if (normalized === SESSIONS_PATH) return { name: "sessions" };
+  if (normalized === SYSTEM_PATH) return { name: "system" };
+  if (normalized === SETTINGS_PATH) return { name: "settings" };
   return { name: "home" };
+}
+
+/** 一级菜单（会话外页面）路径（导航高亮 / 返回目标判定用） */
+export function listPathOf(route: Route): string {
+  switch (route.name) {
+    case "sessions":
+      return SESSIONS_PATH;
+    case "system":
+      return SYSTEM_PATH;
+    case "settings":
+      return SETTINGS_PATH;
+    case "home":
+      return HOME_PATH;
+    default:
+      return HOME_PATH;
+  }
 }
 
 export interface ChatLocate {
@@ -45,9 +80,30 @@ export function currentLocate(): ChatLocate {
   return { q: q === "" ? undefined : q, messageId: m === "" ? undefined : m };
 }
 
+/**
+ * chat 页返回目标 = 来时的列表页（工作台 / 会话 / 系统 / 设置）。
+ * 模块级单例：进入 chat/tree 前记录来源列表路径；深链直达 chat 时回落 "/"。
+ */
+let chatReturnTo: string = HOME_PATH;
+
+function isListPath(path: string): boolean {
+  const pathname = path.split("?")[0].replace(/\/+$/, "") || "/";
+  return [HOME_PATH, SESSIONS_PATH, SYSTEM_PATH, SETTINGS_PATH].includes(pathname);
+}
+
+/** chat/树页返回按钮的目标路径（浏览器后退仍走 history，不受影响） */
+export function chatReturnPath(): string {
+  return chatReturnTo;
+}
+
 export function navigate(path: string): void {
   const current = `${window.location.pathname}${window.location.search}`;
   if (current === path) return;
+  // 从列表页进入 chat/tree 时记忆来源（含 ?tab= 等参数，chat 返回目标 = 来时列表页）
+  const targetPath = path.split("?")[0];
+  if (isListPath(current) && /^\/s\//.test(targetPath)) {
+    chatReturnTo = current;
+  }
   window.history.pushState({}, "", path);
   window.dispatchEvent(new PopStateEvent("popstate"));
 }

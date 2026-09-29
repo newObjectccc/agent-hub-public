@@ -318,6 +318,9 @@ export function buildClaudeSessionSummary(
     sessionFile: file,
     // 与 pi 判定同口径：命名规则 `<type>#<hex>` 或 preamble 结构标记（消息正文提及不算）
     isSubAgent: isSubAgentName(parsed.name) || hasSubAgentPreambleMarker(parsed.preamble),
+    // claude 子代理（Task sidechain）与主消息同存一个 transcript，无独立会话文件父子关系；
+    // transcript 头也无 parent 字段 → 恒 null（前端归"未归组子代理"兜底分组）
+    parentSessionId: null,
   };
 }
 
