@@ -1,0 +1,110 @@
+/**
+ * 系统探测：pi / tmux / ttyd / tailscale 可用性与版本（跨平台）。
+ * Windows 用 where，类 Unix 用 which；检测失败一律 available:false，不是错误。
+ */
+import { execFile } from "node:child_process";
+import type { SystemInfo, ToolAvailability, TailscaleStatus } from "./types.js";
+
+export interface ProbeOptions {
+  sessionDir: string;
+  workspaceRoot: string;
+  /** SDK 内置版本（PATH 无 pi 时作为 pi 可用性兜底） */
+  sdkVersion?: string;
+  execFileFn?: typeof execFile;
+  timeoutMs?: number;
+}
+
+function run(
+  execFileFn: typeof execFile,
+  command: string,
+  args: string[],
+  timeoutMs: number,
+): Promise<{ ok: boolean; stdout: string; stderr: string }> {
+  return new Promise((resolve) => {
+    try {
+      execFileFn(command, args, { timeout: timeoutMs, windowsHide: true }, (error, stdout, stderr) => {
+        resolve({ ok: error === null, stdout: String(stdout ?? ""), stderr: String(stderr ?? "") });
+      });
+    } catch {
+      resolve({ ok: false, stdout: "", stderr: "" });
+    }
+  });
+}
+
+/** 从版本输出中提取首个版本号（如 3.4 / 0.87.1 / 1.76.0） */
+export function extractVersion(output: string): string | null {
+  const match = /(\d+\.\d+(?:\.\d+)?)/.exec(output);
+  return match ? match[1] : null;
+}
+
+const NOT_AVAILABLE: ToolAvailability = { available: false, version: null };
+
+async function probeTool(
+  execFileFn: typeof execFile,
+  bin: string,
+  versionArgs: string[],
+  timeoutMs: number,
+): Promise<ToolAvailability> {
+  const isWindows = process.platform === "win32";
+  const finder = isWindows ? "where" : "which";
+  const located = await run(execFileFn, finder, [bin], timeoutMs);
+  if (!located.ok) return { ...NOT_AVAILABLE };
+  const version = await run(execFileFn, bin, versionArgs, timeoutMs);
+  if (!version.ok) {
+    // 找得到但跑不起来：仍视为可用（版本未知）
+    return { available: true, version: null };
+  }
+  return { available: true, version: extractVersion(version.stdout || version.stderr) };
+}
+
+async function probeTailscale(execFileFn: typeof execFile, timeoutMs: number): Promise<TailscaleStatus> {
+  const base = await probeTool(execFileFn, "tailscale", ["version"], timeoutMs);
+  if (!base.available) {
+    return { available: false, version: null, loggedIn: false, hostname: null };
+  }
+  let loggedIn = false;
+  let hostname: string | null = null;
+  const status = await run(execFileFn, "tailscale", ["status", "--json"], timeoutMs);
+  if (status.ok) {
+    try {
+      const parsed = JSON.parse(status.stdout) as {
+        BackendState?: string;
+        Self?: { HostName?: string };
+      };
+      loggedIn = parsed.BackendState === "Running";
+      hostname = typeof parsed.Self?.HostName === "string" ? parsed.Self.HostName : null;
+    } catch {
+      // status 解析失败不影响可用性
+    }
+  }
+  return { available: true, version: base.version, loggedIn, hostname };
+}
+
+export async function probeSystem(options: ProbeOptions): Promise<SystemInfo> {
+  const execFileFn = options.execFileFn ?? execFile;
+  const timeoutMs = options.timeoutMs ?? 5_000;
+
+  const [tmux, ttyd, tailscale, piBin] = await Promise.all([
+    probeTool(execFileFn, "tmux", ["-V"], timeoutMs),
+    probeTool(execFileFn, "ttyd", ["--version"], timeoutMs),
+    probeTailscale(execFileFn, timeoutMs),
+    probeTool(execFileFn, "pi", ["--version"], timeoutMs),
+  ]);
+
+  // PATH 找不到 pi 但 SDK 已加载 → 核心能力可用（in-process 驱动）
+  const pi: ToolAvailability = piBin.available
+    ? piBin
+    : options.sdkVersion
+      ? { available: true, version: options.sdkVersion }
+      : { ...NOT_AVAILABLE };
+
+  return {
+    platform: process.platform,
+    pi,
+    tmux,
+    ttyd,
+    tailscale,
+    sessionDir: options.sessionDir,
+    workspaceRoot: options.workspaceRoot,
+  };
+}
