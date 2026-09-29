@@ -1,6 +1,8 @@
 import type { KpiCard as KpiCardType } from "../api/types";
 import { relativeTime } from "../utils/relativeTime";
 import { TrendIcon } from "./icons";
+import { Card } from "./ui/card";
+import { cn } from "@/lib/utils";
 
 /** KPI 卡片：title/value/trend/delta/updatedAt；点击跳 link；error 显示灰色错误态 */
 export function KpiCard({ card }: { card: KpiCardType }) {
@@ -23,14 +25,15 @@ export function KpiCard({ card }: { card: KpiCardType }) {
     </>
   );
 
-  const className = `card kpi-card${card.error ? " error" : ""}${card.link && !card.error ? " clickable" : ""}`;
+  const className = cn("card kpi-card", card.error && "error", card.link && !card.error && "clickable");
 
   if (card.link && !card.error) {
+    // 链接卡片保持 <a target=_blank> 原语义，视觉与 Card 同源（.card/.kpi-card）
     return (
       <a className={className} href={card.link} target="_blank" rel="noreferrer">
         {content}
       </a>
     );
   }
-  return <div className={className}>{content}</div>;
+  return <Card className={className}>{content}</Card>;
 }

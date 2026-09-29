@@ -7,6 +7,8 @@ import { PullToRefresh } from "../components/PullToRefresh";
 import { SessionList } from "../components/SessionList";
 import { SystemStatusBar } from "../components/SystemStatus";
 import { RefreshIcon } from "../components/icons";
+import { Button } from "../components/ui/button";
+import { Card } from "../components/ui/card";
 import { chatPath, navigate } from "../utils/router";
 
 export function HomePage() {
@@ -45,15 +47,17 @@ export function HomePage() {
     <div className="app">
       <header className="app-header">
         <h1 className="app-title">Agent Hub</h1>
-        <button
+        <Button
           type="button"
-          className="ghost"
+          variant="secondary"
+          size="icon"
+          className="min-h-[44px] min-w-[44px]"
           onClick={() => void refresh()}
           aria-label="刷新"
           disabled={refreshing}
         >
           <RefreshIcon />
-        </button>
+        </Button>
       </header>
 
       <SystemStatusBar system={system} />
@@ -62,12 +66,12 @@ export function HomePage() {
       {kpiError ? (
         <div className="error-banner">
           <span>{kpiError}</span>
-          <button type="button" className="ghost" onClick={() => void refresh()}>
+          <Button type="button" variant="secondary" size="sm" onClick={() => void refresh()}>
             重试
-          </button>
+          </Button>
         </div>
       ) : cards.length === 0 ? (
-        <div className="card empty">{loaded ? "暂无 KPI 卡片" : "加载中…"}</div>
+        <Card className="card empty">{loaded ? "暂无 KPI 卡片" : "加载中…"}</Card>
       ) : (
         <div className="kpi-grid">
           {cards.map((card) => (
@@ -84,12 +88,12 @@ export function HomePage() {
         {listError ? (
           <div className="error-banner">
             <span>{listError}</span>
-            <button type="button" className="ghost" onClick={() => void refresh()}>
+            <Button type="button" variant="secondary" size="sm" onClick={() => void refresh()}>
               重试
-            </button>
+            </Button>
           </div>
         ) : sessions.length === 0 ? (
-          <div className="card empty">{loaded ? "暂无会话，点击下方新建" : "加载中…"}</div>
+          <Card className="card empty">{loaded ? "暂无会话，点击下方新建" : "加载中…"}</Card>
         ) : (
           <SessionList sessions={sessions} onSelect={(s) => navigate(chatPath(s.id))} />
         )}

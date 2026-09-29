@@ -56,7 +56,7 @@ export function PullToRefresh({ onRefresh, refreshing, children, thresholdPx = 7
       onTouchCancel={onTouchEnd}
     >
       <div className="ptr-indicator" style={{ height: pull, opacity: refreshing ? 1 : pull / thresholdPx }}>
-        {refreshing ? "刷新中…" : pull >= thresholdPx ? "松开刷新" : "下拉刷新"}
+        <span className="ptr-pill">{refreshing ? "刷新中…" : pull >= thresholdPx ? "松开刷新" : "下拉刷新"}</span>
       </div>
       <div style={{ transform: refreshing ? undefined : `translateY(${pull}px)` }}>{children}</div>
     </div>

@@ -7,6 +7,8 @@ import { useSessionSocket } from "../hooks/useSessionSocket";
 import { MessageBubble } from "../components/MessageBubble";
 import { StatusBadge } from "../components/StatusBadge";
 import { BackIcon } from "../components/icons";
+import { Button } from "../components/ui/button";
+import { Textarea } from "../components/ui/textarea";
 import { navigate } from "../utils/router";
 
 /**
@@ -170,14 +172,16 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
   return (
     <div className="chat-page">
       <header className="chat-header">
-        <button
+        <Button
           type="button"
+          variant="outline"
+          size="icon"
           className="back"
           onClick={() => navigate("/")}
           aria-label="返回面板"
         >
           <BackIcon />
-        </button>
+        </Button>
         <div className="chat-title">
           <div className="name">{session?.name ?? sessionId}</div>
           <div className="cwd">{session?.cwd ?? ""}</div>
@@ -192,9 +196,9 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
         {loadError && (
           <div className="error-banner">
             <span>{loadError}</span>
-            <button type="button" className="ghost" onClick={() => void loadSession()}>
+            <Button type="button" variant="secondary" size="sm" onClick={() => void loadSession()}>
               重试
-            </button>
+            </Button>
           </div>
         )}
         {!loading && !loadError && messages.length === 0 && (
@@ -218,7 +222,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
           <div className="typing-indicator">连接断开，重连中…（历史消息不会丢）</div>
         )}
         <div className="chat-input-row">
-          <textarea
+          <Textarea
             placeholder="输入消息…（Enter 发送，Shift+Enter 换行）"
             value={input}
             rows={1}
@@ -232,13 +236,13 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
             aria-label="消息输入框"
           />
           {status === "running" ? (
-            <button type="button" className="danger" onClick={() => void doAbort()}>
+            <Button type="button" variant="destructive" onClick={() => void doAbort()}>
               中止
-            </button>
+            </Button>
           ) : (
-            <button type="button" onClick={() => void doSend()} disabled={sending || !input.trim()}>
+            <Button type="button" onClick={() => void doSend()} disabled={sending || !input.trim()}>
               发送
-            </button>
+            </Button>
           )}
         </div>
       </footer>

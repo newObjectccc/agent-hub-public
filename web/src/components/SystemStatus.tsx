@@ -1,4 +1,5 @@
 import type { SystemStatus } from "../api/types";
+import { Card } from "./ui/card";
 
 interface ChipProps {
   label: string;
@@ -23,13 +24,13 @@ function Chip({ label, available, detail }: ChipProps) {
 export function SystemStatusBar({ system }: { system: SystemStatus | null }) {
   if (!system) {
     return (
-      <div className="card sysbar">
+      <Card className="card sysbar">
         <span className="hint-text">系统状态加载中…</span>
-      </div>
+      </Card>
     );
   }
   return (
-    <div className="card sysbar" aria-label="系统状态">
+    <Card className="card sysbar" aria-label="系统状态">
       <Chip
         label="pi"
         available={system.pi?.available === true}
@@ -48,6 +49,6 @@ export function SystemStatusBar({ system }: { system: SystemStatus | null }) {
             : null
         }
       />
-    </div>
+    </Card>
   );
 }

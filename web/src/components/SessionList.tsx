@@ -1,6 +1,7 @@
 import type { SessionSummary } from "../api/types";
 import { relativeTime } from "../utils/relativeTime";
 import { StatusBadge } from "./StatusBadge";
+import { Button } from "./ui/button";
 
 export interface SessionListProps {
   sessions: SessionSummary[];
@@ -30,7 +31,7 @@ export function SessionList({ sessions, onSelect, now }: SessionListProps) {
   return (
     <div className="session-list" role="list">
       {sorted.map((s) => (
-        <button
+        <Button
           key={s.id}
           type="button"
           role="listitem"
@@ -46,7 +47,7 @@ export function SessionList({ sessions, onSelect, now }: SessionListProps) {
             {s.cwd}
           </div>
           <div className="session-summary">{summaryOf(s)}</div>
-        </button>
+        </Button>
       ))}
     </div>
   );

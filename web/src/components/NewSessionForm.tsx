@@ -1,6 +1,9 @@
 import { useState } from "react";
 import { api } from "../api/client";
 import type { SessionSummary } from "../api/types";
+import { Button } from "./ui/button";
+import { Card } from "./ui/card";
+import { Input } from "./ui/input";
 
 export interface NewSessionFormProps {
   onCreated: (session: SessionSummary) => void;
@@ -37,22 +40,22 @@ export function NewSessionForm({ onCreated }: NewSessionFormProps) {
 
   if (!open) {
     return (
-      <button type="button" onClick={() => setOpen(true)}>
+      <Button type="button" onClick={() => setOpen(true)}>
         + 新建会话
-      </button>
+      </Button>
     );
   }
 
   return (
-    <div className="card form-card">
-      <input
+    <Card className="card form-card">
+      <Input
         placeholder="工作目录 cwd（绝对路径，如 /Users/me/Workspace/proj）"
         value={cwd}
         onChange={(e) => setCwd(e.target.value)}
         aria-label="工作目录"
       />
       <div className="form-row">
-        <input
+        <Input
           placeholder="会话名称（可选）"
           value={name}
           onChange={(e) => setName(e.target.value)}
@@ -61,12 +64,12 @@ export function NewSessionForm({ onCreated }: NewSessionFormProps) {
       </div>
       {error && <div className="error-text">{error}</div>}
       <div className="form-row">
-        <button type="button" onClick={submit} disabled={busy}>
+        <Button type="button" onClick={submit} disabled={busy}>
           {busy ? "创建中…" : "创建"}
-        </button>
-        <button
+        </Button>
+        <Button
           type="button"
-          className="ghost"
+          variant="secondary"
           onClick={() => {
             setOpen(false);
             setError(null);
@@ -74,8 +77,8 @@ export function NewSessionForm({ onCreated }: NewSessionFormProps) {
           disabled={busy}
         >
           取消
-        </button>
+        </Button>
       </div>
-    </div>
+    </Card>
   );
 }
