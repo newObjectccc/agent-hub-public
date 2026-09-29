@@ -4,7 +4,12 @@ import { api } from "../api/client";
 import { sendPromptWithFallback } from "../api/prompt";
 import type { SessionMessage, SessionStatus, SessionSummary } from "../api/types";
 import { applyWsEvent, type WsEvent } from "../chat/messageStream";
+import { useGitStatus } from "../hooks/useGitStatus";
 import { useSessionSocket } from "../hooks/useSessionSocket";
+import type { FileRef } from "../utils/fileRefs";
+import { FileViewer } from "../components/FileViewer";
+import { GitPanel } from "../components/GitPanel";
+import { GitStatusBadge } from "../components/GitStatusBadge";
 import { MessageBubble } from "../components/MessageBubble";
 import { StatusBadge } from "../components/StatusBadge";
 import { BackIcon, TreeIcon } from "../components/icons";
@@ -28,11 +33,17 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [gitOpen, setGitOpen] = useState(false);
+  const [gitFile, setGitFile] = useState<string | null>(null);
+  const [fileRef, setFileRef] = useState<FileRef | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   // 搜索定位参数（?q= 关键词 / ?m= 消息 id）：一次性消费，避免每帧抢滚动
   const locate = useMemo(() => currentLocate(), []);
   const locatedRef = useRef(false);
   const [highlightId, setHighlightId] = useState<string | null>(null);
+
+  // git 状态（chat 顶栏状态条 + 文件弹层“看 diff”判定）
+  const gitStatus = useGitStatus(session?.cwd);
 
   /** GET /api/sessions/:id 全量对账（首屏加载 + WS 重连后） */
   const loadSession = useCallback(async () => {
@@ -192,6 +203,15 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
 
       {notice && <div className="chat-notice">{notice}</div>}
 
+      {session && (
+        <div className="chat-subbar">
+          <GitStatusBadge cwd={session.cwd} onClick={() => { setGitFile(null); setGitOpen(true); }} />
+          <Button type="button" variant="secondary" size="xs" onClick={() => { setGitFile(null); setGitOpen(true); }}>
+            变更
+          </Button>
+        </div>
+      )}
+
       <div className="chat-messages" role="log" aria-label="对话消息">
         {loading && messages.length === 0 && <ChatSkeleton count={4} />}
         {loadError && (
@@ -206,7 +226,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
           <div className="empty">还没有消息，发送第一条吧</div>
         )}
         {messages.map((m) => (
-          <MessageBubble key={m.id} message={m} highlight={m.id === highlightId} />
+          <MessageBubble key={m.id} message={m} highlight={m.id === highlightId} onOpenFile={setFileRef} />
         ))}
         <div ref={bottomRef} />
       </div>
@@ -247,6 +267,30 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
           )}
         </div>
       </footer>
+
+      {gitOpen && session && (
+        <GitPanel
+          cwd={session.cwd}
+          initialTab="diff"
+          initialFile={gitFile}
+          onClose={() => setGitOpen(false)}
+        />
+      )}
+
+      {fileRef && session && (
+        <FileViewer
+          cwd={session.cwd}
+          path={fileRef.path}
+          line={fileRef.line}
+          hasDiff={Boolean(gitStatus?.dirty.some((d) => d.path === fileRef.path))}
+          onViewDiff={() => {
+            setGitFile(fileRef.path);
+            setFileRef(null);
+            setGitOpen(true);
+          }}
+          onClose={() => setFileRef(null)}
+        />
+      )}
     </div>
   );
 }

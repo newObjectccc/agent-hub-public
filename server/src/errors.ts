@@ -10,6 +10,12 @@ export const ErrorCodes = {
   INTERNAL: "INTERNAL",
   PROMPT_FAILED: "PROMPT_FAILED",
   INVALID_MESSAGE: "INVALID_MESSAGE",
+  // git/文件只读 API（契约 §6）
+  NOT_REPO: "NOT_REPO",
+  INVALID_PATH: "INVALID_PATH",
+  INVALID_FILE: "INVALID_FILE",
+  FILE_NOT_FOUND: "FILE_NOT_FOUND",
+  GIT_FAILED: "GIT_FAILED",
 } as const;
 
 export type ErrorCode = (typeof ErrorCodes)[keyof typeof ErrorCodes];

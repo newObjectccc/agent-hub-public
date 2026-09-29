@@ -1,5 +1,7 @@
 import { useState } from "react";
 import type { ToolCall } from "../api/types";
+import type { FileRef } from "../utils/fileRefs";
+import { FileLinkText } from "./FileLinkText";
 import { ToolStatusIcon } from "./icons";
 
 const STATUS_TEXT: Record<ToolCall["status"], string> = {
@@ -9,8 +11,15 @@ const STATUS_TEXT: Record<ToolCall["status"], string> = {
   error: "失败",
 };
 
-/** 工具调用折叠卡片：默认收起显示 name + summary，点击展开 resultPreview */
-export function ToolCallCard({ toolCall }: { toolCall: ToolCall }) {
+/** 工具调用折叠卡片：默认收起显示 name + summary，点击展开 resultPreview；
+ * summary/resultPreview 中的文件路径（src/foo.ts:12）识别为可点击 → 打开文件弹层 */
+export function ToolCallCard({
+  toolCall,
+  onOpenFile,
+}: {
+  toolCall: ToolCall;
+  onOpenFile?: (ref: FileRef) => void;
+}) {
   const [open, setOpen] = useState(false);
   const hasPreview = Boolean(toolCall.resultPreview);
 
@@ -32,12 +41,16 @@ export function ToolCallCard({ toolCall }: { toolCall: ToolCall }) {
       >
         <ToolStatusIcon status={toolCall.status} />
         <span className="tool-name">{toolCall.name}</span>
-        <span className="tool-summary">{toolCall.summary || STATUS_TEXT[toolCall.status]}</span>
+        <span className="tool-summary">
+          <FileLinkText text={toolCall.summary || STATUS_TEXT[toolCall.status]} onOpenFile={onOpenFile} />
+        </span>
         <span className="hint-text">{STATUS_TEXT[toolCall.status]}</span>
       </div>
       {open && hasPreview && (
         <div className="tool-body">
-          <pre>{toolCall.resultPreview}</pre>
+          <pre>
+            <FileLinkText text={toolCall.resultPreview ?? ""} onOpenFile={onOpenFile} />
+          </pre>
         </div>
       )}
     </div>

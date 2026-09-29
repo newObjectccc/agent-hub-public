@@ -111,3 +111,53 @@ export interface PromptResult {
 export interface ApiErrorBody {
   error: { code: string; message: string };
 }
+
+/* ===== git / 文件只读 API（docs/API_CONTRACT.md §6） ===== */
+
+export interface GitDirtyFile {
+  path: string;
+  status: string;
+  origPath: string | null;
+}
+
+export interface GitStatusResult {
+  cwd: string;
+  root: string;
+  branch: string;
+  detached: boolean;
+  upstream: string | null;
+  ahead: number;
+  behind: number;
+  dirty: GitDirtyFile[];
+  dirtyCount: number;
+}
+
+export interface GitCommit {
+  hash: string;
+  author: string;
+  authorDate: string;
+  relativeTime: string;
+  subject: string;
+}
+
+export interface GitBranchInfo {
+  name: string;
+  current: boolean;
+  upstream: string | null;
+}
+
+export interface GitDiffResult {
+  root: string;
+  file: string | null;
+  commit: string | null;
+  truncated: boolean;
+  diff: string;
+}
+
+export interface FileContentResult {
+  root: string;
+  path: string;
+  size: number;
+  truncated: boolean;
+  content: string;
+}

@@ -11,6 +11,11 @@ import type {
   SessionTree,
   SystemStatus,
   ApiErrorBody,
+  FileContentResult,
+  GitBranchInfo,
+  GitCommit,
+  GitDiffResult,
+  GitStatusResult,
 } from "./types";
 
 export type PromptMode = "prompt" | "steer" | "followUp";
@@ -99,5 +104,30 @@ export const api = {
 
   getSystem(): Promise<SystemStatus> {
     return request("/api/system");
+  },
+
+  /* ===== git / 文件只读 API（契约 §6） ===== */
+
+  getGitStatus(cwd: string): Promise<GitStatusResult> {
+    return request(`/api/git/status?cwd=${encodeURIComponent(cwd)}`);
+  },
+
+  getGitLog(cwd: string, limit = 20): Promise<{ commits: GitCommit[] }> {
+    return request(`/api/git/log?cwd=${encodeURIComponent(cwd)}&limit=${encodeURIComponent(limit)}`);
+  },
+
+  getGitDiff(cwd: string, file: string | null = null, commit: string | null = null): Promise<GitDiffResult> {
+    const params = new URLSearchParams({ cwd });
+    if (file) params.set("file", file);
+    if (commit) params.set("commit", commit);
+    return request(`/api/git/diff?${params.toString()}`);
+  },
+
+  getGitBranches(cwd: string): Promise<{ branches: GitBranchInfo[]; current: string | null }> {
+    return request(`/api/git/branches?cwd=${encodeURIComponent(cwd)}`);
+  },
+
+  getFileContent(cwd: string, path: string): Promise<FileContentResult> {
+    return request(`/api/files/content?cwd=${encodeURIComponent(cwd)}&path=${encodeURIComponent(path)}`);
   },
 };
