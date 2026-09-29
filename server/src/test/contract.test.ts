@@ -29,6 +29,7 @@ const sessionFixture: SessionListItem = {
   lastUserMessage: null,
   lastAssistantMessage: null,
   sessionFile: "/tmp/demo.jsonl",
+  isSubAgent: false,
 };
 
 const systemFixture: SystemInfo = {
@@ -40,6 +41,14 @@ const systemFixture: SystemInfo = {
   tailscale: { available: false, version: null, loggedIn: false, hostname: null },
   sessionDir: "/tmp/sessions",
   workspaceRoot: "/tmp/ws",
+  metrics: {
+    cpu: { usagePercent: 12.5, cores: 8 },
+    memory: { usedBytes: 1024, totalBytes: 2048, usagePercent: 50 },
+    disk: { usedBytes: 100, totalBytes: 200, usagePercent: 50, mount: "/" },
+    loadavg: [1, 1, 1],
+    uptimeSeconds: 3600,
+    sampledAt: "2026-02-18T12:00:00.000Z",
+  },
 };
 
 function makeFakeHub(promptResult: PromptResult, overrides: Partial<SessionHubLike> = {}): SessionHubLike {

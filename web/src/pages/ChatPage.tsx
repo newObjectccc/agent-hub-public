@@ -287,6 +287,12 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
           <TreeIcon />
           树
         </Button>
+        {/* 子代理来源标记：pi-subagents 派生会话在顶栏明示 */}
+        {session?.isSubAgent === true && (
+          <span className="badge subagent" title="pi-subagents 派生的子代理会话">
+            🤖 子代理
+          </span>
+        )}
         <SourceBadge source={session?.source ?? null} />
         <StatusBadge status={status} />
       </header>

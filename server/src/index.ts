@@ -24,7 +24,7 @@ import { SessionHub } from "./sessions/hub.js";
 import { PresenceWatcher } from "./sessions/presence.js";
 import { findSessionFiles } from "./sessions/scan.js";
 import { SessionTailManager } from "./sessions/tail.js";
-import { probeSystem } from "./system.js";
+import { createSystemInfoProvider } from "./system.js";
 import type { ServerEvent } from "./types.js";
 import { WsHub } from "./ws.js";
 
@@ -125,8 +125,11 @@ export async function startHub(): Promise<StartedHub> {
     live: liveIngest,
     webRoot: webDistDir,
     logger: true,
-    systemInfo: () =>
-      probeSystem({ sessionDir: config.sessionDir, workspaceRoot: config.workspaceRoot, sdkVersion: VERSION }),
+    systemInfo: createSystemInfoProvider({
+      sessionDir: config.sessionDir,
+      workspaceRoot: config.workspaceRoot,
+      sdkVersion: VERSION,
+    }),
   });
 
   await app.listen({ port: config.port, host: config.host });

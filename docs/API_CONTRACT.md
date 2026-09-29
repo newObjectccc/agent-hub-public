@@ -27,7 +27,8 @@ Base URL: `http://<host>:<port>/api`（默认端口 7700）
       "status": "idle | running | error",
       "lastUserMessage": "帮我检查周报 KPI 口径（截断 120 字符）",
       "lastAssistantMessage": "好的，我先查 ETL 水位…（截断 120 字符）",
-      "sessionFile": "/Users/me/.pi/agent/sessions/--Users-me-.../2026-02-18_xxx.jsonl"
+      "sessionFile": "/Users/me/.pi/agent/sessions/--Users-me-.../2026-02-18_xxx.jsonl",
+      "isSubAgent": false
     }
   ]
 }
@@ -36,6 +37,12 @@ Base URL: `http://<host>:<port>/api`（默认端口 7700）
 （本进程启动的 prompt 才可能是 `running`），否则按文件活动推断（60s 内有写盘 = running）。
 
 `source` 为 v0 新增契约字段：列表项与详情里的 `session` 均带该字段；前端按其渲染来源徽章。
+
+`isSubAgent` 为 R3 新增契约字段（列表项与详情里的 `session` 均带）：pi-subagents 派生的
+子代理会话为 `true`。识别规则（server 检测）：会话名匹配 `^[a-z0-9-]+#[0-9a-f]{6,}$`
+（如 `developer#abc123` / `acceptance-reviewer#f81d33aa`），或入口消息含 pi-subagents
+派生特征（system preamble 中的 `<sub_agent_context>` / `<active_agent name=` 等）。
+前端按其渲染 🤖“子代理”徽章、分组折叠展示，主会话排前。
 
 ### GET /api/sessions/:id
 会话详情 + **active branch** 的消息历史（渲染 chat 用）。
@@ -171,10 +178,32 @@ claude 会话：server 本地 spawn
   "claude": { "available": false, "version": null },
   "tailscale": { "available": true, "loggedIn": true, "hostname": "my-mac" },
   "sessionDir": "/Users/me/.pi/agent/sessions",
-  "workspaceRoot": "/Users/me/Workspace"
+  "workspaceRoot": "/Users/me/Workspace",
+  "metrics": {
+    "cpu": { "usagePercent": 42.5, "cores": 10 },
+    "memory": { "usedBytes": 8589934592, "totalBytes": 17179869184, "usagePercent": 50 },
+    "disk": { "usedBytes": 429496729600, "totalBytes": 1024000000000, "usagePercent": 47, "mount": "/" },
+    "loadavg": [1.5, 1.2, 0.9],
+    "uptimeSeconds": 90060,
+    "sampledAt": "2026-02-18T12:00:00.000Z"
+  }
 }
 ```
 `available:false` 不是错误——前端展示为"可选增强未安装"。`claude` 为 CLI 探测（可选增强）。
+
+`metrics` 为 R3 新增契约字段（真实系统指标）：
+
+- `cpu.usagePercent`：两次 `os.cpus()` times 采样差分的使用率百分比（0..100，1 位小数）；
+  采样失败为 `null`。`cores` 为核心数。负载均值与 CPU 使用率**并存**（`loadavg` 另给）。
+- `memory`：`os.totalmem` / `os.freemem`（used = total - free），全跨平台，单位字节。
+- `disk`：项目所在盘（POSIX 解析 `df -k <workspaceRoot>`；Windows 用 `wmic logicaldisk`
+  按 workspaceRoot 盘符过滤）。采集失败整体为 `null`。
+- `loadavg`：`os.loadavg()` 1/5/15 分钟均值；Windows 无负载均值 → `null`。
+- `uptimeSeconds`：`os.uptime()` 系统运行时长秒。
+
+**降级契约**：任一指标单项失败只降级该项（`null`），`metrics` 整体采集失败为 `null`，
+均不影响工具探测字段，`/api/system` 永不因指标采集挂掉。前端按 `null` 显示 `—`/
+“不可用”，不显示假数字。
 
 ## 3. KPI（通用卡片，不与任何业务系统耦合）
 

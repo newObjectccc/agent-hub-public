@@ -277,6 +277,47 @@ export function sessionName(entries: RawEntry[]): string | null {
   return name;
 }
 
+/** pi-subagents 派生子代理会话的命名规则：`<type>#<id>`，如 developer#abc123 / acceptance-reviewer#f81d33aa */
+export const SUB_AGENT_NAME_RE = /^[a-z0-9-]+#[0-9a-f]{6,}$/;
+
+/** pi-subagents 注入的固定结构标记（只出现在派生会话的 system preamble；主会话不可能自带） */
+const SUB_AGENT_STRUCTURAL_MARKERS = ["<sub_agent_context>", "<active_agent name="];
+
+/** 仅按命名规则判定（claude 等无 entries 场景的轻量判定） */
+export function isSubAgentName(name: string | null): boolean {
+  return name !== null && SUB_AGENT_NAME_RE.test(name.trim());
+}
+
+/**
+ * 结构标记检测（pi/claude 同口径共用）：
+ * 只认 preamble 文本中的 `<sub_agent_context>` / `<active_agent name=` 结构标记。
+ * 消息正文提及（讨论/引述 pi-subagents、贴出标记字符串）一概不算，防主会话误标。
+ */
+export function hasSubAgentPreambleMarker(preamble: string): boolean {
+  return SUB_AGENT_STRUCTURAL_MARKERS.some((marker) => preamble.includes(marker));
+}
+
+/** 入口（前 10 条 message）的 system 角色 preamble 是否含派生结构标记 */
+function hasSubAgentMarker(entries: RawEntry[]): boolean {
+  for (const entry of entries.slice(0, 10)) {
+    if (entry.type !== "message" || !isRecord(entry.message)) continue;
+    const message = entry.message;
+    if (message.role !== "system") continue;
+    const sections = message.sections;
+    const preamble = isRecord(sections) && typeof sections.preamble === "string" ? sections.preamble : "";
+    if (hasSubAgentPreambleMarker(preamble)) return true;
+  }
+  return false;
+}
+
+/**
+ * 子代理会话判定（server 检测，web 按 isSubAgent 呈现）：
+ * 会话名匹配 `<type>#<id>`，或入口消息含 pi-subagents 派生特征。
+ */
+export function isSubAgentSession(name: string | null, entries: RawEntry[]): boolean {
+  return isSubAgentName(name) || hasSubAgentMarker(entries);
+}
+
 /** 会话摘要（列表项，status 由 server 运行态注入） */
 export function buildSessionSummary(file: string, parsed: ParsedSession, mtimeMs: number): Omit<SessionListItem, "status"> | null {
   const { header, entries } = parsed;
@@ -288,6 +329,7 @@ export function buildSessionSummary(file: string, parsed: ParsedSession, mtimeMs
   }
 
   const active = selectActiveBranch(entries);
+  const name = sessionName(entries);
   let lastUserMessage: string | null = null;
   let lastAssistantMessage: string | null = null;
   for (const entry of active) {
@@ -318,13 +360,14 @@ export function buildSessionSummary(file: string, parsed: ParsedSession, mtimeMs
   return {
     id: header.id,
     source: "pi",
-    name: sessionName(entries),
+    name,
     cwd: typeof header.cwd === "string" ? header.cwd : "",
     updatedAt: new Date(updatedMs).toISOString(),
     messageCount,
     lastUserMessage,
     lastAssistantMessage,
     sessionFile: file,
+    isSubAgent: isSubAgentSession(name, entries),
   };
 }
 

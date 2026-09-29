@@ -231,7 +231,9 @@ a {
 .app-header {
   display: flex;
   align-items: center;
-  gap: 12px;
+  /* 320px 小屏按钮组容不下时换行，绝不横向溢出 */
+  flex-wrap: wrap;
+  gap: clamp(8px, 2.5vw, 12px);
   margin-bottom: 16px;
 }
 
@@ -244,6 +246,7 @@ a {
   letter-spacing: 0.01em;
   margin: 0;
   flex: 1;
+  min-width: 0;
   padding: 8px 12px;
   background: var(--primary);
   color: var(--primary-foreground);
@@ -276,13 +279,127 @@ a {
   box-shadow: var(--shadow-card);
 }
 
-/* ---------- 系统状态 ---------- */
+/* ---------- 系统状态（真实指标主视觉 + 环境行） ---------- */
+/* .sysbar 保持原概览条布局（今日概览 OverviewBar 复用）；系统状态卡用 .syscard */
 .sysbar {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   padding: 12px;
   font-size: 12.5px;
+}
+
+.syscard {
+  display: flex;
+  flex-direction: column;
+  gap: clamp(0.55rem, 2.2vw, 0.85rem);
+  padding: clamp(0.8rem, 3vw, 1.1rem);
+  font-size: clamp(0.78rem, 2.6vw, 0.9rem);
+}
+
+/* 真实指标条（CPU/内存/磁盘）：小屏单列，≥768px 三列利用宽屏 */
+.sys-metrics {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: clamp(0.65rem, 2.6vw, 1rem);
+}
+
+@media (min-width: 768px) {
+  .sys-metrics {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+.metric {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.metric-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.metric-label {
+  font-family: var(--nb-font-head);
+  font-weight: 900;
+  font-size: clamp(0.72rem, 2.4vw, 0.82rem);
+  letter-spacing: 0.06em;
+}
+
+.metric-value {
+  font-family: var(--nb-font-head);
+  font-weight: 900;
+  font-size: clamp(1rem, 3.6vw, 1.35rem);
+  font-variant-numeric: tabular-nums;
+}
+
+.metric-track {
+  height: clamp(0.7rem, 2.8vw, 0.95rem);
+  border: 2px solid var(--border);
+  border-radius: var(--nb-radius);
+  background: var(--muted);
+  overflow: hidden;
+}
+
+/* 进度条平滑 200ms，不闪不跳 */
+.metric-fill {
+  height: 100%;
+  width: 0;
+  background: var(--primary);
+  transition: width 200ms ease;
+}
+
+.metric-fill.warn {
+  background: var(--destructive);
+}
+
+.metric-detail {
+  font-size: clamp(0.68rem, 2.3vw, 0.78rem);
+  color: var(--muted-foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 采集失败降级态：灰条 + 破折号，不显示假数字 */
+.metric.na .metric-fill {
+  background: var(--muted-foreground);
+}
+
+.metric.na .metric-value {
+  color: var(--muted-foreground);
+}
+
+.sys-metrics-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1rem;
+  font-size: clamp(0.68rem, 2.3vw, 0.78rem);
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 环境行：依赖安装检测（pi / claude / tmux / ttyd / tailscale）降为次视觉 */
+.sys-env {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: clamp(0.35rem, 1.6vw, 0.55rem);
+  padding-top: clamp(0.5rem, 2vw, 0.75rem);
+  border-top: 2px dashed var(--border);
+}
+
+.sys-env-label {
+  font-family: var(--nb-font-head);
+  font-weight: 900;
+  font-size: 0.72rem;
+  letter-spacing: 0.1em;
+  color: var(--muted-foreground);
 }
 
 .syschip {
@@ -317,6 +434,52 @@ a {
 .syschip .label {
   color: inherit;
   font-weight: 700;
+}
+
+/* ---------- 子代理分组（🤖 isSubAgent 会话收纳） ---------- */
+.badge.subagent {
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+
+.subagent-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  margin-top: clamp(0.55rem, 2.2vw, 0.85rem);
+  padding: clamp(0.6rem, 2.6vw, 0.85rem) clamp(0.85rem, 3.4vw, 1.15rem);
+  border: 3px solid var(--border);
+  border-radius: var(--nb-radius);
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  box-shadow: var(--shadow-xs);
+  font-family: var(--nb-font-head);
+  font-weight: 900;
+  font-size: clamp(0.82rem, 2.9vw, 0.98rem);
+  cursor: pointer;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+
+.subagent-toggle:hover {
+  transform: translate(-1px, -1px);
+  box-shadow: 3px 3px 0 0 var(--border);
+}
+
+.subagent-toggle:active {
+  transform: translate(1px, 1px);
+  box-shadow: none;
+}
+
+.subagent-caret {
+  font-size: 0.82em;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+}
+
+.subagent-list {
+  margin-top: clamp(0.55rem, 2.2vw, 0.85rem);
 }
 
 /* ---------- KPI ---------- */
@@ -490,7 +653,9 @@ a {
 .session-head {
   display: flex;
   align-items: center;
-  gap: 8px;
+  /* 320px 小屏多徽章不横向溢出：允许换行 */
+  flex-wrap: wrap;
+  gap: 6px 8px;
 }
 
 .session-name {
@@ -498,6 +663,7 @@ a {
   font-weight: 900;
   font-size: 14.5px;
   flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

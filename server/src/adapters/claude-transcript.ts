@@ -37,6 +37,8 @@ import {
   LAST_MESSAGE_LIMIT,
   RESULT_PREVIEW_LIMIT,
   contentToText,
+  hasSubAgentPreambleMarker,
+  isSubAgentName,
   summarizeToolCall,
   truncateText,
 } from "../sessions/scan.js";
@@ -71,6 +73,8 @@ export interface ParsedClaudeTranscript {
   messages: MessageDto[];
   /** 最后一条有合法 timestamp 的行时间（毫秒）；无则 null */
   updatedAtMs: number | null;
+  /** 前 10 条 system/attachment 行文本（子代理结构标记检测用） */
+  preamble: string;
 }
 
 /**
@@ -85,6 +89,7 @@ export function parseClaudeTranscript(
   let cwd: string | null = fallback.cwd ?? null;
   let name: string | null = null;
   let updatedAtMs: number | null = null;
+  const preambleParts: string[] = [];
   const messages: MessageDto[] = [];
   // tool_use.id → 所属 assistant 消息的 toolCall DTO（折叠 tool_result 用）
   const toolCallOwners = new Map<string, ToolCallDto>();
@@ -113,6 +118,16 @@ export function parseClaudeTranscript(
     if (typeof row.timestamp === "string") {
       const t = Date.parse(row.timestamp);
       if (!Number.isNaN(t)) updatedAtMs = t;
+    }
+
+    // 前 10 条 system/attachment 行的文本 → preamble（子代理结构标记检测，pi/claude 同口径）
+    if ((row.type === "system" || row.type === "attachment") && preambleParts.length < 10) {
+      const text =
+        (typeof row.content === "string" && row.content) ||
+        (typeof row.text === "string" && row.text) ||
+        (typeof row.message === "string" && row.message) ||
+        "";
+      if (text !== "") preambleParts.push(text);
     }
 
     switch (row.type) {
@@ -252,7 +267,7 @@ export function parseClaudeTranscript(
     }
   }
 
-  return { sessionId, cwd, name, messages, updatedAtMs };
+  return { sessionId, cwd, name, messages, updatedAtMs, preamble: preambleParts.join("\n") };
 }
 
 /** 与 pi 口径一致的列表摘要：lastUser/lastAssistant 从映射后消息取，截断 120 字符 */
@@ -289,6 +304,8 @@ export function buildClaudeSessionSummary(
     lastUserMessage,
     lastAssistantMessage,
     sessionFile: file,
+    // 与 pi 判定同口径：命名规则 `<type>#<hex>` 或 preamble 结构标记（消息正文提及不算）
+    isSubAgent: isSubAgentName(parsed.name) || hasSubAgentPreambleMarker(parsed.preamble),
   };
 }
 

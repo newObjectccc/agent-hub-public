@@ -1,4 +1,4 @@
-import type { MutableRefObject } from "react";
+import { useState, type MutableRefObject } from "react";
 import type { SessionSummary } from "../api/types";
 import { useFirstSeen } from "../hooks/useFirstSeen";
 import { sessionTitle, shortPath } from "../utils/display";
@@ -30,11 +30,15 @@ export interface SessionListProps {
 }
 
 /**
- * 按 updatedAt 倒序排列（与契约一致），非法时间排最后。
- * 同时间用 id 升序确定性 tiebreaker：无论输入顺序，输出顺序唯一，刷新绝不重排（AC3-a）。
+ * 排序（与契约一致）：主会话整体排前（子代理不抢占主会话优先级），
+ * 同组内按 updatedAt 倒序；非法时间排最后，同时间用 id 升序确定性
+ * tiebreaker：无论输入顺序，输出顺序唯一，刷新绝不重排（AC3-a）。
  */
 export function sortSessions(sessions: SessionSummary[]): SessionSummary[] {
   return sessions.slice().sort((a, b) => {
+    const subA = a.isSubAgent === true ? 1 : 0;
+    const subB = b.isSubAgent === true ? 1 : 0;
+    if (subA !== subB) return subA - subB;
     const ta = Date.parse(a.updatedAt);
     const tb = Date.parse(b.updatedAt);
     const va = Number.isNaN(ta) ? -Infinity : ta;
@@ -48,9 +52,59 @@ function summaryOf(s: SessionSummary): string {
   return s.lastAssistantMessage ?? s.lastUserMessage ?? "暂无对话内容";
 }
 
+/** 子代理会话命名/派生特征命中（server 已下发 isSubAgent，这里容错旧 server） */
+function isSubAgent(s: SessionSummary): boolean {
+  return s.isSubAgent === true;
+}
+
+interface SessionRowProps {
+  session: SessionSummary;
+  index: number;
+  isNew: boolean;
+  now?: number;
+  onSelect: (session: SessionSummary) => void;
+}
+
+/** 会话行（虚拟列表与子代理分组共用同一渲染，固定行高 150px） */
+function SessionRow({ session: s, index, isNew, now, onSelect }: SessionRowProps) {
+  return (
+    <div className="session-row">
+      <Button
+        type="button"
+        role="listitem"
+        className={cn("session-item", isNew && "enter")}
+        style={isNew ? { animationDelay: `${Math.min(index, 6) * 30}ms` } : undefined}
+        onClick={() => onSelect(s)}
+      >
+        <div className="session-head">
+          <span className="session-name" title={s.name && s.name.trim() !== "" ? s.name : s.cwd}>
+            {sessionTitle(s)}
+          </span>
+          {isSubAgent(s) && (
+            <span className="badge subagent" title="pi-subagents 派生的子代理会话">
+              🤖 子代理
+            </span>
+          )}
+          <SourceBadge source={s.source} />
+          <StatusBadge status={s.status} />
+          <span className="session-time">{relativeTime(s.updatedAt, now)}</span>
+        </div>
+        <div className="session-cwd" title={s.cwd}>
+          {shortPath(s.cwd)}
+        </div>
+        {/* git 状态条：🌿 分支 · ↑2 ↓0 · ⚠3 files（非 git 仓库自动隐藏） */}
+        <GitStatusBadge cwd={s.cwd} compact />
+        <div className="session-summary">{summaryOf(s)}</div>
+      </Button>
+    </div>
+  );
+}
+
 /**
  * 会话列表：标题（name>文件夹名）、缩写路径、来源徽章、git 状态、状态徽章、摘要、相对时间。
  * 虚拟滚动（固定行高窗口化）× 动画克制（进场只播首次插入，key 稳定 s.id）。
+ * 子代理会话（isSubAgent）不与主会话混排：主会话在虚拟列表内，
+ * 子代理收进列表下方“🤖 子代理 (N)”折叠分组（默认收起，展开才渲染）。
  */
 export function SessionList({
   sessions,
@@ -63,45 +117,60 @@ export function SessionList({
   seenIds,
 }: SessionListProps) {
   const sorted = sortSessions(sessions);
+  const mainSessions = sorted.filter((s) => !isSubAgent(s));
+  const subSessions = sorted.filter(isSubAgent);
+  const [subOpen, setSubOpen] = useState(false);
   const newIds = useFirstSeen(sorted.map((s) => s.id), seenIds);
   return (
-    <VirtualList
-      items={sorted}
-      itemHeight={SESSION_ITEM_HEIGHT}
-      getKey={(s) => s.id}
-      className="session-list-scroll"
-      innerClassName="session-list"
-      role="list"
-      viewportHeight={viewportHeight}
-      scrollRef={scrollRef}
-      initialScrollTop={initialScrollTop}
-      onScrollTop={onScrollTop}
-      renderItem={(s, index) => (
-        <div className="session-row">
-          <Button
+    <>
+      <VirtualList
+        items={mainSessions}
+        itemHeight={SESSION_ITEM_HEIGHT}
+        getKey={(s) => s.id}
+        className="session-list-scroll"
+        innerClassName="session-list"
+        role="list"
+        viewportHeight={viewportHeight}
+        scrollRef={scrollRef}
+        initialScrollTop={initialScrollTop}
+        onScrollTop={onScrollTop}
+        renderItem={(s, index) => (
+          <SessionRow
+            session={s}
+            index={index}
+            isNew={newIds.has(s.id)}
+            now={now}
+            onSelect={onSelect}
+          />
+        )}
+      />
+      {subSessions.length > 0 && (
+        <div className="subagent-group">
+          <button
             type="button"
-            role="listitem"
-            className={cn("session-item", newIds.has(s.id) && "enter")}
-            style={newIds.has(s.id) ? { animationDelay: `${Math.min(index, 6) * 30}ms` } : undefined}
-            onClick={() => onSelect(s)}
+            className="subagent-toggle"
+            aria-expanded={subOpen}
+            onClick={() => setSubOpen((open) => !open)}
           >
-            <div className="session-head">
-              <span className="session-name" title={s.name && s.name.trim() !== "" ? s.name : s.cwd}>
-                {sessionTitle(s)}
-              </span>
-              <SourceBadge source={s.source} />
-              <StatusBadge status={s.status} />
-              <span className="session-time">{relativeTime(s.updatedAt, now)}</span>
+            <span>🤖 子代理 ({subSessions.length})</span>
+            <span className="subagent-caret">{subOpen ? "收起 ▴" : "展开 ▾"}</span>
+          </button>
+          {subOpen && (
+            <div className="session-list subagent-list" role="list">
+              {subSessions.map((s, index) => (
+                <SessionRow
+                  key={s.id}
+                  session={s}
+                  index={index}
+                  isNew={newIds.has(s.id)}
+                  now={now}
+                  onSelect={onSelect}
+                />
+              ))}
             </div>
-            <div className="session-cwd" title={s.cwd}>
-              {shortPath(s.cwd)}
-            </div>
-            {/* git 状态条：🌿 分支 · ↑2 ↓0 · ⚠3 files（非 git 仓库自动隐藏） */}
-            <GitStatusBadge cwd={s.cwd} compact />
-            <div className="session-summary">{summaryOf(s)}</div>
-          </Button>
+          )}
         </div>
       )}
-    />
+    </>
   );
 }

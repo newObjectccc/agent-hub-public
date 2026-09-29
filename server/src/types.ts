@@ -21,6 +21,11 @@ export interface SessionListItem {
   lastUserMessage: string | null;
   lastAssistantMessage: string | null;
   sessionFile: string;
+  /**
+   * pi-subagents 派生的子代理会话（会话名 `<type>#<id>` 如 developer#abc123，
+   * 或入口消息含 pi-subagents 派生特征）。主会话恒 false。
+   */
+  isSubAgent: boolean;
 }
 
 export type ToolCallStatus = "pending" | "running" | "done" | "error";
@@ -130,6 +135,41 @@ export interface TailscaleStatus extends ToolAvailability {
   hostname: string | null;
 }
 
+/** 真实系统指标（docs/API_CONTRACT.md §2）：各字段采集失败独立降级，不整体报错 */
+
+/** CPU：两次 os.cpus() times 采样差分的使用率百分比（0..100） */
+export interface CpuMetrics {
+  usagePercent: number | null;
+  cores: number;
+}
+
+/** 内存（字节）：used = total - free（os.totalmem/os.freemem） */
+export interface MemoryMetrics {
+  usedBytes: number;
+  totalBytes: number;
+  usagePercent: number;
+}
+
+/** 磁盘（项目所在盘，字节）；采集失败整体为 null */
+export interface DiskMetrics {
+  usedBytes: number;
+  totalBytes: number;
+  usagePercent: number;
+  /** 挂载点（POSIX）或盘符（Windows，如 "C:"） */
+  mount: string;
+}
+
+export interface SystemMetrics {
+  cpu: CpuMetrics;
+  memory: MemoryMetrics;
+  disk: DiskMetrics | null;
+  /** 1/5/15 分钟负载均值（os.loadavg）；Windows 无负载均值 → null */
+  loadavg: [number, number, number] | null;
+  /** 系统运行时长秒（os.uptime） */
+  uptimeSeconds: number;
+  sampledAt: string;
+}
+
 export interface SystemInfo {
   platform: "darwin" | "win32" | "linux" | string;
   pi: ToolAvailability;
@@ -139,6 +179,8 @@ export interface SystemInfo {
   tailscale: TailscaleStatus;
   sessionDir: string;
   workspaceRoot: string;
+  /** 真实系统指标；整体采集失败为 null（不影响工具探测字段） */
+  metrics: SystemMetrics | null;
 }
 
 /** ===== git / 文件只读 API（docs/API_CONTRACT.md §6） ===== */

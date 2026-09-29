@@ -1,9 +1,11 @@
 /**
- * 系统探测：pi / tmux / ttyd / tailscale 可用性与版本（跨平台）。
+ * 系统探测：pi / tmux / ttyd / tailscale 可用性与版本（跨平台）+ 真实系统指标。
  * Windows 用 where，类 Unix 用 which；检测失败一律 available:false，不是错误。
+ * 指标采集见 metrics.ts；单项失败降级为 null，不影响其它字段。
  */
 import { execFile } from "node:child_process";
-import type { SystemInfo, ToolAvailability, TailscaleStatus } from "./types.js";
+import { collectSystemMetrics } from "./metrics.js";
+import type { SystemInfo, SystemMetrics, ToolAvailability, TailscaleStatus } from "./types.js";
 
 export interface ProbeOptions {
   sessionDir: string;
@@ -12,6 +14,8 @@ export interface ProbeOptions {
   sdkVersion?: string;
   execFileFn?: typeof execFile;
   timeoutMs?: number;
+  /** 指标采集（缺省用 metrics.collectSystemMetrics；测试可注入） */
+  collectMetrics?: () => Promise<SystemMetrics | null>;
 }
 
 function run(
@@ -117,6 +121,17 @@ export async function probeSystem(options: ProbeOptions): Promise<SystemInfo> {
       ? { available: true, version: options.sdkVersion }
       : { ...NOT_AVAILABLE };
 
+  const collectMetrics =
+    options.collectMetrics ??
+    ((): Promise<SystemMetrics | null> =>
+      collectSystemMetrics({ workspaceRoot: options.workspaceRoot, execFileFn, timeoutMs: 3_000 }));
+  let metrics: SystemMetrics | null = null;
+  try {
+    metrics = await collectMetrics();
+  } catch {
+    metrics = null; // 指标失败不拖垮 /api/system
+  }
+
   return {
     platform: process.platform,
     pi,
@@ -126,5 +141,49 @@ export async function probeSystem(options: ProbeOptions): Promise<SystemInfo> {
     tailscale,
     sessionDir: options.sessionDir,
     workspaceRoot: options.workspaceRoot,
+    metrics,
+  };
+}
+
+export interface SystemInfoProviderOptions extends ProbeOptions {
+  /** 工具探测结果缓存时长（工具安装状态不会秒级变化；指标每次新采） */
+  toolsTtlMs?: number;
+}
+
+/**
+ * 带缓存的 /api/system 数据源：工具探测（一堆子进程）按 toolsTtlMs 缓存，
+ * 真实指标每次重新采集（前端 5-10s 轮询看到的是新鲜数据）。
+ */
+export function createSystemInfoProvider(options: SystemInfoProviderOptions): () => Promise<SystemInfo> {
+  const toolsTtlMs = options.toolsTtlMs ?? 30_000;
+  let toolsPromise: Promise<Omit<SystemInfo, "metrics"> | null> | null = null;
+  let toolsAt = 0;
+  const probeTools = async (): Promise<Omit<SystemInfo, "metrics">> => {
+    const { metrics: _metrics, ...tools } = await probeSystem({ ...options, collectMetrics: async () => null });
+    return tools;
+  };
+  return async () => {
+    const now = Date.now();
+    if (toolsPromise === null || now - toolsAt >= toolsTtlMs) {
+      toolsAt = now;
+      toolsPromise = probeTools().catch(() => null);
+    }
+    const tools = await toolsPromise;
+    if (tools === null) throw new Error("system probe failed");
+    const collectMetrics =
+      options.collectMetrics ??
+      ((): Promise<SystemMetrics | null> =>
+        collectSystemMetrics({
+          workspaceRoot: options.workspaceRoot,
+          execFileFn: options.execFileFn ?? execFile,
+          timeoutMs: 3_000,
+        }));
+    let metrics: SystemMetrics | null = null;
+    try {
+      metrics = await collectMetrics();
+    } catch {
+      metrics = null;
+    }
+    return { ...tools, metrics };
   };
 }

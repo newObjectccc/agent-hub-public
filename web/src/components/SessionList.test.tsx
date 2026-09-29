@@ -24,6 +24,7 @@ function makeSession(over: Partial<SessionSummary>): SessionSummary {
     lastUserMessage: "帮我检查周报 KPI 口径",
     lastAssistantMessage: "好的，我先查 ETL 水位",
     sessionFile: "/Users/me/.pi/agent/sessions/x.jsonl",
+    isSubAgent: false,
     ...over,
   };
 }
@@ -187,5 +188,84 @@ describe("sortSessions", () => {
     const sorted = sortSessions(input);
     expect(sorted.map((s) => s.id)).toEqual(["2", "3", "1"]);
     expect(input.map((s) => s.id)).toEqual(snapshot);
+  });
+
+  it("主会话整体排前，子代理排后（不抢占主会话优先级），组内仍按 updatedAt 倒序", () => {
+    const input = [
+      makeSession({ id: "sub-new", isSubAgent: true, updatedAt: new Date(NOW).toISOString() }),
+      makeSession({ id: "main-old", updatedAt: new Date(NOW - 3_600_000).toISOString() }),
+      makeSession({ id: "sub-old", isSubAgent: true, updatedAt: new Date(NOW - 7_200_000).toISOString() }),
+      makeSession({ id: "main-new", updatedAt: new Date(NOW - 60_000).toISOString() }),
+    ];
+    const sorted = sortSessions(input);
+    expect(sorted.map((s) => s.id)).toEqual(["main-new", "main-old", "sub-new", "sub-old"]);
+  });
+});
+
+describe("SessionList 子代理区分（isSubAgent）", () => {
+  const mains = [
+    makeSession({ id: "m1", name: "主会话甲", updatedAt: new Date(NOW - 60_000).toISOString() }),
+    makeSession({ id: "m2", name: "主会话乙", updatedAt: new Date(NOW - 120_000).toISOString() }),
+  ];
+  const subs = [
+    makeSession({
+      id: "s1",
+      name: "developer#abc123",
+      isSubAgent: true,
+      updatedAt: new Date(NOW - 30_000).toISOString(),
+    }),
+    makeSession({
+      id: "s2",
+      name: "acceptance-reviewer#f81d33aa",
+      isSubAgent: true,
+      updatedAt: new Date(NOW - 90_000).toISOString(),
+    }),
+  ];
+
+  it("子代理默认收起：折叠分组显示数量，子代理行不渲染，主会话正常渲染", () => {
+    const el = render(<SessionList sessions={[...mains, ...subs]} onSelect={() => {}} now={NOW} />);
+    const text = el.textContent ?? "";
+    expect(text).toContain("子代理 (2)");
+    expect(text).toContain("主会话甲");
+    expect(text).toContain("主会话乙");
+    expect(text).not.toContain("developer#abc123");
+    expect(el.querySelector(".subagent-toggle")?.getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("展开分组后子代理会话显示 🤖 子代理 徽章，再点收起", () => {
+    const el = render(<SessionList sessions={[...mains, ...subs]} onSelect={() => {}} now={NOW} />);
+    const toggle = el.querySelector(".subagent-toggle") as HTMLButtonElement;
+    act(() => {
+      toggle.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    const text = el.textContent ?? "";
+    expect(el.querySelector(".subagent-toggle")?.getAttribute("aria-expanded")).toBe("true");
+    expect(text).toContain("developer#abc123");
+    expect(text).toContain("acceptance-reviewer#f81d33aa");
+    expect(el.querySelectorAll(".badge.subagent")).toHaveLength(2);
+    // 主会话不带子代理徽章
+    expect(text).toContain("主会话甲");
+    act(() => {
+      toggle.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(el.textContent).not.toContain("developer#abc123");
+  });
+
+  it("无子代理会话时不渲染折叠分组", () => {
+    const el = render(<SessionList sessions={mains} onSelect={() => {}} now={NOW} />);
+    expect(el.querySelector(".subagent-toggle")).toBeNull();
+  });
+
+  it("点击子代理行触发 onSelect（分组内行与主列表行为一致）", () => {
+    const onSelect = vi.fn();
+    const el = render(<SessionList sessions={[...mains, ...subs]} onSelect={onSelect} now={NOW} />);
+    act(() => {
+      (el.querySelector(".subagent-toggle") as HTMLButtonElement).dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    const rows = el.querySelectorAll(".subagent-list .session-item");
+    act(() => {
+      rows[0].dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ id: "s1" }));
   });
 });

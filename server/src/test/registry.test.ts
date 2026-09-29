@@ -26,6 +26,7 @@ function makeItem(id: string, source: SessionSource, updatedAt: string): Session
     lastUserMessage: null,
     lastAssistantMessage: null,
     sessionFile: `/tmp/${id}.jsonl`,
+    isSubAgent: false,
   };
 }
 

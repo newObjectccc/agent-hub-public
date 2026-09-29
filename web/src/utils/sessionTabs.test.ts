@@ -20,6 +20,7 @@ function makeSession(over: Partial<SessionSummary>): SessionSummary {
     lastUserMessage: "hi",
     lastAssistantMessage: "ok",
     sessionFile: "/tmp/s.jsonl",
+    isSubAgent: false,
     ...over,
   };
 }

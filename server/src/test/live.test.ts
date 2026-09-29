@@ -29,6 +29,7 @@ const sessionFixture: SessionListItem = {
   lastAssistantMessage: null,
   sessionFile: "/tmp/demo.jsonl",
   source: "pi",
+  isSubAgent: false,
 };
 
 const systemFixture: SystemInfo = {
@@ -40,6 +41,7 @@ const systemFixture: SystemInfo = {
   sessionDir: "/tmp/sessions",
   workspaceRoot: "/tmp/ws",
   claude: { available: false, version: null },
+  metrics: null,
 };
 
 function makeFakeHub(): SessionHubLike {

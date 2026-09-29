@@ -4,6 +4,7 @@
  * 坏行不崩、孤儿 tool_result、summary 行、history.jsonl cwd 兜底、文件扫描过滤。
  */
 import { strict as assert } from "node:assert";
+import { hasSubAgentPreambleMarker, isSubAgentName } from "../sessions/scan.js";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -339,5 +340,25 @@ describe("claude transcript: 摘要与扫描", () => {
   it("scanClaudeSessions：目录不存在返回空数组（不是错误）", async () => {
     const sessions = await scanClaudeSessions(join(tmpdir(), "definitely-not-exists-claude"), new Map());
     assert.deepEqual(sessions, []);
+  });
+});
+
+describe("claude isSubAgent 同口径（AC4 整改）", () => {
+  it("preamble 含结构标记（无命名）→ isSubAgent=true", () => {
+    const content = [
+      JSON.stringify({ type: "system", sessionId: "aaaa-bbbb", content: "<sub_agent_context>\n<active_agent name=\"developer\">" }),
+      JSON.stringify({ type: "user", sessionId: "aaaa-bbbb", timestamp: "2026-01-01T00:00:00.000Z", cwd: "/tmp/x", message: { role: "user", content: "hi" } }),
+    ].join("\n");
+    const parsed = parseClaudeTranscript(content);
+    assert.equal(isSubAgentName(parsed.name) || hasSubAgentPreambleMarker(parsed.preamble), true);
+  });
+
+  it("普通 claude 会话（uuid 名、正文提及 pi-subagents）→ isSubAgent=false", () => {
+    const content = [
+      JSON.stringify({ type: "system", sessionId: "cccc-dddd", content: "claude code system prompt" }),
+      JSON.stringify({ type: "user", sessionId: "cccc-dddd", timestamp: "2026-01-01T00:00:00.000Z", cwd: "/tmp/y", message: { role: "user", content: "聊聊 pi-subagents 插件" } }),
+    ].join("\n");
+    const parsed = parseClaudeTranscript(content);
+    assert.equal(isSubAgentName(parsed.name) || hasSubAgentPreambleMarker(parsed.preamble), false);
   });
 });
