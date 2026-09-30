@@ -29,7 +29,8 @@ Base URL: `http://<host>:<port>/api`（默认端口 7700）
       "lastAssistantMessage": "好的，我先查 ETL 水位…（截断 120 字符）",
       "sessionFile": "/Users/me/.pi/agent/sessions/--Users-me-.../2026-02-18_xxx.jsonl",
       "isSubAgent": false,
-      "parentSessionId": null
+      "parentSessionId": null,
+      "lastDrivenBy": "terminal"
     }
   ]
 }
@@ -50,6 +51,13 @@ header 的 `parentSession`（文件路径）解析出的父会话 id（文件名
 子代理与 fork 分支均带血缘；claude 侧无独立父子会话文件恒 `null`；解析不出为 `null`。
 前端按 `isSubAgent && parentSessionId` 将子代理以树形子行挂到父会话下，识别不出的归
 “未归组子代理”兜底分组。
+
+`lastDrivenBy` 为驱动来源标注契约字段（列表项与详情里的 `session` 均带，可缺省）：
+`"panel" | "terminal"`。`POST /api/sessions/:id/prompt` 接受成功后 server 把会话记入
+“面板驱动过”集合（持久化 `data/panel-driven.json`，重启不丢；只增不减，claude 会话同理），
+命中即 `"panel"`，否则 `"terminal"`；缺省按 `"terminal"` 容错。语义：手机面板发消息 =
+server 进程的 pi SDK 实例驱动**同一会话文件**追加，电脑终端 pi 需 `pi --resume` 重开
+才能看到；前端按其渲染 📱 面板驱动 / 🖥 终端驱动 徽章与预期提示条。
 
 ### GET /api/sessions/:id
 会话详情 + **active branch** 的消息历史（渲染 chat 用）。

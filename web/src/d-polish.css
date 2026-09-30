@@ -429,3 +429,362 @@
     animation: none;
   }
 }
+
+/* ============================================================
+ * e1-chat-ux：阶段化等待反馈 / 新消息浮标 / 时间分隔线 / 发送失败重试 /
+ * 代码块增强 / 驱动来源标注 / 任务生命周期预期（紧凑野兽派，动画克制）
+ * ============================================================ */
+
+/* 阶段化等待状态条（输入框上方）：📤 发送中 → 🧠 思考中 → 🔧 工具执行中 → ✍️ 回复中 · 45s */
+.wait-stage-bar {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 0;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--muted-foreground);
+}
+
+.wait-stage {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.wait-stage-icon {
+  font-size: 13px;
+  flex-shrink: 0;
+}
+
+.wait-stage-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 已等待计时：秒级跳动（tabular-nums 不跳宽度） */
+.wait-stage-timer {
+  font-variant-numeric: tabular-nums;
+  color: var(--foreground);
+}
+
+.wait-stage-offline {
+  font-size: 10.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* 任务生命周期预期提示（小字，可关闭）：任务由 server 进程持有 */
+.bg-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 2px 0 6px;
+  padding: 3px 6px;
+  font-size: 10.5px;
+  line-height: 1.5;
+  font-weight: 600;
+  color: var(--muted-foreground);
+  background: var(--muted);
+  border: 1px dashed var(--border);
+  border-radius: var(--nb-radius);
+}
+
+.bg-hint-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.bg-hint-boundary {
+  white-space: nowrap;
+  opacity: 0.85;
+  text-decoration: underline dotted;
+  cursor: help;
+}
+
+.bg-hint-close {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  background: transparent;
+  color: var(--muted-foreground);
+  border: none;
+  cursor: pointer;
+}
+
+/* 日期分隔线（居中小标签，野兽派粗描边） */
+.date-divider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0;
+}
+
+.date-divider::before,
+.date-divider::after {
+  content: "";
+  flex: 1;
+  height: 0;
+  border-top: 2px dashed var(--border);
+}
+
+.date-divider-label {
+  font-family: var(--nb-font-head);
+  font-weight: 900;
+  font-size: 10.5px;
+  color: var(--muted-foreground);
+  background: var(--muted);
+  border: 2px solid var(--border);
+  border-radius: var(--nb-radius);
+  padding: 1px 8px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ↓ 新消息浮标：上翻历史时右下角浮出，点击回底部（不拉扯视口） */
+.new-messages-btn {
+  align-self: flex-end;
+  position: relative;
+  z-index: 6;
+  margin: -50px 12px 6px 0;
+  min-height: 40px;
+  padding: 6px 12px;
+  font-family: var(--nb-font-head);
+  font-weight: 900;
+  font-size: 12px;
+  background: var(--primary);
+  color: var(--primary-foreground);
+  border: var(--bw) solid var(--border);
+  border-radius: var(--nb-radius);
+  box-shadow: var(--nb-shadow-card);
+  cursor: pointer;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+
+.new-messages-btn:active {
+  transform: translate(1px, 1px);
+  box-shadow: none;
+}
+
+/* 发送失败标记 + 重试 */
+.send-failed {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.send-failed-text {
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--destructive);
+}
+
+:root[data-theme="dark"] .send-failed-text {
+  color: var(--destructive-foreground);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .send-failed-text {
+    color: var(--destructive-foreground);
+  }
+}
+
+.send-retry {
+  position: relative;
+  min-height: 32px;
+  padding: 2px 12px;
+  font-size: 12px;
+  font-weight: 800;
+  background: var(--card);
+  color: var(--card-foreground);
+  border: 2px solid var(--border);
+  border-radius: var(--nb-radius);
+  box-shadow: var(--nb-shadow-xs);
+  cursor: pointer;
+}
+
+.send-retry:active {
+  transform: translate(1px, 1px);
+  box-shadow: none;
+}
+
+/* 工具卡执行时长 + 「运行中」脉冲（reduced-motion 降级静态描边） */
+.tool-duration {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--muted-foreground);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.tool-duration.running {
+  color: var(--foreground);
+}
+
+.tool-card.running {
+  animation: tool-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes tool-pulse {
+  0%,
+  100% {
+    box-shadow: var(--shadow-sm);
+  }
+  50% {
+    box-shadow: 0 0 0 2px var(--primary), var(--shadow-sm);
+  }
+}
+
+/* 代码块：右上角「复制」+ 轻量三色语法高亮 */
+.code-block {
+  position: relative;
+}
+
+.code-copy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 1;
+  min-height: 28px;
+  padding: 0 8px;
+  font-size: 11px;
+  font-weight: 800;
+  background: var(--card);
+  color: var(--card-foreground);
+  border: 2px solid var(--border);
+  border-radius: var(--nb-radius);
+  box-shadow: var(--nb-shadow-xs);
+  cursor: pointer;
+}
+
+.code-copy:active {
+  transform: translate(1px, 1px);
+  box-shadow: none;
+}
+
+/* 高亮三色：关键字 / 字符串 / 注释（双主题显式配色，不依赖前景色） */
+:root {
+  --tok-kw: #7c3aed;
+  --tok-str: #0f7b52;
+  --tok-com: #8a8f98;
+}
+
+:root[data-theme="dark"] {
+  --tok-kw: #c4b5fd;
+  --tok-str: #7ee2b8;
+  --tok-com: #99a1ad;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --tok-kw: #c4b5fd;
+    --tok-str: #7ee2b8;
+    --tok-com: #99a1ad;
+  }
+}
+
+.tok-kw {
+  color: var(--tok-kw);
+  font-weight: 700;
+}
+
+.tok-str {
+  color: var(--tok-str);
+}
+
+.tok-com {
+  color: var(--tok-com);
+  font-style: italic;
+}
+
+/* 驱动来源徽章（心理预期管理）：📱 面板驱动 / 🖥 终端驱动 */
+.badge.driven-panel {
+  flex-shrink: 0;
+  background: var(--info);
+  color: var(--info-foreground);
+}
+
+.badge.driven-terminal {
+  flex-shrink: 0;
+  background: var(--muted);
+  color: var(--muted-foreground);
+}
+
+/* 预期提示条：面板驱动过的会话进入 chat 页一次性提示（可关闭记住） */
+.driver-hint {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--info);
+  color: var(--info-foreground);
+  border-bottom: var(--bw) solid var(--border);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.driver-hint-text {
+  flex: 1 1 220px;
+  min-width: 0;
+  line-height: 1.5;
+}
+
+.driver-hint-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+/* 紧凑热区：复制按钮/重试视觉小、热区 ::after 外扩 44px（粗指针不被 min-height 撑高） */
+.code-copy::after,
+.send-retry::after,
+.bg-hint-close::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 44px;
+  height: 44px;
+  transform: translate(-50%, -50%);
+}
+
+.bg-hint-close {
+  position: relative;
+}
+
+@media (pointer: coarse) {
+  .code-copy,
+  .send-retry,
+  .bg-hint-close {
+    min-height: 0;
+  }
+
+  /* 新消息浮标/重试等文本按钮保持 44px 触控底线 */
+  .new-messages-btn {
+    min-height: 44px;
+  }
+}
+
+/* reduced-motion：阶段条/工具脉冲降级为静态视觉，文案与计时保留 */
+@media (prefers-reduced-motion: reduce) {
+  .tool-card.running {
+    animation: none;
+    box-shadow: 0 0 0 2px var(--primary), var(--shadow-sm);
+  }
+
+  .wait-stage.fade-swap {
+    animation: none;
+  }
+}

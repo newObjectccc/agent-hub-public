@@ -1,9 +1,11 @@
 /**
  * 轻量 Markdown 渲染（不引入 marked 等外部依赖，控制包体积）。
- * 支持：代码块、行内代码、粗体、斜体、链接、图片、标题、引用块、无序/有序列表、段落/换行。
+ * 支持：代码块（复制按钮 + 轻量三色语法高亮）、行内代码、粗体、斜体、链接、图片、标题、
+ * 引用块、无序/有序列表、段落/换行。
  * 安全：先整体 HTML 转义，再做标记替换；链接仅放行 http(s)/mailto；
  * 图片仅放行 http(s)/data:image/相对路径（拒绝 javascript: 等其它 scheme）。
  */
+import { highlightCode } from "./highlight";
 
 export function escapeHtml(s: string): string {
   return s
@@ -90,7 +92,7 @@ export function renderMarkdown(src: string): string {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
 
-    // 代码块 ``` … ```
+    // 代码块 ``` … ```（右上角复制按钮；标注语言才做轻量高亮，纯块保持纯色）
     const fence = line.match(/^\s*```(\w*)\s*$/);
     if (fence) {
       flushAll();
@@ -100,7 +102,11 @@ export function renderMarkdown(src: string): string {
         code.push(lines[i]);
         i++;
       }
-      out.push(`<pre><code>${code.join("\n")}</code></pre>`);
+      const raw = code.join("\n");
+      const body = fence[1] !== "" ? highlightCode(raw) : raw;
+      out.push(
+        `<div class="code-block"><button type="button" class="code-copy" aria-label="复制代码">复制</button><pre><code>${body}</code></pre></div>`,
+      );
       continue;
     }
 

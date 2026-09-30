@@ -5,6 +5,12 @@
 
 export type SessionStatus = "idle" | "running" | "error";
 
+/**
+ * 会话最后驱动来源（心理预期管理）：面板（手机/网页 POST prompt）或终端（电脑 pi/claude）。
+ * 可缺省（老 server/容错路径）：缺省视为 terminal。
+ */
+export type SessionDrivenBy = "panel" | "terminal";
+
 /** 会话来源：pi（~/.pi/agent/sessions）或 claude（~/.claude/projects） */
 export type SessionSource = "pi" | "claude";
 
@@ -32,6 +38,11 @@ export interface SessionListItem {
    * 识别不出 / 跨机父文件缺失为 null（前端归"未归组子代理"兜底分组）。
    */
   parentSessionId?: string | null;
+  /**
+   * 最后驱动来源（面板驱动过即 "panel"，只增不减）：手机面板发消息 = server 的 pi SDK
+   * 实例驱动同一会话文件，电脑终端 pi 需 pi --resume 重开才能看到。可缺省按 terminal。
+   */
+  lastDrivenBy?: SessionDrivenBy;
 }
 
 export type ToolCallStatus = "pending" | "running" | "done" | "error";

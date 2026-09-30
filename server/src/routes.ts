@@ -13,6 +13,8 @@ import { listDir, type ListDirOptions } from "./fs-tree.js";
 import { createGitApi, type GitApi } from "./git.js";
 import type { KpiService } from "./kpi.js";
 import type { LiveIngestLike } from "./live.js";
+import { createPanelDrivenStore, drivenByOf, type PanelDrivenStoreLike } from "./panelDriven.js";
+import { dataDir } from "./paths.js";
 import type { PromptResult } from "./sessions/hub.js";
 import { fullPage, paginateMessages, parseLimit } from "./sessions/paginate.js";
 import { buildSubAgentActivity } from "./subagents.js";
@@ -69,6 +71,8 @@ export interface RouteDeps {
   commands?: CommandsApi;
   /** 文件树只读列表（可注入 mock；缺省真实 fs） */
   fsTree?: { listDir(cwd: string, options: ListDirOptions): Promise<FsTreeDto> };
+  /** 面板驱动标注（可注入 mock；缺省持久化到 data/panel-driven.json） */
+  panelDriven?: PanelDrivenStoreLike;
 }
 
 function tokenMatches(headerValue: string, expected: string): boolean {
@@ -99,6 +103,12 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   const git = deps.git ?? createGitApi();
   const commands: CommandsApi = deps.commands ?? createCommandsApi();
   const fsTree = deps.fsTree ?? { listDir: (cwd: string, options: ListDirOptions) => listDir(cwd, options) };
+  const panelDriven: PanelDrivenStoreLike = deps.panelDriven ?? createPanelDrivenStore(dataDir);
+  /** 会话 DTO 附加最后驱动来源（契约 §1，面板驱动过即 panel） */
+  const decorateSession = (s: SessionListItem): SessionListItem => ({
+    ...s,
+    lastDrivenBy: drivenByOf(panelDriven, s.id),
+  });
   // auth.token 预留：enabled 时校验 Bearer（v0 默认关闭）
   if (config.auth.enabled && config.auth.token !== "") {
     app.addHook("onRequest", async (req: FastifyRequest, reply: FastifyReply) => {
@@ -118,7 +128,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   // GET /api/sessions
   app.get("/api/sessions", async (_req, reply) => {
     try {
-      const sessions = await hub.listSessions();
+      const sessions = (await hub.listSessions()).map(decorateSession);
       return reply.send({ sessions });
     } catch (err) {
       return handle(reply, err);
@@ -130,10 +140,11 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
     "/api/sessions/:id",
     async (req, reply) => {
       try {
-        const session = await hub.findSession(req.params.id);
-        if (!session) {
+        const found = await hub.findSession(req.params.id);
+        if (!found) {
           throw new HubError(ErrorCodes.SESSION_NOT_FOUND, `会话不存在: ${req.params.id}`, 404);
         }
+        const session = decorateSession(found);
         const query = (req.query ?? {}) as { before?: unknown; limit?: unknown };
         const limit = parseLimit(query.limit);
         if (limit === null) {
@@ -266,6 +277,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
               }
               throw err;
             }
+            await panelDriven.mark(req.params.id);
             return reply.status(202).send({ accepted: true, mode: "prompt", handled: "compact" });
           }
         }
@@ -288,6 +300,8 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
       if (result.busy) {
         throw new HubError(ErrorCodes.SESSION_BUSY, "会话正在运行中；可指定 mode=steer|followUp 或先 abort", 409);
       }
+      // 面板驱动标注（心理预期管理）：接受 prompt 即记入“面板驱动过”集合
+      await panelDriven.mark(req.params.id);
       return reply.status(202).send({ accepted: true, mode: result.mode });
     } catch (err) {
       return handle(reply, err);

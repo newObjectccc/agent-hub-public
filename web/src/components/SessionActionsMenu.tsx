@@ -36,7 +36,7 @@ export function SessionActionsMenu({ onFork, forkBusy = false }: SessionActionsM
             role="menuitem"
             className="action-menu-item"
             disabled={forkBusy}
-            title="复制完整上下文到全新会话（推荐：避免电脑端 pi 与手机面板同时驱动一个会话）"
+            title="手机独立干活推荐：分叉后互不影响。复制完整上下文到全新会话，电脑端 pi 与手机面板各自继续，互不干扰。"
             onClick={() => {
               setOpen(false);
               onFork();
@@ -46,8 +46,8 @@ export function SessionActionsMenu({ onFork, forkBusy = false }: SessionActionsM
             <span>{forkBusy ? "复制中…" : "复制为新会话"}</span>
           </button>
           <p className="action-menu-hint">
-            复制完整上下文到新会话；手机面板发消息后，电脑端 pi 需重新打开原会话才能看到，
-            复制新会话可避免两个进程同时驱动一个会话（推荐）。
+            手机独立干活推荐：分叉后互不影响。复制完整上下文到全新会话，手机面板与电脑端 pi
+            各自继续、互不干扰（手机发消息是 server 的 pi 在驱动同一会话，电脑终端需 pi --resume 才能看到）。
           </p>
         </div>
       )}

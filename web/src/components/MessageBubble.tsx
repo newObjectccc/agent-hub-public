@@ -76,6 +76,8 @@ export function MessageBubble({
   onQuote,
   liveIndex,
   liveTotal,
+  sendFailed,
+  onRetry,
 }: {
   message: SessionMessage;
   highlight?: boolean;
@@ -85,6 +87,10 @@ export function MessageBubble({
   /** 同会话并行流式回合序号（1 起）/ 总数：>1 时显示 🔗 标记 */
   liveIndex?: number;
   liveTotal?: number;
+  /** 发送失败标记（网络错误/5xx/未接受）：显示"⚠️ 发送失败" + 重试按钮 */
+  sendFailed?: boolean;
+  /** 点击"重试"：重发同样内容 */
+  onRetry?: () => void;
 }) {
   const thinking = message.thinking ?? "";
   const [menuOpen, setMenuOpen] = useState(false);
@@ -202,6 +208,14 @@ export function MessageBubble({
           )}
         </div>
         <div className="msg-time">{timeLabel(message.timestamp)}</div>
+        {message.role === "user" && sendFailed && (
+          <div className="send-failed" role="alert">
+            <span className="send-failed-text">⚠️ 发送失败</span>
+            <button type="button" className="send-retry" onClick={onRetry} aria-label="重发这条消息">
+              重试
+            </button>
+          </div>
+        )}
 
         {menuOpen && (
           <>
