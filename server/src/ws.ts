@@ -234,7 +234,7 @@ export class WsHub {
       if (this.tails && hub.listChildren) {
         syncChildren();
         // 增量发现：订阅期间新派生的子代理（面板开着不刷新也能看到新卡片）
-        const childScan = setInterval(syncChildren, 20_000);
+        const childScan = setInterval(syncChildren, 10_000); // 发现上界 ≤10s（轻量血缘扫描毫秒级）
         childScan.unref?.();
         cleanupFns.push(() => clearInterval(childScan));
       }

@@ -12,6 +12,7 @@
  * id 冲突（理论上不可能：pi 为 32-hex、claude 为 UUID v4）时 claude 优先，按源缓存消歧。
  */
 import { ErrorCodes, HubError } from "../errors.js";
+import { scanSubAgentLineage } from "../sessions/scan.js";
 import type { PromptResult } from "../sessions/hub.js";
 import { loadSessionMessages } from "../sessions/scan.js";
 import { loadClaudeSessionMessages } from "./claude-transcript.js";
@@ -24,12 +25,15 @@ export class SessionRegistry {
   private readonly claude: SessionAdapter;
   /** id → source 记忆（getStatus/isLive 等同步路径消歧用） */
   private readonly sources = new Map<string, SessionSource>();
+  /** 会话目录（轻量子代血缘扫描用） */
+  private readonly sessionDir: string;
   /** 会话转 live 时回调（停文件 tail）；同时挂到两个适配器 */
   onLive?: (id: string) => void;
 
-  constructor(pi: SessionAdapter, claude: SessionAdapter) {
+  constructor(pi: SessionAdapter, claude: SessionAdapter, sessionDir = "") {
     this.pi = pi;
     this.claude = claude;
+    this.sessionDir = sessionDir;
     const forward = (id: string): void => this.onLive?.(id);
     (this.pi as SessionAdapter & { onLive?: (id: string) => void }).onLive = forward;
     (this.claude as ClaudeAdapter).onLive = forward;
@@ -117,8 +121,27 @@ export class SessionRegistry {
 
   /** 子代理会话列表（pi-subagents 派生 + 血缘指向 parentId；fork 分支不算，反馈轮 3 #4） */
   async listChildren(parentId: string): Promise<SessionListItem[]> {
-    const all = await this.listSessions();
-    return all.filter((s) => s.isSubAgent && s.parentSessionId === parentId);
+    // 轻量血缘直读（绕过 listSessions 的 SWR 缓存相位：新/静态子会话 ≤10s 必现）
+    const lineage = await scanSubAgentLineage(this.sessionDir);
+    const out: SessionListItem[] = [];
+    for (const l of lineage) {
+      if (l.parentSessionId !== parentId) continue;
+      out.push({
+        id: l.id,
+        source: "pi",
+        name: l.name,
+        cwd: "",
+        updatedAt: new Date().toISOString(),
+        messageCount: 0,
+        status: "idle",
+        lastUserMessage: null,
+        lastAssistantMessage: null,
+        sessionFile: l.sessionFile,
+        isSubAgent: true,
+        parentSessionId: l.parentSessionId,
+      });
+    }
+    return out;
   }
 
   async loadMessages(id: string): Promise<MessageDto[] | null> {

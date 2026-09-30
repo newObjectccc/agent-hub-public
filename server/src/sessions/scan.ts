@@ -579,3 +579,70 @@ export async function scanSessionInsights(sessionDir: string, options: ScanOptio
   });
   return items;
 }
+
+
+/**
+ * 轻量子代血缘扫描（子代理发现专用）：
+ * 只读每个会话文件头部若干 KB（header 首行含 parentSession；前几行含 session_info.name），
+ * 不解析全量消息——60+ 会话毫秒级，绕过 listSessions 的 SWR 缓存相位问题。
+ */
+export interface SubAgentLineage {
+  id: string;
+  parentSessionId: string | null;
+  name: string | null;
+  sessionFile: string;
+}
+
+export async function scanSubAgentLineage(sessionDir: string): Promise<SubAgentLineage[]> {
+  const files = await findSessionFiles(sessionDir);
+  const out: SubAgentLineage[] = [];
+  const HEAD_BYTES = 8192;
+  await Promise.all(
+    files.map(async (file) => {
+      try {
+        const { open } = await import("node:fs/promises");
+        const fh = await open(file, "r");
+        try {
+          const buf = Buffer.alloc(HEAD_BYTES);
+          const { bytesRead } = await fh.read(buf, 0, HEAD_BYTES, 0);
+          const head = buf.subarray(0, bytesRead).toString("utf8");
+          const lines = head.split("\n").filter((l) => l.trim() !== "");
+          let id: string | null = null;
+          let parentSessionId: string | null = null;
+          let name: string | null = null;
+          for (const line of lines) {
+            let row: unknown;
+            try {
+              row = JSON.parse(line);
+            } catch {
+              continue;
+            }
+            if (!isRecord(row)) continue;
+            if (row.type === "session" && typeof row.id === "string") {
+              id = row.id;
+              if (typeof row.parentSession === "string" && row.parentSession !== "") {
+                parentSessionId = row.parentSession;
+              }
+            } else if (row.type === "session_info" && typeof row.name === "string" && row.name.trim() !== "") {
+              name = row.name.trim();
+            }
+            // header 行内 parentSession（不同版本兼容）
+            if (parentSessionId === null && typeof row.parentSession === "string" && row.parentSession !== "") {
+              parentSessionId = row.parentSession;
+            }
+          }
+          if (id === null) return;
+          // 只收"子代理"（命名特征或有父血缘）
+          const isSub = (name !== null && SUB_AGENT_NAME_RE.test(name)) || parentSessionId !== null;
+          if (!isSub) return;
+          out.push({ id, parentSessionId, name, sessionFile: file });
+        } finally {
+          await fh.close();
+        }
+      } catch {
+        // 单文件损坏不影响整体
+      }
+    }),
+  );
+  return out;
+}

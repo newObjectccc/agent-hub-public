@@ -104,7 +104,7 @@ export async function startHub(): Promise<StartedHub> {
   const claudeProjectsDir = join(homedir(), ".claude", "projects");
   const claudeHistoryFile = join(homedir(), ".claude", "history.jsonl");
   const claudeAdapter = new ClaudeAdapter({ projectsDir: claudeProjectsDir, historyFile: claudeHistoryFile, emit });
-  const hub = new SessionRegistry(new PiAdapter(piHub), claudeAdapter);
+  const hub = new SessionRegistry(new PiAdapter(piHub), claudeAdapter, config.sessionDir);
   // 子代理血缘路由器（emit 闭包延迟引用：事件只可能在 startHub 装配完成后到达）
   const subAgentRouter = new SubAgentRouter(
     (id) => hub.findSession(id),

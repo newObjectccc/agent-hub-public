@@ -229,3 +229,32 @@ describe("首波事件缓存 flush（AC7 缺陷 A 回归）", () => {
     assert.equal(routed?.parentSessionId, "parent-2");
   });
 });
+
+describe("轻量血缘扫描：静态子会话文件必现（AC2 回归）", () => {
+  it("新写入的静态子会话（写完即静止）立即可被 scanSubAgentLineage 发现", async () => {
+    const { mkdtemp, writeFile, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { scanSubAgentLineage } = await import("../sessions/scan.js");
+    const dir = await mkdtemp(join(tmpdir(), "agent-hub-lineage-"));
+    try {
+      // 静态文件：一次写入后不再变化（用户实测"永不出"的场景）
+      await writeFile(
+        join(dir, "child.jsonl"),
+        [
+          JSON.stringify({ type: "session", version: 3, id: "child-x", timestamp: "2026-01-01T00:00:00.000Z", cwd: "/tmp/x", parentSession: "parent-x" }),
+          JSON.stringify({ type: "session_info", name: "developer#deadbeef", timestamp: "2026-01-01T00:00:00.000Z" }),
+          JSON.stringify({ type: "message", id: "m1", parentId: null, timestamp: "2026-01-01T00:00:01.000Z", message: { role: "user", content: "task" } }),
+        ].join("\n"),
+        "utf8",
+      );
+      const lineage = await scanSubAgentLineage(dir);
+      const hit = lineage.find((l) => l.id === "child-x");
+      assert.ok(hit, "静态子会话应被发现");
+      assert.equal(hit.parentSessionId, "parent-x");
+      assert.equal(hit.name, "developer#deadbeef");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
