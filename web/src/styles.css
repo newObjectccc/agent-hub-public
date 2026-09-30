@@ -4013,6 +4013,56 @@ button.git-bar:active {  transform: translate(2px, 2px);
  * 一体化输入栏 / 上传 / / @ 面板增强（C 路结构，紧凑野兽派密度 token）
  * 面板贴输入框上方（bottom:100%），320-1024 全视口不超屏
  * ============================================================ */
+/* 发送模式行（模式菜单 + 子代理 inline 条 + 运行状态 + 中止） */
+.composer-modebar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 4px 0;
+}
+
+/* 子代理条 inline 形态：与模式按钮同一行，展开内容浮层上挂（不挤压输入区） */
+.subagent-panel.inline {
+  position: static;
+  flex: 0 1 auto;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  padding: 0;
+}
+.subagent-panel.inline .subagent-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 40px;
+  padding: 2px 8px;
+  border: var(--bw) solid var(--border);
+  background: var(--muted);
+  box-shadow: var(--shadow-sm);
+}
+.subagent-panel.inline .subagent-panel-title {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 0.82rem;
+}
+.subagent-panel.inline .subagent-cards {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 6px);
+  z-index: 30;
+  max-height: 46vh;
+  overflow-y: auto;
+  background: var(--card);
+  border: var(--bw) solid var(--border);
+  box-shadow: var(--shadow-md);
+  padding: 6px;
+}
+
 .composer {
   position: relative;
   display: flex;
