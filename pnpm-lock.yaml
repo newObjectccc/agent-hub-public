@@ -14,6 +14,21 @@ importers:
 
   cli: {}
 
+  integrations/pi-command:
+    devDependencies:
+      '@earendil-works/pi-ai':
+        specifier: ^0.87.1
+        version: 0.87.1(ws@8.22.0)
+      '@earendil-works/pi-coding-agent':
+        specifier: ^0.87.1
+        version: 0.87.1(ws@8.22.0)
+      '@types/node':
+        specifier: ^22.10.0
+        version: 22.20.4
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+
   integrations/pi-live-feed:
     devDependencies:
       '@earendil-works/pi-ai':
