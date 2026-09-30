@@ -362,10 +362,14 @@ export function isSubAgentSession(name: string | null, entries: RawEntry[]): boo
  * 无法解析返回 null（前端归"未归组子代理"兜底分组）。
  */
 export function parentSessionIdFromPath(parentSession: unknown): string | null {
-  if (typeof parentSession !== "string") return null;
+  if (typeof parentSession !== "string" || parentSession.trim() === "") return null;
+  // 真实 pi 格式：parentSession 是父会话文件路径（…/2026-…_<id>.jsonl）→ 提取 id
   const base = parentSession.split(/[\\/]/).pop() ?? "";
   const m = /_([0-9a-zA-Z-]+)\.jsonl$/.exec(base);
-  return m && m[1] !== "" ? m[1] : null;
+  if (m && m[1] !== "") return m[1];
+  // 裸 id 回退（合成/兼容格式）：无路径分隔与 .jsonl 后缀的非空字符串视为已是会话 id
+  if (!/[\\/]/.test(parentSession) && !parentSession.endsWith(".jsonl")) return parentSession.trim();
+  return null;
 }
 
 /** 会话摘要（列表项，status 由 server 运行态注入） */
@@ -620,20 +624,18 @@ export async function scanSubAgentLineage(sessionDir: string): Promise<SubAgentL
             if (!isRecord(row)) continue;
             if (row.type === "session" && typeof row.id === "string") {
               id = row.id;
-              if (typeof row.parentSession === "string" && row.parentSession !== "") {
-                parentSessionId = row.parentSession;
-              }
             } else if (row.type === "session_info" && typeof row.name === "string" && row.name.trim() !== "") {
               name = row.name.trim();
             }
-            // header 行内 parentSession（不同版本兼容）
-            if (parentSessionId === null && typeof row.parentSession === "string" && row.parentSession !== "") {
-              parentSessionId = row.parentSession;
+            // header 行内 parentSession（路径或裸 id，统一归一化为父会话 id）
+            if (parentSessionId === null) {
+              parentSessionId = parentSessionIdFromPath(row.parentSession);
             }
           }
           if (id === null) return;
-          // 只收"子代理"（命名特征或有父血缘）
-          const isSub = (name !== null && SUB_AGENT_NAME_RE.test(name)) || parentSessionId !== null;
+          // 口径与 isSubAgentSession 对齐：命名特征优先（fork 分支带 parentSession 但不叫子代理）；
+          // 无名时以父血缘兜底（pi-subagents 派生即使缺 session_info 也应入面板）
+          const isSub = name !== null ? SUB_AGENT_NAME_RE.test(name) : parentSessionId !== null;
           if (!isSub) return;
           out.push({ id, parentSessionId, name, sessionFile: file });
         } finally {

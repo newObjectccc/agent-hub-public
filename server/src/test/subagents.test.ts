@@ -238,11 +238,12 @@ describe("轻量血缘扫描：静态子会话文件必现（AC2 回归）", () 
     const { scanSubAgentLineage } = await import("../sessions/scan.js");
     const dir = await mkdtemp(join(tmpdir(), "agent-hub-lineage-"));
     try {
-      // 静态文件：一次写入后不再变化（用户实测"永不出"的场景）
+      // 静态文件：一次写入后不再变化（用户实测"永不出"的场景）。
+      // parentSession 用**真实 pi 格式**（父会话文件路径，48/48 真实样本同款），非裸 id
       await writeFile(
         join(dir, "child.jsonl"),
         [
-          JSON.stringify({ type: "session", version: 3, id: "child-x", timestamp: "2026-01-01T00:00:00.000Z", cwd: "/tmp/x", parentSession: "parent-x" }),
+          JSON.stringify({ type: "session", version: 3, id: "child-x", timestamp: "2026-01-01T00:00:00.000Z", cwd: "/tmp/x", parentSession: "--Users-me--sessions/2026-01-01T00-00-00-000Z_parent-x.jsonl" }),
           JSON.stringify({ type: "session_info", name: "developer#deadbeef", timestamp: "2026-01-01T00:00:00.000Z" }),
           JSON.stringify({ type: "message", id: "m1", parentId: null, timestamp: "2026-01-01T00:00:01.000Z", message: { role: "user", content: "task" } }),
         ].join("\n"),
@@ -251,8 +252,36 @@ describe("轻量血缘扫描：静态子会话文件必现（AC2 回归）", () 
       const lineage = await scanSubAgentLineage(dir);
       const hit = lineage.find((l) => l.id === "child-x");
       assert.ok(hit, "静态子会话应被发现");
-      assert.equal(hit.parentSessionId, "parent-x");
+      assert.equal(hit.parentSessionId, "parent-x", "路径形态应归一化为父会话 id");
       assert.equal(hit.name, "developer#deadbeef");
+      // 端到端：listChildren(父 id) 命中（registry 比对口径）
+      const { SessionRegistry } = await import("../adapters/registry.js");
+      const fakeAdapter = { source: "pi", isLive: () => false, getStatus: () => "idle", listSessions: async () => [], findSession: async () => null, loadMessages: async () => null, prompt: async () => ({ accepted: true, mode: "prompt" }), abort: async () => undefined, disposeAll: () => undefined } as never;
+      const registry = new SessionRegistry(fakeAdapter, fakeAdapter, dir);
+      const kids = await registry.listChildren("parent-x");
+      assert.ok(kids.some((k) => k.id === "child-x"), "listChildren 应命中真实路径格式的子会话");
+      // 裸 id 兼容格式同样命中
+      await writeFile(
+        join(dir, "child2.jsonl"),
+        [
+          JSON.stringify({ type: "session", version: 3, id: "child-y", timestamp: "2026-01-01T00:00:00.000Z", cwd: "/tmp/x", parentSession: "parent-x" }),
+          JSON.stringify({ type: "session_info", name: "acceptance-reviewer#cafe01", timestamp: "2026-01-01T00:00:00.000Z" }),
+        ].join("\n"),
+        "utf8",
+      );
+      const kids2 = await registry.listChildren("parent-x");
+      assert.ok(kids2.some((k) => k.id === "child-y"), "裸 id 兼容格式也应命中");
+      // fork 口径：带 parentSession 但无子代理命名 → 不收（有 name 时以命名为准）
+      await writeFile(
+        join(dir, "fork.jsonl"),
+        [
+          JSON.stringify({ type: "session", version: 3, id: "fork-z", timestamp: "2026-01-01T00:00:00.000Z", cwd: "/tmp/x", parentSession: "parent-x" }),
+          JSON.stringify({ type: "session_info", name: "我的分叉会话", timestamp: "2026-01-01T00:00:00.000Z" }),
+        ].join("\n"),
+        "utf8",
+      );
+      const kids3 = await registry.listChildren("parent-x");
+      assert.ok(!kids3.some((k) => k.id === "fork-z"), "fork（有名字但非子代理命名）不应收");
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

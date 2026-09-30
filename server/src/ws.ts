@@ -220,6 +220,19 @@ export class WsHub {
               this.tails?.acquire(child.id, child.sessionFile, childLoader);
               childSet.add(child.id);
               childTails.push(child.id);
+              // 发现即推：静态子会话文件零 tail 事件，主动广播一条活动卡（面板 ≤10s 必现）
+              this.broadcast(sessionId, {
+                type: "subagent_activity",
+                sessionId: child.id,
+                parentSessionId: sessionId,
+                activity: {
+                  sessionId: child.id,
+                  name: child.name ?? child.id,
+                  status: "idle",
+                  done: false,
+                  updatedAt: Date.now(),
+                },
+              } as never);
             }
             // 消失的子会话 release（防 tail 泄漏）
             for (const id of [...childSet]) {
