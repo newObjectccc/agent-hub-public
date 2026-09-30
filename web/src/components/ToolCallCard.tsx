@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { memo, useState } from "react";
+import { probeRender } from "../utils/renderProbe";
 import type { ToolCall } from "../api/types";
 import { useNowTicker } from "../hooks/useNowTicker";
 import type { FileRef } from "../utils/fileRefs";
@@ -26,14 +27,16 @@ function ToolDuration({ toolCall }: { toolCall: ToolCall }) {
 
 /** 工具调用折叠卡片：默认收起显示 name + summary，点击展开 resultPreview；
  * summary/resultPreview 中的文件路径（src/foo.ts:12）识别为可点击 → 打开文件弹层；
- * running 卡片带「运行中」脉冲 + 实时时长（reduced-motion 由 CSS 降级静态）。 */
-export function ToolCallCard({
+ * running 卡片带「运行中」脉冲 + 实时时长（reduced-motion 由 CSS 降级静态）。
+ * 渲染性能：React.memo（相邻消息更新时未变化的工具卡不重渲）。 */
+export const ToolCallCard = memo(function ToolCallCard({
   toolCall,
   onOpenFile,
 }: {
   toolCall: ToolCall;
   onOpenFile?: (ref: FileRef) => void;
 }) {
+  probeRender("ToolCallCard");
   const [open, setOpen] = useState(false);
   const hasPreview = Boolean(toolCall.resultPreview);
 
@@ -70,4 +73,4 @@ export function ToolCallCard({
       )}
     </div>
   );
-}
+});

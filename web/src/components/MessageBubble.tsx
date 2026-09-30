@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { probeRender } from "../utils/renderProbe";
 import type { SessionMessage } from "../api/types";
 import { copyText } from "../utils/clipboard";
 import type { FileRef } from "../utils/fileRefs";
@@ -16,8 +17,29 @@ function timeLabel(ts: number): string {
 export const COPY_SUCCESS_TOAST = "已复制消息文本";
 export const COPY_FAIL_TOAST = "复制失败，请手动选择文本";
 
+/**
+ * 消息图片：懒加载 + 16:10 占位防跳动；load 后标 .img-loaded、error 后标 .img-error
+ * 恢复布局（不永留占位）；缓存命中不再来事件 → ref 兜底按 naturalWidth 判定。
+ */
+function MsgImage({ src, alt }: { src: string; alt: string }) {
+  return (
+    <img
+      className="msg-img"
+      src={src}
+      alt={alt}
+      loading="lazy"
+      decoding="async"
+      ref={(el) => {
+        if (el && el.complete) el.classList.add(el.naturalWidth > 0 ? "img-loaded" : "img-error");
+      }}
+      onLoad={(e) => e.currentTarget.classList.add("img-loaded")}
+      onError={(e) => e.currentTarget.classList.add("img-error")}
+    />
+  );
+}
+
 /** 思维链折叠块：野兽派灰底，默认收起，点击展开（流式期间可反复开关） */
-function ThinkingBlock({ text }: { text: string }) {
+const ThinkingBlock = memo(function ThinkingBlock({ text }: { text: string }) {
   const [open, setOpen] = useState(false);
   return (
     <div className="thinking-card">
@@ -45,7 +67,7 @@ function ThinkingBlock({ text }: { text: string }) {
       )}
     </div>
   );
-}
+});
 
 /** 流式进行中空回合的活占位：打字点点点（reduced-motion 降级静态文案，CSS 控制） */
 function StreamingPlaceholder() {
@@ -68,8 +90,11 @@ function StreamingPlaceholder() {
  * 图片例外：不拦截长按/右键，让 Android Chrome 原生"保存图片"菜单工作。
  * streaming 消息（message_start → message_end）：空内容显示"✍️ 回复中…"活占位（绝不显示"（无内容）"），
  * 气泡带进行中微光；同会话并行回合（sub agent 并行）带 🔗 序号标记。
+ *
+ * 渲染性能：React.memo（message 引用未变的历史消息不随相邻消息更新重渲）；
+ * measureRef 供长会话窗口化测量行高（传入方须保持引用稳定，否则 memo 失效）。
  */
-export function MessageBubble({
+export const MessageBubble = memo(function MessageBubble({
   message,
   highlight,
   onOpenFile,
@@ -78,6 +103,7 @@ export function MessageBubble({
   liveTotal,
   sendFailed,
   onRetry,
+  measureRef,
 }: {
   message: SessionMessage;
   highlight?: boolean;
@@ -91,7 +117,10 @@ export function MessageBubble({
   sendFailed?: boolean;
   /** 点击"重试"：重发同样内容 */
   onRetry?: () => void;
+  /** 行高测量 ref（长会话窗口化；引用须稳定） */
+  measureRef?: (el: HTMLDivElement | null) => void;
 }) {
+  probeRender("MessageBubble");
   const thinking = message.thinking ?? "";
   const [menuOpen, setMenuOpen] = useState(false);
   const suppressClickRef = useRef(false);
@@ -127,6 +156,7 @@ export function MessageBubble({
   return (
     <div
       id={`msg-${message.id}`}
+      ref={measureRef}
       className={`msg-row ${message.role}${highlight ? " search-hit" : ""}${streaming ? " streaming" : ""}`}
     >
       <div
@@ -176,7 +206,7 @@ export function MessageBubble({
               {images.length > 0 && (
                 <div className="msg-images">
                   {images.map((img, i) => (
-                    <img key={`${message.id}-img-${i}`} className="msg-img" src={img.url} alt={img.alt ?? "图片"} loading="lazy" />
+                    <MsgImage key={`${message.id}-img-${i}`} src={img.url} alt={img.alt ?? "图片"} />
                   ))}
                 </div>
               )}
@@ -197,7 +227,7 @@ export function MessageBubble({
               {images.length > 0 && (
                 <div className="msg-images">
                   {images.map((img, i) => (
-                    <img key={`${message.id}-img-${i}`} className="msg-img" src={img.url} alt={img.alt ?? "图片"} loading="lazy" />
+                    <MsgImage key={`${message.id}-img-${i}`} src={img.url} alt={img.alt ?? "图片"} />
                   ))}
                 </div>
               )}
@@ -238,4 +268,4 @@ export function MessageBubble({
       </div>
     </div>
   );
-}
+});

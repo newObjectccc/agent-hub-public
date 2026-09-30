@@ -42,7 +42,7 @@ function renderInline(escaped: string): string {
   // 图片 ![alt](src)（在链接规则前处理，避免 `!` 干扰）
   s = s.replace(/!\[([^\]\n]*)\]\(([^)\s]+)\)/g, (m, alt: string, url: string) => {
     const src = safeImgSrc(url);
-    return src ? `<img class="md-img" src="${src}" alt="${alt}" loading="lazy" />` : m;
+    return src ? `<img class="md-img" src="${src}" alt="${alt}" loading="lazy" decoding="async" />` : m;
   });
   // 链接 [text](url)
   s = s.replace(/\[([^\]\n]+)\]\(([^)\s]+)\)/g, (m, text: string, url: string) => {
