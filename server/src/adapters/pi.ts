@@ -14,6 +14,11 @@ export class PiAdapter implements SessionAdapter {
     this.hub = hub;
   }
 
+  /** onLive 转发到内层 SessionHub（ensureLive 触发停文件 tail，防双推送） */
+  set onLive(fn: ((id: string) => void) | undefined) {
+    this.hub.onLive = fn;
+  }
+
   isLive(id: string): boolean {
     return this.hub.isLive(id);
   }

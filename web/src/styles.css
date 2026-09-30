@@ -2237,6 +2237,13 @@ button.git-bar:active {  transform: translate(2px, 2px);
 }
 
 /* ---------- 会话分支树 ---------- */
+/* 320 窄屏：面板驱动 badge 长文案隐藏（防 chat header 横向溢出） */
+@media (max-width: 359px) {
+  .badge-text-long {
+    display: none;
+  }
+}
+
 .tree-page {
   display: flex;
   flex-direction: column;

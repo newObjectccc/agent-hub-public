@@ -190,3 +190,42 @@ describe("SubAgentRouter 血缘路由", () => {
     assert.equal(router.route("sub-1", ev), null);
   });
 });
+
+describe("首波事件缓存 flush（AC7 缺陷 A 回归）", () => {
+  it("血缘未解析期间的事件不丢：resolve 后 onDrain 按序补投", async () => {
+    const drained: Array<{ parentSessionId: string }> = [];
+    const router = new SubAgentRouter(
+      async (id) =>
+        id === "child-1"
+          ? { id, parentSessionId: "parent-1", name: "developer#abc", isSubAgent: true } as never
+          : null,
+      (routed) => drained.push(routed),
+    );
+    // 首波（血缘未知）：route 返回 null 但事件被缓存
+    const first = router.route("child-1", {
+      type: "message_end",
+      message: { id: "m1", role: "assistant", timestamp: 1, text: "第一条输出", toolCalls: [] },
+    } as never);
+    assert.equal(first, null);
+    // 等 resolve + flush
+    await new Promise((r) => setTimeout(r, 30));
+    assert.ok(drained.length >= 1, `首波应补投，实际 ${drained.length}`);
+    assert.equal(drained[0].parentSessionId, "parent-1");
+    // 血缘已缓存：后续事件直接路由
+    const second = router.route("child-1", {
+      type: "message_end",
+      message: { id: "m2", role: "assistant", timestamp: 2, text: "第二条", toolCalls: [] },
+    } as never);
+    assert.equal(second?.parentSessionId, "parent-1");
+  });
+
+  it("remember() 预热后 route 首事件即达（无 miss）", () => {
+    const router = new SubAgentRouter(async () => null);
+    router.remember("child-2", "parent-2", "acceptance-reviewer#xyz");
+    const routed = router.route("child-2", {
+      type: "message_end",
+      message: { id: "m1", role: "assistant", timestamp: 1, text: "hi", toolCalls: [] },
+    } as never);
+    assert.equal(routed?.parentSessionId, "parent-2");
+  });
+});

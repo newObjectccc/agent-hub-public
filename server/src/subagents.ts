@@ -100,8 +100,19 @@ export function activityEventFrom(sessionId: string, event: ServerEvent): SubAge
     case "message_end": {
       if (event.message.role !== "assistant") return null;
       const text = truncateSummary(event.message.text);
-      if (text === null) return null;
-      return { sessionId, lastOutput: text, updatedAt: event.message.timestamp || now };
+      // tail 路径无 tool_start/tool_end：从消息 toolCalls 回填"当前工具"（卡片不滞后）
+      const toolCalls = event.message.toolCalls ?? [];
+      const lastTool = toolCalls.length > 0 ? toolCalls[toolCalls.length - 1] : undefined;
+      const toolPart = lastTool
+        ? { currentTool: truncateSummary(lastTool.summary !== "" && lastTool.summary !== null ? lastTool.summary : lastTool.name), toolRunning: false }
+        : {};
+      if (text === null && lastTool === undefined) return null;
+      return {
+        sessionId,
+        ...(text !== null ? { lastOutput: text } : {}),
+        ...toolPart,
+        updatedAt: event.message.timestamp || now,
+      };
     }
     case "status":
       return { sessionId, status: event.status, done: isDone(event.status), updatedAt: now };
@@ -132,7 +143,14 @@ export class SubAgentRouter {
   private readonly resolving = new Set<string>();
   private readonly lookup: SessionLookup;
 
-  constructor(lookup: SessionLookup) {
+  /** 血缘未解析期间的首波事件缓存（resolve 后 flush，≤8 条/会话） */
+  private readonly pending = new Map<string, Array<{ sessionId: string; event: ServerEvent }>>();
+
+  constructor(
+    lookup: SessionLookup,
+    /** flush 出口：resolve 后补投首波事件（与 route() 同一广播通道） */
+    private readonly onDrain?: (routed: RoutedSubAgentEvent) => void,
+  ) {
     this.lookup = lookup;
   }
 
@@ -145,6 +163,10 @@ export class SubAgentRouter {
   route(sessionId: string, event: ServerEvent): RoutedSubAgentEvent | null {
     const parentId = this.parents.get(sessionId);
     if (parentId === undefined) {
+      // 首波事件缓存（血缘解析是异步全量扫描，直接丢会漏掉第一条输出/完成态）
+      const q = this.pending.get(sessionId) ?? [];
+      if (q.length < 8) q.push({ sessionId, event });
+      this.pending.set(sessionId, q);
       this.resolveAsync(sessionId);
       return null;
     }
@@ -171,9 +193,19 @@ export class SubAgentRouter {
           this.parents.set(sessionId, parentId);
           const name = session.name ?? session.id;
           this.names.set(sessionId, name);
+          // 补投首波缓存（此刻血缘已知，重新走 route 产出正确路由）
+          const queued = this.pending.get(sessionId);
+          this.pending.delete(sessionId);
+          if (queued && this.onDrain) {
+            for (const item of queued) {
+              const routed = this.route(item.sessionId, item.event);
+              if (routed) this.onDrain(routed);
+            }
+          }
         } else {
-          // 非子代理会话记为"无父"（空串哨兵），避免反复解析
+          // 非子代理会话记为"无父"（空串哨兵），避免反复解析；缓存作废
           this.parents.set(sessionId, "");
+          this.pending.delete(sessionId);
         }
       })
       .catch(() => undefined)

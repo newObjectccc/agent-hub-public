@@ -669,7 +669,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
             className="badge panel-driven"
             title="手机面板发过消息：干活的是 server 进程的 pi 实例，电脑终端 pi 需重新打开本会话才能看到实时变化"
           >
-            ⚡ 面板驱动中
+            ⚡<span className="badge-text-long"> 面板驱动中</span>
           </span>
         )}
         <SourceBadge source={session?.source ?? null} />

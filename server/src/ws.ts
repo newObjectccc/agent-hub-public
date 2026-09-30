@@ -153,12 +153,14 @@ export class WsHub {
     let closed = false;
     /** 父会话订阅期间顺带 tail 的子代理会话（反馈轮 3 #4，cleanup 时释放） */
     const childTails: string[] = [];
+    const cleanupFns: Array<() => void> = [];
     const process = (text: string): void => {
       void this.handleClientMessage(socket, sessionId, hub, text);
     };
 
     const cleanup = (): void => {
       closed = true;
+      for (const fn of cleanupFns.splice(0)) fn();
       this.remove(sessionId, socket);
       if (acquired) {
         acquired = false;
@@ -203,18 +205,38 @@ export class WsHub {
       // 子代理会话 tail（反馈轮 3 #4）：父会话订阅期间顺带 tail 全部子代理会话，
       // 其事件经 emit → SubAgentRouter 按 parentSessionId 路由回父通道（活动面板实时更新）。
       // 异步解析完成前连接已关：不 acquire（或立即 release），防 tail 泄漏。
-      if (this.tails && hub.listChildren) {
+      const childSet = new Set<string>();
+      const syncChildren = (): void => {
+        if (!this.tails || closed || !hub.listChildren || socket.readyState !== WebSocket.OPEN) return;
         void hub
           .listChildren(sessionId)
           .then((children) => {
+            if (closed || socket.readyState !== WebSocket.OPEN) return;
+            const seen = new Set<string>();
             for (const child of children) {
-              if (!this.tails || closed || hub.isLive(child.id) || socket.readyState !== WebSocket.OPEN) continue;
+              seen.add(child.id);
+              if (childSet.has(child.id) || hub.isLive(child.id)) continue;
               const childLoader = child.source === "claude" ? loadClaudeSessionMessages : undefined;
-              this.tails.acquire(child.id, child.sessionFile, childLoader);
+              this.tails?.acquire(child.id, child.sessionFile, childLoader);
+              childSet.add(child.id);
               childTails.push(child.id);
+            }
+            // 消失的子会话 release（防 tail 泄漏）
+            for (const id of [...childSet]) {
+              if (!seen.has(id)) {
+                childSet.delete(id);
+                this.tails?.release(id);
+              }
             }
           })
           .catch(() => undefined);
+      };
+      if (this.tails && hub.listChildren) {
+        syncChildren();
+        // 增量发现：订阅期间新派生的子代理（面板开着不刷新也能看到新卡片）
+        const childScan = setInterval(syncChildren, 20_000);
+        childScan.unref?.();
+        cleanupFns.push(() => clearInterval(childScan));
       }
 
       ready = true;

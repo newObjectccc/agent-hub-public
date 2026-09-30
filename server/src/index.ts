@@ -106,7 +106,11 @@ export async function startHub(): Promise<StartedHub> {
   const claudeAdapter = new ClaudeAdapter({ projectsDir: claudeProjectsDir, historyFile: claudeHistoryFile, emit });
   const hub = new SessionRegistry(new PiAdapter(piHub), claudeAdapter);
   // 子代理血缘路由器（emit 闭包延迟引用：事件只可能在 startHub 装配完成后到达）
-  const subAgentRouter = new SubAgentRouter((id) => hub.findSession(id));
+  const subAgentRouter = new SubAgentRouter(
+    (id) => hub.findSession(id),
+    // 首波缓存 flush 出口：与 emit 链同一广播（修复"子代理首条输出丢失"）
+    (routed) => wshub.broadcast(routed.parentSessionId, routed.event),
+  );
   const dashboard = new DashboardService({
     sessionDir: config.sessionDir,
     workspaceRoot: config.workspaceRoot,
