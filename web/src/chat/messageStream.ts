@@ -39,6 +39,29 @@ function withThinkingFallback(authoritative: SessionMessage, previous: SessionMe
   return { ...authoritative, thinking };
 }
 
+/**
+ * 权威替换时保留前端本地打点的工具执行时长（server DTO 不带 startedAt/endedAt）：
+ * 按 name+序号对应回填，不改变其余字段。
+ */
+function withToolTiming(authoritative: SessionMessage, previous: SessionMessage): SessionMessage {
+  if (previous.toolCalls.length === 0) return authoritative;
+  const toolCalls = authoritative.toolCalls.map((tc, i) => {
+    const old = previous.toolCalls[i] ?? previous.toolCalls.find((t) => t.name === tc.name);
+    if (!old) return tc;
+    return {
+      ...tc,
+      ...(old.startedAt !== undefined ? { startedAt: old.startedAt } : {}),
+      ...(old.endedAt !== undefined ? { endedAt: old.endedAt } : {}),
+    };
+  });
+  return { ...authoritative, toolCalls };
+}
+
+/** 事件打点时间：带 timestamp 用之（可重放/可测），否则本地时钟 */
+function eventTime(event: WsEvent): number {
+  return typeof event.timestamp === "number" ? event.timestamp : Date.now();
+}
+
 function updateMessage(
   messages: SessionMessage[],
   messageId: string,
@@ -135,6 +158,7 @@ export function applyWsEvent(messages: SessionMessage[], event: WsEvent): Sessio
         summary: event.toolCall.summary ?? "",
         status: event.toolCall.status ?? "running",
         resultPreview: event.toolCall.resultPreview ?? null,
+        startedAt: eventTime(event),
       };
       return updateMessage(messages, event.messageId, (m) => {
         // message_end（权威）已带 pending 工具卡时，tool_start 是同一张卡的“开始执行”，
@@ -148,6 +172,7 @@ export function applyWsEvent(messages: SessionMessage[], event: WsEvent): Sessio
             summary: tc.summary !== "" ? tc.summary : old.summary,
             status: tc.status,
             resultPreview: tc.resultPreview ?? old.resultPreview,
+            startedAt: tc.startedAt,
           };
           return { ...m, toolCalls };
         }
@@ -158,12 +183,25 @@ export function applyWsEvent(messages: SessionMessage[], event: WsEvent): Sessio
       if (!event.messageId || !event.toolCall) return messages;
       return updateMessage(messages, event.messageId, (m) => {
         const toolCalls = m.toolCalls.slice();
-        const idx = toolCalls.findIndex((t) => t.name === event.toolCall!.name);
+        // 同名多工具卡（bash × N）：从尾部找未完结（running/pending）的同名卡回填结果，
+        // 否则最后一张同名卡；不能再用 findIndex（会永远覆盖第一张，后续卡永留“运行中”）
+        let idx = -1;
+        for (let i = toolCalls.length - 1; i >= 0; i -= 1) {
+          const t = toolCalls[i];
+          if (t.name !== event.toolCall!.name) continue;
+          if (idx === -1) idx = i;
+          if (t.status === "running" || t.status === "pending") {
+            idx = i;
+            break;
+          }
+        }
         const merged: ToolCall = {
           name: event.toolCall!.name,
           summary: event.toolCall!.summary ?? (idx >= 0 ? toolCalls[idx].summary : ""),
           status: event.toolCall!.status ?? "done",
           resultPreview: event.toolCall!.resultPreview ?? (idx >= 0 ? toolCalls[idx].resultPreview : null),
+          startedAt: idx >= 0 ? toolCalls[idx].startedAt : undefined,
+          endedAt: eventTime(event),
         };
         if (idx >= 0) toolCalls[idx] = merged;
         else toolCalls.push(merged);
@@ -176,7 +214,7 @@ export function applyWsEvent(messages: SessionMessage[], event: WsEvent): Sessio
       const idx = messages.findIndex((m) => m.id === authoritative.id);
       if (idx >= 0) {
         const next = messages.slice();
-        next[idx] = withThinkingFallback(authoritative, messages[idx]);
+        next[idx] = withToolTiming(withThinkingFallback(authoritative, messages[idx]), messages[idx]);
         return next;
       }
       // 纯防御去重：合并尾部连续同文本占位段内最早一条（同 role+同非空 text），
@@ -185,7 +223,7 @@ export function applyWsEvent(messages: SessionMessage[], event: WsEvent): Sessio
       const dupIdx = findTailPlaceholder(messages, authoritative);
       if (dupIdx >= 0) {
         const next = messages.slice();
-        next[dupIdx] = withThinkingFallback(authoritative, messages[dupIdx]);
+        next[dupIdx] = withToolTiming(withThinkingFallback(authoritative, messages[dupIdx]), messages[dupIdx]);
         return next;
       }
       return [...messages, authoritative];

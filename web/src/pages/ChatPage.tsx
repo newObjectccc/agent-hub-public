@@ -1,11 +1,13 @@
 import { ChatSkeleton } from "../components/Skeletons";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type CSSProperties } from "react";
 import { api } from "../api/client";
 import { sendPromptWithMode, type SendMode } from "../api/prompt";
 import type { CommandItem, SessionMessage, SessionStatus, SessionSummary, SubAgentActivity } from "../api/types";
 import { applyWsEvent, reconcileMessages, type WsEvent } from "../chat/messageStream";
+import { waitPhaseAfterEvent, type WaitPhase } from "../chat/waitPhase";
 import { isSubAgentActivityUpdate, mergeSubAgentActivity } from "../chat/subAgents";
 import { useGitStatus } from "../hooks/useGitStatus";
+import { useVisualViewportInset } from "../hooks/useVisualViewportInset";
 import { OLDER_PAGE_LIMIT, mergeOlderMessages, oldestMessageId, shouldLoadOlder, TAIL_MESSAGE_LIMIT } from "../chat/history";
 import { useSessionSocket } from "../hooks/useSessionSocket";
 import type { FileRef } from "../utils/fileRefs";
@@ -15,6 +17,8 @@ import { GitStatusBadge } from "../components/GitStatusBadge";
 import { FileTreePanel } from "../components/FileTreePanel";
 import { MessageBubble } from "../components/MessageBubble";
 import { SubAgentPanel } from "../components/SubAgentPanel";
+import { DrivenBadge } from "../components/DrivenBadge";
+import { WaitStageBar } from "../components/WaitStageBar";
 import { AttachmentStrip } from "../components/AttachmentStrip";
 import { UploadButton } from "../components/UploadButton";
 import { SendModeMenu } from "../components/SendModeMenu";
@@ -27,6 +31,8 @@ import { PullToRefresh } from "../components/PullToRefresh";
 import { Button } from "../components/ui/button";
 import { Textarea } from "../components/ui/textarea";
 import { insertSnippet } from "../utils/insert";
+import { withDateDividers } from "../utils/dateDivider";
+import { vibrate } from "../utils/haptics";
 import type { PanelKeyHandle } from "../utils/panelNav";
 import { quoteSummary, withQuote } from "../utils/quote";
 import { addRecentRef, loadRecentRefs, safeStorage, saveRecentRefs } from "../utils/recentRefs";
@@ -63,6 +69,14 @@ import { chatPath, chatReturnPath, currentLocate, navigate, treePath } from "../
 /** message_end 后无任何流事件/状态事件的待定收尾时长：超时推断回复完成（status 回 idle） */
 const REPLY_IDLE_FALLBACK_MS = 5_000;
 
+/** 输入框自增高上限：6 行（行高 ≈ 21px × 6 + 内边距 12px），超出内部滚动 */
+const TEXTAREA_MAX_HEIGHT = 140;
+
+function autoGrowTextarea(el: HTMLTextAreaElement): void {
+  el.style.height = "auto";
+  el.style.height = `${Math.min(el.scrollHeight, TEXTAREA_MAX_HEIGHT)}px`;
+}
+
 export function ChatPage({ sessionId }: { sessionId: string }) {
   const [session, setSession] = useState<SessionSummary | null>(null);
   const [messages, setMessages] = useState<SessionMessage[]>([]);
@@ -77,16 +91,63 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
   const [sending, setSending] = useState(false);
   /** 同步防重入闸门（与 sending state 双保险）：快速连点只发一条 */
   const sendingRef = useRef(false);
+  /** 阶段化等待反馈：发送中 → 思考中 → 工具执行中 → 回复中（null = 空闲不显示） */
+  const [wait, setWait] = useState<{ phase: WaitPhase; startedAt: number } | null>(null);
+  const waitRef = useRef(wait);
+  waitRef.current = wait;
+  /** 进入等待（保留本轮起点：阶段切换不清零计时） */
+  const beginWait = (phase: WaitPhase) => {
+    const startedAt = waitRef.current?.startedAt ?? Date.now();
+    waitRef.current = { phase, startedAt };
+    setWait(waitRef.current);
+  };
+  /** WS 事件推进阶段（tool_start → 工具执行中，text_delta → 回复中…） */
+  const advanceWait = (eventType: string) => {
+    const prev = waitRef.current;
+    waitRef.current = { phase: waitPhaseAfterEvent(prev?.phase ?? "thinking", eventType), startedAt: prev?.startedAt ?? Date.now() };
+    setWait(waitRef.current);
+  };
+  /** 本轮回复结束（完成/中止/失败）：状态条消失 */
+  const endWait = () => {
+    waitRef.current = null;
+    setWait(null);
+  };
+  /** 发送失败待重试（localId → 原文与图片引用，重试发同样内容） */
+  const [failedSends, setFailedSends] = useState<ReadonlyMap<string, { text: string; images?: string[] }>>(new Map());
+  const failedSendsRef = useRef(failedSends);
+  failedSendsRef.current = failedSends;
+  /** 会话最后驱动来源（心理预期管理）：面板驱动过 → panel */
+  const [drivenBy, setDrivenBy] = useState<"panel" | "terminal">(() => {
+    const storage = safeStorage();
+    return storage?.getItem(`agent-hub.panelHint.v1:${sessionId}`) === "1" ? "panel" : "terminal";
+  });
+  /** 预期提示条（面板驱动过的会话首次进入显示，"知道了"后记住关闭） */
+  const [driverHint, setDriverHint] = useState(false);
+  /** 任务生命周期预期提示（发送后显示，✕ 后记住不再显示） */
+  const [bgHintDismissed, setBgHintDismissed] = useState<boolean>(() => {
+    const storage = safeStorage();
+    return storage?.getItem("agent-hub.bgHint.v1") === "1";
+  });
+  const dismissBgHint = () => {
+    setBgHintDismissed(true);
+    try {
+      safeStorage()?.setItem("agent-hub.bgHint.v1", "1");
+    } catch {
+      /* 存储不可用：仅本次会话内关闭 */
+    }
+  };
+  /** ↓ 新消息浮标：上翻历史时到达的新消息条数（不拉扯视口） */
+  const [newCount, setNewCount] = useState(0);
+  const prevLenRef = useRef(0);
+  const prevTailRef = useRef<string | null>(null);
+  /** 移动端键盘避让：被键盘遮住的高度 → CSS 变量抬高输入区 */
+  const kbInset = useVisualViewportInset();
   /** message_end 后的待定收尾定时器（tail 丢 status / 事件丢失时的 UI 兜底） */
   const pendingIdleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [sendMode, setSendMode] = useState<SendMode>("auto");
   // 子代理活动（反馈轮 3 #4）：pi-subagents 派生会话的实时工作面板（快照 + WS 增量）
   const [subAgents, setSubAgents] = useState<SubAgentActivity[]>([]);
-  // 面板驱动标识（反馈轮 3 #5）：本设备面板发过消息的会话，电脑端 pi 需重开才能看到实时变化
-  const [panelDriven, setPanelDriven] = useState<boolean>(() => {
-    const storage = safeStorage();
-    return storage?.getItem(`agent-hub.panelHint.v1:${sessionId}`) === "1";
-  });
+  // 面板驱动标识（反馈轮 3 #5，与驱动来源徽章统一）：本设备面板发过消息的会话，电脑端 pi 需重开才能看到实时变化
   const panelHintShownRef = useRef(false);
   // 上传附件（📎 选择 / 粘贴图片）：上传成功 → 预览条 + 输入框 `@path` 引用
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -158,6 +219,14 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
       setHasMore(Boolean(detail.hasMore));
       setStatus(detail.session.status);
       setLoadError(null);
+      // 驱动来源标注（心理预期管理）：server 持久集合为准，本地 panelHint 仅旧版兼容兑底
+      const driven = detail.session.lastDrivenBy === "panel" ? "panel" : "terminal";
+      setDrivenBy((prev) => (prev === "panel" ? "panel" : driven));
+      if (driven === "panel" && safeStorage()?.getItem(`agent-hub.driverHint.v1:${sessionId}`) !== "1") {
+        setDriverHint(true);
+      }
+      // 从别处（如电脑终端）已在运行：进入即展示阶段条（起点取当下，无法回溯真实发送时刻）
+      if (detail.session.status === "running") beginWait("thinking");
       // 子代理活动快照（失败静默降级：面板只是增强，不阻断会话）
       api
         .getSessionAgents(sessionId)
@@ -399,8 +468,19 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
     }
   }, [sessionId]);
 
-  // 前插历史：按锚点保持视口；尾部新消息/流式：自动滚底（保持既有行为）
+  // 前插历史：按锚点保持视口；尾部新消息/流式：自动滚底（保持既有行为）；
+  // 用户上翻历史时尾部新到消息不拉扯视口，只累计到 ↓ 浮标（点击才回底部）
   useLayoutEffect(() => {
+    const tailId = messages.length > 0 ? messages[messages.length - 1].id : null;
+    const grew = messages.length > prevLenRef.current && tailId !== prevTailRef.current;
+    const delta = Math.max(0, messages.length - prevLenRef.current);
+    prevLenRef.current = messages.length;
+    prevTailRef.current = tailId;
+    if (grew && !stickToBottomRef.current) {
+      setNewCount((c) => c + delta);
+    } else if (stickToBottomRef.current) {
+      setNewCount(0);
+    }
     const el = scrollRef.current;
     const restore = pendingRestoreRef.current;
     if (restore && el) {
@@ -426,7 +506,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
     }
   };
 
-  /** 回复落盘后的待定收尾：短静默无任何事件 → 本轮回复完成，中止按钮随 status 消失 */
+  /** 回复落盘后的待定收尾：短静默无任何事件 → 本轮回复完成，中止按钮与阶段条随 status 消失 */
   const armPendingIdle = () => {
     clearPendingIdle();
     pendingIdleRef.current = setTimeout(() => {
@@ -434,6 +514,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
       setStatus((s) => (s === "running" ? "idle" : s));
       setSending(false);
       setSendMode("auto");
+      endWait();
     }, REPLY_IDLE_FALLBACK_MS);
   };
 
@@ -451,6 +532,8 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
           // 若 5s 待定误翻了 idle（段间长间隙），后续流事件自愈恢复 running
           clearPendingIdle();
           setStatus((prev) => (prev === "running" ? prev : "running"));
+          // 阶段化等待反馈：按事件推进（思考中/工具执行中/回复中），计时不清零
+          advanceWait(event.type);
           // 全部消息流事件统一走 applyWsEvent（含 message_end 去重兜底与占位回填）
           setMessages((prev) => applyWsEvent(prev, event));
           break;
@@ -466,15 +549,19 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
           if (s !== "running") {
             setSending(false);
             setSendMode("auto");
+            endWait();
+          } else if (!waitRef.current) {
+            beginWait("thinking");
           }
           break;
         }
         case "agent_settled":
-          // 本轮工作全部结束：恢复输入
+          // 本轮工作全部结束：恢复输入，阶段条消失
           clearPendingIdle();
           setStatus("idle");
           setSending(false);
           setSendMode("auto");
+          endWait();
           break;
         case "subagent_activity": {
           // 子代理活动增量（反馈轮 3 #4）：按 sessionId 合并进活动面板
@@ -486,6 +573,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
           clearPendingIdle();
           setNotice(event.message ? String(event.message) : `${event.code ?? "错误"}：运行期错误`);
           setSending(false);
+          endWait();
           break;
         default:
           break;
@@ -500,6 +588,41 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
     onReconnect: () => void loadSession(),
     onStatusChange: setConnected,
   });
+
+  /** 发送主链路（首发/重试共用）：成功 → 思考中阶段 + 触觉反馈；失败 → 消息标记可重试 */
+  const performSend = async (localId: string, text: string, images: string[]) => {
+    beginWait("sending");
+    try {
+      // auto：409 自动降级（prompt → followUp）；手动模式直接带对应 mode；
+      // 图片附件随 prompt 上传（pi 直接附图，claude 走 @path 引用，契约 §1/§11）
+      const outcome = await sendPromptWithMode(
+        sessionId,
+        text,
+        sendMode,
+        {
+          sendPrompt: api.sendPrompt,
+          onNotice: setNotice,
+        },
+        images.length > 0 ? images : undefined,
+      );
+      if (!outcome.result.accepted) {
+        setFailedSends((prev) => new Map(prev).set(localId, { text, images }));
+        endWait();
+        setNotice("消息未被接受，请稍后重试");
+      } else {
+        setStatus("running");
+        beginWait("thinking");
+        markPanelDriven();
+        // 发送成功触觉反馈（不支持的平台静默降级）
+        vibrate(10);
+      }
+    } catch (e) {
+      // 网络错误 / 5xx：标记该条“发送失败”，可原样重发
+      setFailedSends((prev) => new Map(prev).set(localId, { text, images }));
+      endWait();
+      setNotice(e instanceof Error ? e.message : "发送失败");
+    }
+  };
 
   const doSend = async () => {
     // 同步防重入：React state 未 flush 的极速双击/多通道触发也只发一条（快速双击 bug）
@@ -533,26 +656,28 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
     setAttachments([]);
     setQuote(null);
     try {
-      // auto：409 自动降级（prompt → followUp）；手动模式直接带对应 mode；
-      // 图片附件随 prompt 上传（pi 直接附图，claude 走 @path 引用，契约 §1/§11）
-      const outcome = await sendPromptWithMode(
-        sessionId,
-        text,
-        sendMode,
-        {
-          sendPrompt: api.sendPrompt,
-          onNotice: setNotice,
-        },
-        images.length > 0 ? images : undefined,
-      );
-      if (!outcome.result.accepted) {
-        setNotice("消息未被接受，请稍后重试");
-      } else {
-        setStatus("running");
-        markPanelDriven();
-      }
-    } catch (e) {
-      setNotice(e instanceof Error ? e.message : "发送失败");
+      await performSend(localId, text, images);
+    } finally {
+      sendingRef.current = false;
+      setSending(false);
+    }
+  };
+
+  /** 发送失败重试：不新增占位，直接重发同样内容；成功后清除失败标记 */
+  const retrySend = async (localId: string) => {
+    if (sendingRef.current) return;
+    const payload = failedSendsRef.current.get(localId);
+    if (!payload) return;
+    sendingRef.current = true;
+    setSending(true);
+    setNotice(null);
+    setFailedSends((prev) => {
+      const next = new Map(prev);
+      next.delete(localId);
+      return next;
+    });
+    try {
+      await performSend(localId, payload.text, payload.images ?? []);
     } finally {
       sendingRef.current = false;
       setSending(false);
@@ -560,11 +685,11 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
   };
 
   /**
-   * 面板驱动标识（反馈轮 3 #5）：手机发消息实际由 server 的 pi SDK 实例干活，
-   * 电脑终端里的 pi 进程看不到实时变化。首次发送 toast 提示 + 顶栏小标识，不阻断操作。
+   * 面板驱动标识（与驱动来源徽章/预期提示条统一）：手机发消息实际由 server 的 pi SDK 实例干活，
+   * 电脑终端里的 pi 进程看不到实时变化。首次发送 toast 提示 + 顶栏 📱 徽章，不阻断操作。
    */
   const markPanelDriven = () => {
-    setPanelDriven(true);
+    setDrivenBy("panel");
     const storage = safeStorage();
     const key = `agent-hub.panelHint.v1:${sessionId}`;
     if (panelHintShownRef.current || storage?.getItem(key) === "1") return;
@@ -574,7 +699,17 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
     } catch {
       /* 存储不可用：仅本次会话内提示 */
     }
-    showToast("⚡ 本会话由面板驱动：电脑端 pi 需重新打开会话才能看到这些消息");
+    showToast("💬 本会话已由面板驱动：电脑端 pi 需重开会话（pi --resume）才能看到这些消息");
+  };
+
+  /** 预期提示条“知道了”：关闭并记住（同一会话不再弹） */
+  const dismissDriverHint = () => {
+    setDriverHint(false);
+    try {
+      safeStorage()?.setItem(`agent-hub.driverHint.v1:${sessionId}`, "1");
+    } catch {
+      /* 存储不可用：仅本次会话内关闭 */
+    }
   };
 
   const doAbort = async () => {
@@ -584,6 +719,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
       setNotice("已发送中止请求");
       setSending(false);
       setStatus("idle");
+      endWait();
     } catch (e) {
       setNotice(e instanceof Error ? e.message : "中止失败");
     }
@@ -620,6 +756,26 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
 
   const hasContent = input.trim() !== "" || attachments.length > 0;
 
+  /** ↓ 新消息浮标：回到底部（清零计数并恢复跟随） */
+  const scrollToBottom = () => {
+    stickToBottomRef.current = true;
+    setNewCount(0);
+    bottomRef.current?.scrollIntoView?.({ behavior: "smooth", block: "end" });
+  };
+
+  // 输入框自增高：内容变化时 1 行起随内容增高，上限 6 行（超出内部滚动）
+  useLayoutEffect(() => {
+    const el = inputWrapRef.current?.querySelector("textarea");
+    if (el) autoGrowTextarea(el);
+  }, [input]);
+
+  // 键盘弹出（visualViewport 收缩）时保持贴底跟随，消息区不被压出可视区
+  useEffect(() => {
+    if (kbInset > 0 && stickToBottomRef.current) {
+      bottomRef.current?.scrollIntoView?.({ block: "end" });
+    }
+  }, [kbInset]);
+
   /** 同会话并行流式回合序号（sub agent 并行时多个回合同时进行）：气泡带 🔗 标记 */
   const liveRanks = useMemo(() => {
     const ranks = new Map<string, { index: number; total: number }>();
@@ -629,7 +785,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
   }, [messages]);
 
   return (
-    <div className="chat-page">
+    <div className="chat-page" style={{ "--kb-inset": `${kbInset}px` } as CSSProperties}>
       <header className="chat-header">
         <Button
           type="button"
@@ -663,20 +819,30 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
           </span>
         )}
         <SessionActionsMenu onFork={() => void doFork()} forkBusy={forkBusy} />
-        {/* 面板驱动标识（反馈轮 3 #5）：轻量提示，不阻断操作 */}
-        {panelDriven && (
-          <span
-            className="badge panel-driven"
-            title="手机面板发过消息：干活的是 server 进程的 pi 实例，电脑终端 pi 需重新打开本会话才能看到实时变化"
-          >
-            ⚡<span className="badge-text-long"> 面板驱动中</span>
-          </span>
-        )}
+        {/* 驱动来源徽章（心理预期管理）：📱 面板驱动 / 🖥 终端驱动，与 ⚡旧标识语义统一 */}
+        <DrivenBadge drivenBy={drivenBy} />
         <SourceBadge source={session?.source ?? null} />
         <StatusBadge status={status} />
       </header>
 
       {notice && <div className="chat-notice">{notice}</div>}
+
+      {/* 预期提示条（心理预期管理）：面板驱动过的会话首次进入提醒两条工作流，可一键分叉 */}
+      {driverHint && (
+        <div className="driver-hint" role="note" aria-label="驱动来源提示">
+          <span className="driver-hint-text">
+            💬 此会话由手机面板继续过——电脑端 pi 需重开会话（pi --resume）才能看到这些消息
+          </span>
+          <div className="driver-hint-actions">
+            <Button type="button" variant="secondary" size="sm" onClick={() => void doFork()} disabled={forkBusy}>
+              {forkBusy ? "复制中…" : "复制为新会话"}
+            </Button>
+            <Button type="button" variant="outline" size="sm" onClick={dismissDriverHint}>
+              知道了
+            </Button>
+          </div>
+        </div>
+      )}
 
       {session && (
         <div className="chat-subbar">
@@ -724,20 +890,35 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
             </div>
           )}
           {!loading && !loadError && messages.length === 0 && <div className="empty">还没有消息，发送第一条吧</div>}
-          {messages.map((m) => (
-            <MessageBubble
-              key={m.id}
-              message={m}
-              highlight={m.id === highlightId}
-              liveIndex={liveRanks.get(m.id)?.index}
-              liveTotal={liveRanks.get(m.id)?.total}
-              onOpenFile={setFileRef}
-              onQuote={(msg) => setQuote({ text: msg.text })}
-            />
-          ))}
+          {withDateDividers(messages).map((item) =>
+            item.kind === "divider" ? (
+              <div key={item.id} className="date-divider" role="separator" aria-label={item.label}>
+                <span className="date-divider-label">{item.label}</span>
+              </div>
+            ) : (
+              <MessageBubble
+                key={item.message.id}
+                message={item.message}
+                highlight={item.message.id === highlightId}
+                liveIndex={liveRanks.get(item.message.id)?.index}
+                liveTotal={liveRanks.get(item.message.id)?.total}
+                onOpenFile={setFileRef}
+                onQuote={(msg) => setQuote({ text: msg.text })}
+                sendFailed={failedSends.has(item.message.id)}
+                onRetry={() => void retrySend(item.message.id)}
+              />
+            ),
+          )}
           <div ref={bottomRef} />
         </PullToRefresh>
       </div>
+
+      {/* ↓ 新消息浮标：上翻历史时不拉扯视口，新到消息累计计数，点击回底部 */}
+      {newCount > 0 && (
+        <button type="button" className="new-messages-btn" onClick={scrollToBottom}>
+          ↓ {newCount} 条新消息
+        </button>
+      )}
 
       <footer className="chat-input">
         {quote && (
@@ -749,14 +930,17 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
             </button>
           </div>
         )}
-        {/* 发送模式收纳（反馈轮 3 #3）+ 子代理并排（反馈轮 4）：一行 = 子代理摘要 | 模式选择 | 中止 */}
+        {/* 一行 = 子代理摘要 | 阶段化等待反馈 | 模式选择 | 中止（E1 阶段条 × E3 inline 融合） */}
         <div className="composer-modebar">
           <SubAgentPanel inline agents={subAgents} onOpenSession={(id) => navigate(chatPath(id))} />
-          {(status === "running" || !connected) && (
+          <WaitStageBar
+            phase={wait?.phase ?? null}
+            startedAt={wait?.startedAt ?? null}
+            disconnected={status === "running" && !connected}
+          />
+          {wait === null && !connected && (
             <div className="typing-indicator">
-              {status === "running" && <span className="spinner" />}
-              <span>{status === "running" ? "agent 运行中…" : "连接断开，重连中…（历史消息不会丢）"}</span>
-              {status === "running" && !connected && <span>（连接断开，重连中）</span>}
+              <span>连接断开，重连中…（历史消息不会丢）</span>
             </div>
           )}
           <div className="modebar-right">
@@ -768,6 +952,18 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
             )}
           </div>
         </div>
+        {/* 任务生命周期预期（心理预期管理）：任务由 server 进程持有，退出/锁屏不中断 */}
+        {wait !== null && !bgHintDismissed && (
+          <div className="bg-hint" role="note" aria-label="任务生命周期说明">
+            <span className="bg-hint-text">📌 任务在后台继续——退出页面、锁屏都不中断，完成后通知你</span>
+            <span className="bg-hint-boundary" title="server 重启会中断运行中的任务">
+              （server 重启会中断）
+            </span>
+            <button type="button" className="bg-hint-close" onClick={dismissBgHint} aria-label="不再显示任务提示">
+              ✕
+            </button>
+          </div>
+        )}
         <div className="composer">          <SlashCommandPanel
             ref={slashPanelRef}
             open={slashOpen && slashSpan !== null}

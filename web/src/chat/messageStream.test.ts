@@ -47,7 +47,8 @@ describe("applyWsEvent（WS 流式事件）", () => {
       messageId: "m1",
       toolCall: { name: "bash", summary: "ls -la", status: "done", resultPreview: "total 0" },
     });
-    expect(msgs[0].toolCalls).toEqual([
+    // toMatchObject：字段断言语义不变，容忍新增的 startedAt/endedAt 执行时长打点（e1-chat-ux）
+    expect(msgs[0].toolCalls).toMatchObject([
       { name: "bash", summary: "ls -la", status: "done", resultPreview: "total 0" },
     ]);
   });
@@ -132,7 +133,8 @@ describe("tool_start 合并 pending 工具卡（pi 真实时序：工具执行�
       toolCall: { name: "bash", summary: "echo hi", status: "done", resultPreview: "hi" },
     });
     expect(msgs[0].toolCalls).toHaveLength(1);
-    expect(msgs[0].toolCalls[0]).toEqual({ name: "bash", summary: "echo hi", status: "done", resultPreview: "hi" });
+    // toMatchObject：字段断言语义不变，容忍新增的 startedAt/endedAt 执行时长打点（e1-chat-ux）
+    expect(msgs[0].toolCalls[0]).toMatchObject({ name: "bash", summary: "echo hi", status: "done", resultPreview: "hi" });
   });
 
   it("没有同名 pending 卡时 tool_start 照旧追加新卡", () => {

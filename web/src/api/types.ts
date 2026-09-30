@@ -29,6 +29,12 @@ export interface SessionSummary {
    * claude 恒 null，识别不出为 null（归"未归组子代理"兜底分组）。渲染容错：`?? null`。
    */
   parentSessionId?: string | null;
+  /**
+   * 最后驱动来源（契约 §1）：面板驱动过（手机/网页 POST prompt）→ "panel"，否则 "terminal"。
+   * 可缺省（老 server）：渲染容错按 "terminal"。手机面板发消息 = server 的 pi SDK 实例
+   * 驱动同一会话文件，电脑终端 pi 需 pi --resume 重开才能看到。
+   */
+  lastDrivenBy?: "panel" | "terminal";
 }
 
 export type MessageRole = "user" | "assistant" | "toolResult" | "custom";
@@ -73,6 +79,12 @@ export interface ToolCall {
   summary: string;
   status: ToolCallStatus;
   resultPreview: string | null;
+  /**
+   * 执行时长计时（纯前端本地时钟，WS tool_start/tool_end 打点；server DTO 可缺省）：
+   * running 卡片实时显示已运行时长，done/error 显示总耗时。
+   */
+  startedAt?: number;
+  endedAt?: number;
 }
 
 /** 消息内嵌图片（pi ImageContent / claude image block → data URL 或 http(s) URL） */

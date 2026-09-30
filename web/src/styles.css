@@ -1125,12 +1125,12 @@ a {
   overflow-y: auto;
 }
 
-/* 输入区 */
+/* 输入区（键盘避让：--kb-inset 由 visualViewport 监听写入，键盘弹出时抬高输入区） */
 .chat-input {
   border-top: var(--bw) solid var(--border);
   background: var(--card);
   color: var(--card-foreground);
-  padding: 8px 10px calc(10px + var(--safe-bottom));
+  padding: 8px 10px calc(10px + var(--safe-bottom) + var(--kb-inset, 0px));
 }
 
 .chat-input-row {
@@ -4090,12 +4090,13 @@ button.git-bar:active {  transform: translate(2px, 2px);
   min-width: 0;
 }
 
-/* 内嵌输入框：去独立边框（容器已描边），全宽多行自动增高（field-sizing-content） */
+/* 内嵌输入框：去独立边框（容器已描边），全宽多行自动增高（field-sizing-content + JS 兑底） */
 .composer-textarea {
   width: 100%;
   min-height: 44px;
-  /* 键盘弹出时高度上限收紧，不遮挡消息区 */
-  max-height: min(38vh, 220px);
+  /* 自增高上限 6 行（超出内部滚动），键盘弹出时不遮挡消息区 */
+  max-height: 140px;
+  overflow-y: auto;
   padding: 6px 4px;
   background: transparent;
   border: none;
