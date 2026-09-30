@@ -80,4 +80,15 @@ describe("messageStream 工具执行时长打点", () => {
     expect(msgs[0].toolCalls).toHaveLength(1);
     expect(msgs[0].toolCalls[0]).toMatchObject({ status: "running", startedAt: 2000 });
   });
+
+  it("同名多工具卡（bash × N）：tool_end 逐卡回填，后续卡不留“运行中”", () => {
+    let msgs = applyWsEvent([], { type: "message_start", message: { id: "a1", role: "assistant", timestamp: 1 } });
+    msgs = applyWsEvent(msgs, { type: "tool_start", messageId: "a1", toolCall: { name: "bash", summary: "pwd" }, timestamp: 1000 });
+    msgs = applyWsEvent(msgs, { type: "tool_end", messageId: "a1", toolCall: { name: "bash", summary: "pwd", status: "done" }, timestamp: 2000 });
+    msgs = applyWsEvent(msgs, { type: "tool_start", messageId: "a1", toolCall: { name: "bash", summary: "ls" }, timestamp: 3000 });
+    msgs = applyWsEvent(msgs, { type: "tool_end", messageId: "a1", toolCall: { name: "bash", summary: "ls", status: "done" }, timestamp: 5000 });
+    expect(msgs[0].toolCalls).toHaveLength(2);
+    expect(msgs[0].toolCalls[0]).toMatchObject({ summary: "pwd", status: "done", startedAt: 1000, endedAt: 2000 });
+    expect(msgs[0].toolCalls[1]).toMatchObject({ summary: "ls", status: "done", startedAt: 3000, endedAt: 5000 });
+  });
 });

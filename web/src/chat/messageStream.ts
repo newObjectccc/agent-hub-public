@@ -183,7 +183,18 @@ export function applyWsEvent(messages: SessionMessage[], event: WsEvent): Sessio
       if (!event.messageId || !event.toolCall) return messages;
       return updateMessage(messages, event.messageId, (m) => {
         const toolCalls = m.toolCalls.slice();
-        const idx = toolCalls.findIndex((t) => t.name === event.toolCall!.name);
+        // 同名多工具卡（bash × N）：从尾部找未完结（running/pending）的同名卡回填结果，
+        // 否则最后一张同名卡；不能再用 findIndex（会永远覆盖第一张，后续卡永留“运行中”）
+        let idx = -1;
+        for (let i = toolCalls.length - 1; i >= 0; i -= 1) {
+          const t = toolCalls[i];
+          if (t.name !== event.toolCall!.name) continue;
+          if (idx === -1) idx = i;
+          if (t.status === "running" || t.status === "pending") {
+            idx = i;
+            break;
+          }
+        }
         const merged: ToolCall = {
           name: event.toolCall!.name,
           summary: event.toolCall!.summary ?? (idx >= 0 ? toolCalls[idx].summary : ""),
