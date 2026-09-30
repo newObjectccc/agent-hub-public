@@ -125,9 +125,12 @@ function SubAgentCard({
 }
 
 export function SubAgentPanel({
+  inline = false,
   agents,
   onOpenSession,
 }: {
+  /** inline：折叠头并入输入区工具行（与模式按钮同排），展开内容浮层 */
+  inline?: boolean;
   agents: SubAgentActivity[];
   onOpenSession: (sessionId: string) => void;
 }) {
@@ -155,10 +158,10 @@ export function SubAgentPanel({
   const visible = [...running, ...visibleDone];
 
   return (
-    <section className="subagent-panel" aria-label="子代理活动">
+    <section className={`subagent-panel${inline ? " inline" : ""}`} aria-label="子代理活动">
       <div className="subagent-panel-head">
         <span className="subagent-panel-title">
-          🤖 子代理（{running.length} 工作中 / {agents.length}）
+          🤖 子代理 · 进行中 {running.length} · 历史 {agents.length}
         </span>
         <button
           type="button"

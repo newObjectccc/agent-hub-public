@@ -749,9 +749,9 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
             </button>
           </div>
         )}
-        <SubAgentPanel agents={subAgents} onOpenSession={(id) => navigate(chatPath(id))} />
-        {/* 发送模式收纳（反馈轮 3 #3）：单行状态条 = 小图标模式选择 + 运行状态 + 独立中止 */}
+        {/* 发送模式收纳（反馈轮 3 #3）+ 子代理并排（反馈轮 4）：一行 = 子代理摘要 | 模式选择 | 中止 */}
         <div className="composer-modebar">
+          <SubAgentPanel inline agents={subAgents} onOpenSession={(id) => navigate(chatPath(id))} />
           {(status === "running" || !connected) && (
             <div className="typing-indicator">
               {status === "running" && <span className="spinner" />}
@@ -800,7 +800,8 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
             <div className="chat-textarea-wrap" ref={inputWrapRef}>
               <Textarea
                 className="composer-textarea"
-                placeholder="输入消息…（/ 命令，@ 引用，Enter 发送）"
+                placeholder="输入消息…（/ 命令，@ 引用，📎 上传）"
+                enterKeyHint="enter"
                 value={input}
                 rows={1}
                 onChange={(e) => {
@@ -833,7 +834,9 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
                     else openPanel.current?.focusFirst();
                     return;
                   }
-                  if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                  // 移动端（触屏）：软键盘回车 = 换行（用户有换行需求），发送走发送按钮；桌面 Enter 发送
+                  const isTouchUI = typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)").matches === true;
+                  if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && !isTouchUI) {
                     e.preventDefault();
                     // 面板开着：Enter 选中过滤结果第一项（与点击一致）
                     if (slashOpen && slashSpan) {
