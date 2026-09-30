@@ -32,6 +32,17 @@ export interface SessionListItem {
    * 识别不出 / 跨机父文件缺失为 null（前端归"未归组子代理"兜底分组）。
    */
   parentSessionId?: string | null;
+  /**
+   * 终端 pi 驱动状态（E3 双模式）：扩展心跳判定的在线/接管状态。
+   * 仅 pi 会话有值；claude 与旧 server 缺省（前端不显示徽章）。
+   */
+  terminal?: TerminalAttachInfo | null;
+}
+
+/** 终端 pi 状态（双模式会话驱动）：online=心跳 90s 内；attached=attach 接管生效 */
+export interface TerminalAttachInfo {
+  online: boolean;
+  attached: boolean;
 }
 
 export type ToolCallStatus = "pending" | "running" | "done" | "error";
@@ -160,6 +171,8 @@ export type ServerEvent =
       activity: SubAgentActivityUpdate;
     }
   | { type: "error"; code: string; message: string }
+  | { type: "attach_state"; attached: boolean; terminalOnline: boolean }
+  | { type: "command_ack"; commandId: string; ok: boolean; error: string | null }
   | { type: "pong" };
 
 /** KPI 卡片（docs/API_CONTRACT.md §3） */

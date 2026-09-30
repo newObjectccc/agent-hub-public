@@ -384,6 +384,8 @@ server → client（每条一个 JSON 对象）：
 | `agent_settled` | — | 本轮工作全部结束（UI 恢复输入框） |
 | `status` | `status: "idle\|running\|error"` | 状态变化 |
 | `error` | `code, message` | 运行期错误 |
+| `attach_state` | `attached, terminalOnline` | 终端驱动状态变化（§12：接管建立/失效） |
+| `command_ack` | `commandId, ok, error` | attach 指令回执（成功/失败原因） |
 
 client → server（可选，替代 REST）：
 | type | 字段 |
@@ -641,3 +643,74 @@ chat 输入区 `@` 触发文件选择面板（多选插入 `@rel/path` 引用，
 text 仍为纯文本（claude 纯图消息 text 为 `[image]` 占位）；前端渲染为 `<img>`（max-width 100%，
 不拦截长按，保留 Android Chrome 原生"保存图片"菜单）。markdown 正文中的 `![alt](src)` 同样渲染
 （src 白名单：http(s) / data:image / 相对路径）。
+
+## 11. 终端驱动状态（SessionListItem.terminal，§1 补充）
+
+`SessionListItem` 新增可选字段 `terminal`（claude 会话与旧 server **缺省**，向后兼容）：
+
+```json
+{ "online": true, "attached": false }
+```
+
+- `online`：终端 pi 扩展心跳在 90s 内（§12）。
+- `attached`：会话处于 attach 接管模式（消息走指令队列发往终端 pi）。
+- `GET /api/sessions` 与 `GET /api/sessions/:id` 均注入；前端据此渲染会话列表徽章
+  （🖥⚡ 已接管 / 🖥 终端在线 / 📱 平行线）与模式菜单可用性。
+
+## 12. 终端接管 / 指令队列（E3 双模式会话驱动）
+
+双模式：**📱 parallel**（消息走 §1 prompt，server 内 SDK 实例处理，现状）与
+**🖥 attach**（消息入指令队列，电脑终端 pi 进程经 `integrations/pi-command` 扩展取走并注入，
+终端 TUI 实时显示并执行）。用户在 chat 顶栏徽章自行选择。
+
+### POST /api/agents/heartbeat（扩展 → server，30s 一续）
+
+请求：`{ "sessionId": "…", "pid": 123, "cwd": "/abs/path", "capabilities": ["message","steer","followUp"] }`
+响应 202：`{ "ok": true, "ttlMs": 90000 }`。90s 无心跳判定终端离线（attach 自动失效并广播
+`attach_state`）。
+
+### GET /api/agents/commands?sessionId=&wait=（扩展长轮询取指令）
+
+`wait` 钳制 0..30000（毫秒）：无指令时挂起至有指令/超时，`enqueue` 即时唤醒（低延迟）。
+响应 200：
+
+```json
+{ "commands": [ { "id": "cmd-…", "kind": "message", "text": "…", "mode": "prompt|steer|followUp", "enqueuedAt": 0, "expiresAt": 0, "attempts": 1 } ] }
+```
+
+投递语义：取走即入 inflight，30s 无回执自动**同 id 重投**（扩展按 id 幂等防重复注入），
+最多 3 次；队列指令 10 分钟 TTL 过期丢弃；单会话队列上限 50。
+
+### POST /api/agents/ack（扩展 → server，回执）
+
+请求：`{ "sessionId": "…", "commandId": "cmd-…", "ok": true|false, "error": "失败原因" }`
+响应 202：`{ "ok": true, "known": true|false }`。回执幂等（同 commandId 重复 ack 返回首条结果），
+结果经 WS `command_ack` 回流到 web。
+
+> **指令通道安全**：以上 `/api/agents/*` 三端点**仅限本机回环**访问，且 `auth.token` 非空时必须
+> 携带 `Authorization: Bearer <token>`（与 §6 live 接入同 token）——局域网伪造心跳/指令/回执一律 401。
+
+### POST /api/sessions/:id/attach（接管会话）
+
+响应 202：`{ "attached": true, "agent": { "sessionId", "pid", "cwd", "online" } }`。
+终端离线 → 409 `ATTACH_UNAVAILABLE`；会话不存在 → 404；claude 会话 → 400 `INVALID_REQUEST`。
+
+### POST /api/sessions/:id/detach（退出接管）
+
+响应 200：`{ "attached": false }`。未投递指令取消（回执失败原因）。
+
+### POST /api/sessions/:id/message（attach 通道发消息）
+
+请求：`{ "text": "…", "mode": "prompt|steer|followUp", "clientMessageId": "可选幂等键" }`
+响应 202：`{ "accepted": true, "channel": "attach", "commandId": "cmd-…", "mode": "…" }`。
+未 attach → 409 `ATTACH_REQUIRED`；队列满 → 409 `ATTACH_QUEUE_FULL`；同 `clientMessageId`
+重复提交返回同一 `commandId`（不重复入队）。
+
+注入语义（pi 扩展 API `sendUserMessage`）：`prompt`=空闲时发（正忙回执失败原因）、
+`steer`=插话当前 run 后、`followUp`=排队到 run 待办结束（空闲时等价立即发）。
+
+### 冲突保护
+
+attach 生效期间同会话 parallel 发送（`POST /prompt` 与 WS `prompt`）一律 409 `ATTACH_ACTIVE`
+（防 server SDK 实例与终端 pi 双写同一会话文件）；`/compact` 同样拒绝。detach 后恢复。
+心跳超时（90s）attach 自动失效并广播 `attach_state {attached:false}`，web 自动回落 📱 平行模式。

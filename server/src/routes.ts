@@ -4,6 +4,7 @@
  */
 import { timingSafeEqual } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import type { AgentLinkLike, CommandMode } from "./agents.js";
 import type { CommandsApi } from "./commands.js";
 import { createCommandsApi } from "./commands.js";
 import type { HubConfig } from "./config.js";
@@ -69,6 +70,21 @@ export interface RouteDeps {
   commands?: CommandsApi;
   /** 文件树只读列表（可注入 mock；缺省真实 fs） */
   fsTree?: { listDir(cwd: string, options: ListDirOptions): Promise<FsTreeDto> };
+  /** 终端 pi 反向指令通道（E3 双模式；可注入 mock，缺省不启用接管相关路由） */
+  agents?: AgentLinkLike;
+}
+
+/** 会话项注入终端驱动状态（仅 pi 会话；agents 未启用时原样返回） */
+function stampTerminal(session: SessionListItem, agents?: AgentLinkLike): SessionListItem {
+  if (!agents || session.source !== "pi") return session;
+  return { ...session, terminal: agents.statusFor(session.id) };
+}
+
+/** 指令通道仅限本机回环 + 共享 token（防局域网伪造心跳/指令/回执） */
+function isLoopbackAddr(addr: string | undefined): boolean {
+  if (!addr) return false;
+  const a = addr.replace(/^::ffff:/, "");
+  return a === "127.0.0.1" || a === "::1" || a === "localhost";
 }
 
 function tokenMatches(headerValue: string, expected: string): boolean {
@@ -115,11 +131,22 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
     handle(reply, err);
   });
 
+  /** 冲突保护：attach 接管期间拒绝 parallel 发送/压缩（防 server SDK 与终端 pi 双写同一会话） */
+  const rejectIfAttached = (id: string): void => {
+    if (deps.agents?.isAttached(id)) {
+      throw new HubError(
+        ErrorCodes.ATTACH_ACTIVE,
+        "终端接管中：消息由电脑终端 pi 执行，平行发送已停用（切回 📱 平行模式可恢复）",
+        409,
+      );
+    }
+  };
+
   // GET /api/sessions
   app.get("/api/sessions", async (_req, reply) => {
     try {
       const sessions = await hub.listSessions();
-      return reply.send({ sessions });
+      return reply.send({ sessions: sessions.map((s) => stampTerminal(s, deps.agents)) });
     } catch (err) {
       return handle(reply, err);
     }
@@ -146,7 +173,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
         const all = (await hub.loadMessages(req.params.id)) ?? [];
         // 不带分页查询：保持 v0 全量行为（hasMore=false / nextBefore=null）
         const page = limit === undefined && before === undefined ? fullPage(all) : paginateMessages(all, { before, limit });
-        return reply.send({ session, messages: page.messages, hasMore: page.hasMore, nextBefore: page.nextBefore });
+        return reply.send({ session: stampTerminal(session, deps.agents), messages: page.messages, hasMore: page.hasMore, nextBefore: page.nextBefore });
       } catch (err) {
         return handle(reply, err);
       }
@@ -240,6 +267,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   // POST /api/sessions/:id/prompt（images：上传图片相对路径数组，pi 直接附图，契约 §1/§11）
   app.post<{ Params: { id: string } }>("/api/sessions/:id/prompt", async (req, reply) => {
     try {
+      rejectIfAttached(req.params.id);
       const body = (typeof req.body === "object" && req.body !== null ? req.body : {}) as {
         text?: unknown;
         mode?: unknown;
@@ -311,6 +339,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   // POST /api/sessions/:id/compact
   app.post<{ Params: { id: string } }>("/api/sessions/:id/compact", async (req, reply) => {
     try {
+      rejectIfAttached(req.params.id);
       const session = await hub.findSession(req.params.id);
       if (!session) {
         throw new HubError(ErrorCodes.SESSION_NOT_FOUND, `会话不存在: ${req.params.id}`, 404);
@@ -341,6 +370,138 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
       }
       const { accepted } = deps.live.ingest(sessionId, req.body);
       return reply.status(202).send({ accepted });
+    } catch (err) {
+      return handle(reply, err);
+    }
+  });
+
+  /* ===== 终端接管 / 指令队列（E3 双模式，契约 §12） ===== */
+
+  /** 指令通道鉴权：仅限本机回环 + auth.token 非空时校验 Bearer（防局域网伪造） */
+  const requireAgentChannel = (req: FastifyRequest): void => {
+    if (!isLoopbackAddr(req.ip) && !isLoopbackAddr(req.socket?.remoteAddress)) {
+      throw new HubError(ErrorCodes.UNAUTHORIZED, "指令通道仅限本机回环访问", 401);
+    }
+    if (config.auth.token !== "") {
+      const header = req.headers.authorization ?? "";
+      if (!tokenMatches(header, `Bearer ${config.auth.token}`)) {
+        throw new HubError(ErrorCodes.UNAUTHORIZED, "invalid or missing shared token", 401);
+      }
+    }
+  };
+
+  const requireAgents = (): AgentLinkLike => {
+    if (!deps.agents) {
+      throw new HubError(ErrorCodes.INTERNAL, "终端接管未启用", 503);
+    }
+    return deps.agents;
+  };
+
+  // POST /api/agents/heartbeat：扩展启动即注册 + 每 30s 续（server 据此判定"终端 pi 在线"）
+  app.post("/api/agents/heartbeat", async (req, reply) => {
+    try {
+      requireAgentChannel(req);
+      const body = (typeof req.body === "object" && req.body !== null ? req.body : {}) as Record<string, unknown>;
+      const { ttlMs } = requireAgents().heartbeat({
+        sessionId: typeof body.sessionId === "string" ? body.sessionId : "",
+        pid: body.pid,
+        cwd: body.cwd,
+        capabilities: body.capabilities,
+      });
+      return reply.status(202).send({ ok: true, ttlMs });
+    } catch (err) {
+      return handle(reply, err);
+    }
+  });
+
+  // GET /api/agents/commands?sessionId=&wait=：扩展长轮询指令队列（wait 钳制 0..30s）
+  app.get<{ Querystring: { sessionId?: string; wait?: string } }>("/api/agents/commands", async (req, reply) => {
+    try {
+      requireAgentChannel(req);
+      const sessionId = typeof req.query.sessionId === "string" ? req.query.sessionId.trim() : "";
+      if (sessionId === "" || sessionId.length > 256) {
+        throw new HubError(ErrorCodes.INVALID_REQUEST, "sessionId 非法");
+      }
+      const waitRaw = Number.parseInt(req.query.wait ?? "0", 10);
+      const wait = Number.isFinite(waitRaw) ? Math.max(0, Math.min(waitRaw, 30_000)) : 0;
+      const commands = await requireAgents().poll(sessionId, wait);
+      return reply.send({
+        commands: commands.map((c) => ({
+          id: c.id,
+          kind: c.kind,
+          text: c.text,
+          mode: c.mode,
+          enqueuedAt: c.enqueuedAt,
+          expiresAt: c.expiresAt,
+          attempts: c.attempts,
+        })),
+      });
+    } catch (err) {
+      return handle(reply, err);
+    }
+  });
+
+  // POST /api/agents/ack：指令执行结果回执（幂等；失败带原因）
+  app.post("/api/agents/ack", async (req, reply) => {
+    try {
+      requireAgentChannel(req);
+      const body = (typeof req.body === "object" && req.body !== null ? req.body : {}) as Record<string, unknown>;
+      const sessionId = typeof body.sessionId === "string" ? body.sessionId.trim() : "";
+      const commandId = typeof body.commandId === "string" ? body.commandId.trim() : "";
+      if (sessionId === "" || commandId === "") {
+        throw new HubError(ErrorCodes.INVALID_REQUEST, "sessionId / commandId 必填");
+      }
+      const ok = body.ok !== false;
+      const error = typeof body.error === "string" ? body.error : undefined;
+      const result = requireAgents().ack(sessionId, commandId, ok, error);
+      return reply.status(202).send({ ok: true, known: result !== null });
+    } catch (err) {
+      return handle(reply, err);
+    }
+  });
+
+  // POST /api/sessions/:id/attach：接管会话（进入 attach 模式，需终端在线）
+  app.post<{ Params: { id: string } }>("/api/sessions/:id/attach", async (req, reply) => {
+    try {
+      const session = await hub.findSession(req.params.id);
+      if (!session) {
+        throw new HubError(ErrorCodes.SESSION_NOT_FOUND, `会话不存在: ${req.params.id}`, 404);
+      }
+      if (session.source !== "pi") {
+        throw new HubError(ErrorCodes.INVALID_REQUEST, "仅 pi 会话支持终端接管", 400);
+      }
+      const agent = requireAgents().attach(req.params.id);
+      return reply.status(202).send({ attached: true, agent });
+    } catch (err) {
+      return handle(reply, err);
+    }
+  });
+
+  // POST /api/sessions/:id/detach：退出接管（恢复 parallel 通道）
+  app.post<{ Params: { id: string } }>("/api/sessions/:id/detach", async (req, reply) => {
+    try {
+      requireAgents().detach(req.params.id);
+      return reply.send({ attached: false });
+    } catch (err) {
+      return handle(reply, err);
+    }
+  });
+
+  // POST /api/sessions/:id/message：attach 模式发消息 → 入指令队列（终端 pi 执行）
+  app.post<{ Params: { id: string } }>("/api/sessions/:id/message", async (req, reply) => {
+    try {
+      const body = (typeof req.body === "object" && req.body !== null ? req.body : {}) as Record<string, unknown>;
+      const command = requireAgents().enqueue(req.params.id, {
+        text: typeof body.text === "string" ? body.text : "",
+        mode: body.mode as CommandMode | undefined,
+        clientMessageId: body.clientMessageId,
+      });
+      return reply.status(202).send({
+        accepted: true,
+        channel: "attach",
+        commandId: command.id,
+        mode: command.mode,
+      });
     } catch (err) {
       return handle(reply, err);
     }

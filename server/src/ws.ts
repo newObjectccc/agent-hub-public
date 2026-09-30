@@ -35,6 +35,8 @@ export class WsHub {
   private readonly globalClients = new Set<WebSocket>();
   private wss: WebSocketServer | null = null;
   private tails: SessionTailManager | null = null;
+  /** prompt 冲突保护（E3：attach 接管期间拒绝 parallel 发送，防双写） */
+  private promptGuard: ((sessionId: string) => { code: string; message: string } | null) | null = null;
 
   /** hub 广播出口（构造 SessionHub 时注入） */
   broadcast(sessionId: string, event: ServerEvent): void {
@@ -79,10 +81,16 @@ export class WsHub {
   }
 
   /** 挂到 HTTP server 的 upgrade 事件；tailManager 可选，为非本进程会话提供实时文件 tail */
-  attach(server: HttpServer, hub: WsSessionHub, tailManager?: SessionTailManager): void {
+  attach(
+    server: HttpServer,
+    hub: WsSessionHub,
+    tailManager?: SessionTailManager,
+    promptGuard?: (sessionId: string) => { code: string; message: string } | null,
+  ): void {
     const wss = new WebSocketServer({ noServer: true });
     this.wss = wss;
     this.tails = tailManager ?? null;
+    this.promptGuard = promptGuard ?? null;
 
     server.on("upgrade", (req: IncomingMessage, socket: Duplex, head: Buffer) => {
       const url = (req.url ?? "").split("?")[0];
@@ -286,6 +294,11 @@ export class WsHub {
       }
       case "prompt": {
         try {
+          const blocked = this.promptGuard?.(sessionId) ?? null;
+          if (blocked) {
+            this.send(socket, { type: "error", code: blocked.code, message: blocked.message });
+            return;
+          }
           const result = await hub.prompt(sessionId, parsed.text, parsed.mode);
           if (result.busy) {
             this.send(socket, {
