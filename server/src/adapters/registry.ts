@@ -80,9 +80,15 @@ export class SessionRegistry {
     return this.cacheList ?? [];
   }
 
+  private lastScanAt = 0;
+
   private async refreshList(): Promise<void> {
     if (this.refreshingList) return;
+    // 最小重扫间隔：invalidate 高频（live-feed 持续写盘）时拒绝风暴式全量扫描（忙循环根因）
+    const now = Date.now();
+    if (this.cacheList !== null && now - this.lastScanAt < 5_000) return;
     this.refreshingList = true;
+    this.lastScanAt = now;
     try {
       this.cacheList = await this.loadSessions();
       this.cacheListAt = Date.now();

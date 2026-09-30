@@ -237,9 +237,13 @@ async function resolveRepoRoot(run: GitRunner, cwd: string): Promise<string> {
 }
 
 /** 可注入 runner 的 git API 工厂（测试注入 mock execFile） */
+/** git status 缓存：会话列表每行一个徽章请求（36+ 行 = 36+ git 子进程），服务端缓存防雪崩 */
+const GIT_STATUS_CACHE_MS = 30_000;
+
 export function createGitApi(runner: GitRunner = runGit): GitApi {
-  return {
-    async status(cwd: string): Promise<GitStatusResult> {
+  const statusCache = new Map<string, { at: number; result: GitStatusResult | null; error: unknown }>();
+  // 未缓存实现（缓存壳在下面的 status 方法里）
+  const runStatus = async (cwd: string): Promise<GitStatusResult> => {
       const root = await resolveRepoRoot(runner, cwd);
       const detachedRaw = (await runner(root, ["rev-parse", "--abbrev-ref", "HEAD"])).trim();
       let branch = detachedRaw;
@@ -280,6 +284,25 @@ export function createGitApi(runner: GitRunner = runGit): GitApi {
         dirty,
         dirtyCount: dirty.length,
       };
+  };
+
+  return {
+    async status(cwd: string): Promise<GitStatusResult> {
+      const hit = statusCache.get(cwd);
+      const now = Date.now();
+      if (hit && now - hit.at < GIT_STATUS_CACHE_MS) {
+        if (hit.error !== null) throw hit.error;
+        return hit.result as GitStatusResult;
+      }
+      try {
+        const result = await runStatus(cwd);
+        statusCache.set(cwd, { at: now, result, error: null });
+        return result;
+      } catch (err) {
+        // 失败也短缓存（防非仓库路径反复触发 git 子进程）
+        statusCache.set(cwd, { at: now, result: null, error: err });
+        throw err;
+      }
     },
 
     async log(cwd: string, limit: number): Promise<GitCommit[]> {

@@ -394,9 +394,15 @@ export class DashboardService implements DashboardServiceLike {
     return this.cachedInsights ?? [];
   }
 
+  private lastScanAt = 0;
+
   private async refreshInsights(): Promise<void> {
     if (this.refreshing) return;
+    // 最小重扫间隔：presence 高频 invalidate 时拒绝风暴式全量扫描
+    const now = this.now();
+    if (this.cachedInsights !== null && now - this.lastScanAt < 5_000) return;
     this.refreshing = true;
+    this.lastScanAt = now;
     try {
       this.cachedInsights = await scanSessionInsights(this.options.sessionDir, {
         statusOf: this.options.statusOf,

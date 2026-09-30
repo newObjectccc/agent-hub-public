@@ -471,9 +471,11 @@ export interface ScanOptions {
 export async function scanSessions(sessionDir: string, options: ScanOptions = {}): Promise<SessionListItem[]> {
   const files = await findSessionFiles(sessionDir);
   // 并发解析（分批 8）：与 scanSessionInsights 同策略，避免串行读盘卡列表接口
-  const CONCURRENCY = 8;
+  const CONCURRENCY = 4;
   const items: SessionListItem[] = [];
+  const yieldLoop = (): Promise<void> => new Promise((r) => setImmediate(r));
   for (let i = 0; i < files.length; i += CONCURRENCY) {
+    await yieldLoop(); // 批间让出：扫描不独占事件循环
     const batch = await Promise.all(
       files.slice(i, i + CONCURRENCY).map(async (file) => {
         try {
@@ -552,9 +554,11 @@ export function buildInsight(summary: SessionListItem, messages: MessageDto[]): 
 export async function scanSessionInsights(sessionDir: string, options: ScanOptions = {}): Promise<SessionInsight[]> {
   const files = await findSessionFiles(sessionDir);
   // 并发解析（分批 8）：60+ 会话文件串行读盘是 dashboard 秒级卡顿的根源
-  const CONCURRENCY = 8;
+  const CONCURRENCY = 4;
   const items: SessionInsight[] = [];
+  const yieldLoop = (): Promise<void> => new Promise((r) => setImmediate(r));
   for (let i = 0; i < files.length; i += CONCURRENCY) {
+    await yieldLoop(); // 批间让出：扫描不独占事件循环（HTTP 保持可响应）
     const batch = files.slice(i, i + CONCURRENCY);
     const parsedBatch = await Promise.all(
       batch.map(async (file) => {

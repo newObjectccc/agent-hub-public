@@ -165,9 +165,12 @@ export async function startHub(): Promise<StartedHub> {
   );
   await presence.start();
   await kpi.start();
-  // 预热：后台完成首次全量扫描（sessions + dashboard），首查不等冷扫
-  void hub.listSessions().catch(() => undefined);
-  void dashboard.getStats().catch(() => undefined);
+  // 预热：延迟 5s 后台完成首次全量扫描（先让 HTTP 就绪；扫描批间让出不堵事件循环）
+  const warmTimer = setTimeout(() => {
+    void hub.listSessions().catch(() => undefined);
+    void dashboard.getStats().catch(() => undefined);
+  }, 5_000);
+  warmTimer.unref?.();
 
   let closed = false;
   const close = async (): Promise<void> => {
