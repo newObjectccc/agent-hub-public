@@ -1130,7 +1130,7 @@ a {
   border-top: var(--bw) solid var(--border);
   background: var(--card);
   color: var(--card-foreground);
-  padding: 12px 12px calc(12px + var(--safe-bottom));
+  padding: 8px 10px calc(10px + var(--safe-bottom));
 }
 
 .chat-input-row {
@@ -2243,7 +2243,7 @@ button.git-bar:active {  transform: translate(2px, 2px);
   display: flex;
   flex-direction: column;
   min-height: 100vh;
-  padding: calc(10px + var(--safe-top)) 14px calc(16px + var(--safe-bottom));
+  padding: calc(6px + var(--safe-top)) 10px calc(12px + var(--safe-bottom));
   max-width: 760px;
   margin: 0 auto;
 }
@@ -2256,15 +2256,16 @@ button.git-bar:active {  transform: translate(2px, 2px);
 .tree-scroll {
   flex: 1;
   overflow-y: auto;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
 }
 
 .tree-row-slot {
   display: flex;
   align-items: stretch;
-  min-height: 44px;
-  /* 深层缩进封顶：移动端不横向溢出 */
-  --indent: min(calc(var(--depth, 0) * 18px), 126px);
+  /* 视觉 40px 紧凑行；触控热区由 .tree-node::after 外扩到 44px（见文末 d-polish 块） */
+  min-height: 40px;
+  /* 深层缩进封顶：步距 14px/层，移动端不横向溢出 */
+  --indent: min(calc(var(--depth, 0) * 14px), 96px);
   padding-left: var(--indent);
   border-bottom: 2px solid var(--border);
   position: relative;
@@ -2274,23 +2275,25 @@ button.git-bar:active {  transform: translate(2px, 2px);
 .tree-row-slot::before {
   content: "";
   position: absolute;
-  left: calc(var(--indent) - 9px);
+  left: calc(var(--indent) - 7px);
   top: 0;
   bottom: 0;
   width: 2px;
   background: var(--border);
   opacity: 0.35;
+  pointer-events: none;
 }
 
 .tree-row-slot::after {
   content: "";
   position: absolute;
-  left: calc(var(--indent) - 9px);
+  left: calc(var(--indent) - 7px);
   top: 50%;
-  width: 9px;
+  width: 7px;
   height: 2px;
   background: var(--border);
   opacity: 0.35;
+  pointer-events: none;
 }
 
 .tree-row-slot.root::before,
@@ -2299,7 +2302,7 @@ button.git-bar:active {  transform: translate(2px, 2px);
 }
 
 .tree-toggle {
-  flex: 0 0 32px;
+  flex: 0 0 26px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2319,16 +2322,15 @@ button.git-bar:active {  transform: translate(2px, 2px);
   min-width: 0; /* 允许文本收缩出省略号，防横向溢出 */
   display: flex;
   align-items: center;
-  gap: 6px;
-  min-height: 44px;
-  padding: 4px 6px;
+  gap: 5px;
+  min-height: 40px;
+  padding: 2px 4px;
   background: transparent;
   border: none;
   color: inherit;
   font: inherit;
   text-align: left;
   cursor: pointer;
-  overflow: hidden;
 }
 
 .tree-role {
@@ -2340,8 +2342,8 @@ button.git-bar:active {  transform: translate(2px, 2px);
 .tree-text {
   flex: 1;
   min-width: 0;
-  font-size: 13px;
-  line-height: 1.45;
+  font-size: 12.5px;
+  line-height: 1.35;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2375,8 +2377,8 @@ button.git-bar:active {  transform: translate(2px, 2px);
   color: var(--card-foreground);
   border: var(--bw) solid var(--border);
   box-shadow: var(--shadow-card);
-  padding: 10px 12px calc(10px + var(--safe-bottom));
-  margin: 8px -14px calc(-16px - var(--safe-bottom));
+  padding: 8px 10px calc(8px + var(--safe-bottom));
+  margin: 6px -10px calc(-12px - var(--safe-bottom));
 }
 
 .tree-preview-head {
@@ -3213,7 +3215,7 @@ button.git-bar:active {  transform: translate(2px, 2px);
   align-items: center;
   gap: 6px;
   margin-bottom: 8px;
-  min-height: 44px;
+  min-height: 40px;
   padding: 2px 2px 2px 8px;
   background: var(--muted);
   color: var(--muted-foreground);
@@ -3239,10 +3241,11 @@ button.git-bar:active {  transform: translate(2px, 2px);
   white-space: nowrap;
 }
 
+/* 取消引用 ✕：视觉 32px 紧凑，热区 44px 由 ::after 外扩 */
 .quote-cancel {
   flex-shrink: 0;
-  width: 44px;
-  height: 44px;
+  width: 32px;
+  height: 32px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -3251,7 +3254,7 @@ button.git-bar:active {  transform: translate(2px, 2px);
   border: 2px solid var(--border);
   border-radius: var(--nb-radius);
   cursor: pointer;
-  font-size: 13px;
+  font-size: 11.5px;
 }
 
 .quote-cancel:active {
@@ -3303,11 +3306,12 @@ button.git-bar:active {  transform: translate(2px, 2px);
   font-size: 13px;
 }
 
+/* 面板关闭 ✕：视觉 32px 紧凑，热区 44px 由 ::after 外扩 */
 .slash-close,
 .ft-close {
   flex-shrink: 0;
-  width: 44px;
-  height: 44px;
+  width: 32px;
+  height: 32px;
   margin-left: auto;
   display: inline-flex;
   align-items: center;
@@ -3317,7 +3321,7 @@ button.git-bar:active {  transform: translate(2px, 2px);
   border: 2px solid var(--border);
   border-radius: var(--nb-radius);
   cursor: pointer;
-  font-size: 13px;
+  font-size: 11.5px;
 }
 
 .slash-close:active,
@@ -4008,12 +4012,13 @@ button.git-bar:active {  transform: translate(2px, 2px);
   gap: 6px;
 }
 
-/* 一体化融合输入栏：输入框 + 按钮组单容器（粗描边 + 硬阴影，内嵌无缝） */
+/* 一体化融合输入栏：上下两层（上=全宽输入区，下=按钮行），按钮不挤压文本（粗描边 + 硬阴影） */
 .composer-box {
   display: flex;
-  align-items: flex-end;
+  flex-direction: column;
+  align-items: stretch;
   gap: 6px;
-  padding: 5px 6px 5px 10px;
+  padding: 6px;
   background: var(--card);
   color: var(--card-foreground);
   border: var(--bw) solid var(--border);
@@ -4023,15 +4028,17 @@ button.git-bar:active {  transform: translate(2px, 2px);
 
 .composer-box .chat-textarea-wrap {
   flex: 1 1 auto;
+  width: 100%;
   min-width: 0;
 }
 
-/* 内嵌输入框：去独立边框（容器已描边），行高紧凑 */
+/* 内嵌输入框：去独立边框（容器已描边），全宽多行自动增高（field-sizing-content） */
 .composer-textarea {
   width: 100%;
   min-height: 44px;
-  max-height: 40vh;
-  padding: 10px 0;
+  /* 键盘弹出时高度上限收紧，不遮挡消息区 */
+  max-height: min(38vh, 220px);
+  padding: 6px 4px;
   background: transparent;
   border: none;
   box-shadow: none;
@@ -4045,12 +4052,13 @@ button.git-bar:active {  transform: translate(2px, 2px);
   color: var(--muted-foreground);
 }
 
+/* 下层按钮行：📎/🎙 靠左，发送靠右，行内不挤压输入区 */
 .composer-actions {
   display: flex;
   align-items: center;
   gap: 6px;
   flex-shrink: 0;
-  padding-bottom: 1px;
+  width: 100%;
 }
 
 /* 通用内嵌按钮（📎 上传等）：44px 触控底线 */
@@ -4098,12 +4106,13 @@ button.git-bar:active {  transform: translate(2px, 2px);
   display: none;
 }
 
-/* 发送主按钮：未就绪灰、ready 亮黄高亮（野兽派撞色） */
+/* 发送主按钮：未就绪灰、ready 亮黄高亮（野兽派撞色）；按钮行内靠右 */
 .composer-send {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 5px;
+  margin-left: auto;
   min-width: 72px;
   height: 44px;
   padding: 0 12px;
@@ -4153,17 +4162,17 @@ button.git-bar:active {  transform: translate(2px, 2px);
 .attach-strip {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 5px;
   padding: 2px 0;
 }
 
 .attach-chip {
   display: flex;
   align-items: center;
-  gap: 6px;
-  max-width: min(240px, 100%);
-  height: 48px;
-  padding: 3px 4px 3px 6px;
+  gap: 5px;
+  max-width: min(220px, 100%);
+  height: 40px;
+  padding: 2px 3px 2px 5px;
   background: var(--accent);
   color: var(--accent-foreground);
   border: var(--bw) solid var(--border);
@@ -4172,8 +4181,8 @@ button.git-bar:active {  transform: translate(2px, 2px);
 }
 
 .attach-thumb {
-  width: 32px;
-  height: 32px;
+  width: 26px;
+  height: 26px;
   flex-shrink: 0;
   object-fit: cover;
   background: var(--card);
@@ -4184,7 +4193,7 @@ button.git-bar:active {  transform: translate(2px, 2px);
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 16px;
+  font-size: 13px;
 }
 
 .attach-name {
@@ -4196,14 +4205,15 @@ button.git-bar:active {  transform: translate(2px, 2px);
   font-weight: 600;
 }
 
+/* 删除按钮：视觉 30px 紧凑，热区 44px 由 ::after 外扩（见文末 d-polish 块） */
 .attach-remove {
-  width: 44px;
-  height: 44px;
+  width: 30px;
+  height: 30px;
   flex-shrink: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 13px;
+  font-size: 11.5px;
   background: var(--destructive);
   color: var(--destructive-foreground);
   border: 2px solid var(--border);
@@ -4400,4 +4410,75 @@ button.git-bar:active {  transform: translate(2px, 2px);
 
 .system-page .syscard {
   margin-top: 2px;
+}
+
+/* ============================================================
+ * d-polish 手机手感：视觉紧凑 + 触控热区 ≥44px
+ * 视觉可小（30-40px），热区不可小——由 44x44 居中 ::after 伪元素外扩；
+ * 并覆盖 @media(pointer:coarse) 的 button{min-height:44px} 对紧凑按钮的撑高
+ * ============================================================ */
+.attach-remove,
+.quote-cancel,
+.slash-close,
+.ft-close,
+.tree-node,
+.tree-toggle {
+  position: relative;
+}
+
+/* 折叠 toggle 热区盖在节点左缘之上（外扩区才真正可点到 toggle） */
+.tree-toggle {
+  z-index: 2;
+}
+
+/* 统一 44x44 居中热区（elementFromPoint 真值可命中边角） */
+.attach-remove::after,
+.quote-cancel::after,
+.slash-close::after,
+.ft-close::after,
+.tree-node::after,
+.tree-toggle::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 44px;
+  height: 44px;
+  transform: translate(-50%, -50%);
+}
+
+/* placeholder 不可点击，不加热区 */
+.tree-toggle.placeholder::after {
+  content: none;
+}
+
+/* 返回按钮：视觉 40px，热区外扩到 ≥44px */
+.chat-header .back {
+  position: relative;
+}
+
+.chat-header .back::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 48px;
+  height: 44px;
+  transform: translate(-50%, -50%);
+}
+
+/* 粗指针设备：紧凑视觉按钮不再被全局 44px min-height 撑高（热区由 ::after 保证）；
+ * 树行节点保持 40px 视觉行高 */
+@media (pointer: coarse) {
+  .attach-remove,
+  .quote-cancel,
+  .slash-close,
+  .ft-close,
+  .tree-toggle {
+    min-height: 0;
+  }
+
+  .tree-node {
+    min-height: 40px;
+  }
 }
