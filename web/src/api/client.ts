@@ -3,6 +3,8 @@
  * 错误统一为 { error: { code, message } }，这里归一为 ApiError。
  */
 import type {
+  AttachMessageResult,
+  AttachResult,
   CommandList,
   DashboardStats,
   FsTree,
@@ -128,6 +130,37 @@ export const api = {
     return request(`/api/sessions/${encodeURIComponent(id)}/abort`, {
       method: "POST",
       body: JSON.stringify({}),
+    });
+  },
+
+  /* ===== 终端接管 / 指令队列（E3 双模式，契约 §12） ===== */
+
+  /** POST /api/sessions/:id/attach：接管会话（进入 attach 模式，需终端 pi 在线） */
+  attachSession(id: string): Promise<AttachResult> {
+    return request(`/api/sessions/${encodeURIComponent(id)}/attach`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+  },
+
+  /** POST /api/sessions/:id/detach：退出接管（恢复 parallel 通道） */
+  detachSession(id: string): Promise<{ attached: boolean }> {
+    return request(`/api/sessions/${encodeURIComponent(id)}/detach`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+  },
+
+  /** POST /api/sessions/:id/message：attach 模式发消息 → 入终端指令队列（clientMessageId 幂等） */
+  sendAttachMessage(
+    id: string,
+    text: string,
+    mode: "prompt" | "steer" | "followUp",
+    clientMessageId?: string,
+  ): Promise<AttachMessageResult> {
+    return request(`/api/sessions/${encodeURIComponent(id)}/message`, {
+      method: "POST",
+      body: JSON.stringify(clientMessageId ? { text, mode, clientMessageId } : { text, mode }),
     });
   },
 

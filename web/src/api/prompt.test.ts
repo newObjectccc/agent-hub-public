@@ -47,6 +47,12 @@ describe("sendPromptWithFallback（409 SESSION_BUSY → followUp）", () => {
     expect(sendPrompt).toHaveBeenCalledTimes(1);
   });
 
+  it("attach 冲突 409 ATTACH_ACTIVE 不按忙碌降级（不重试不二次报错）", async () => {
+    const sendPrompt = vi.fn().mockRejectedValue(new ApiError(409, "ATTACH_ACTIVE", "终端接管中"));
+    await expect(sendPromptWithFallback("s1", "x", { sendPrompt })).rejects.toThrow("终端接管中");
+    expect(sendPrompt).toHaveBeenCalledTimes(1);
+  });
+
   it("降级后 followUp 仍失败则抛出", async () => {
     const sendPrompt = vi
       .fn()

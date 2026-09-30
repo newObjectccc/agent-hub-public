@@ -29,6 +29,17 @@ export interface SessionSummary {
    * claude 恒 null，识别不出为 null（归"未归组子代理"兜底分组）。渲染容错：`?? null`。
    */
   parentSessionId?: string | null;
+  /**
+   * 终端 pi 驱动状态（E3 双模式）：扩展心跳判定的在线/接管状态。
+   * 仅 pi 会话有值；claude 与旧 server 缺省（不显示徽章）。
+   */
+  terminal?: TerminalAttachInfo | null;
+}
+
+/** 终端 pi 状态：online=扩展心跳 90s 内；attached=attach 接管生效 */
+export interface TerminalAttachInfo {
+  online: boolean;
+  attached: boolean;
 }
 
 export type MessageRole = "user" | "assistant" | "toolResult" | "custom";
@@ -191,6 +202,25 @@ export interface SystemStatus {
 export interface PromptResult {
   accepted: boolean;
   mode: "prompt" | "steer" | "followUp";
+}
+
+/* ===== 终端接管 / 指令队列（E3 双模式，契约 §12） ===== */
+
+/** attach 指令注入模式（与 pi sendUserMessage 语义一致） */
+export type AttachCommandMode = "prompt" | "steer" | "followUp";
+
+/** POST /api/sessions/:id/attach 响应 */
+export interface AttachResult {
+  attached: boolean;
+  agent: { sessionId: string; pid: number | null; cwd: string; online: boolean } | null;
+}
+
+/** POST /api/sessions/:id/message 响应（attach 通道） */
+export interface AttachMessageResult {
+  accepted: boolean;
+  channel: "attach";
+  commandId: string;
+  mode: AttachCommandMode;
 }
 
 /** GET /api/commands?source= 命令项（契约 §8） */

@@ -52,7 +52,8 @@ export async function sendPromptWithFallback(
     const result = await callSend(deps, id, text, "prompt", images);
     return { result, busyFallback: false };
   } catch (err) {
-    const isBusy = err instanceof ApiError && (err.status === 409 || err.code === "SESSION_BUSY");
+    // 只认 SESSION_BUSY（attach 冲突 409 ATTACH_ACTIVE 等不是忙碌，重试只会二次报错）
+    const isBusy = err instanceof ApiError && err.code === "SESSION_BUSY";
     if (!isBusy) throw err;
     const result = await callSend(deps, id, text, "followUp", images);
     deps.onNotice?.(BUSY_NOTICE);

@@ -8,6 +8,7 @@ import { sessionTitle, shortPath } from "../utils/display";
 import { elapsedMinutesLabel, relativeTime } from "../utils/relativeTime";
 import { groupSessions, loadExpanded, saveExpanded } from "../utils/sessionTree";
 import { GitStatusBadge } from "./GitStatusBadge";
+import { AttachBadge } from "./AttachBadge";
 import { SourceBadge } from "./SourceBadge";
 import { StatusBadge } from "./StatusBadge";
 import { Button } from "./ui/button";
@@ -154,6 +155,8 @@ function SessionRow({ session: s, index, isNew, now, runningSince, onSelect }: S
               🤖
             </span>
           )}
+          {/* 驱动方式徽章（E3）：🖥⚡ 已接管 / 🖥 终端在线 / 📱 平行线（320 窄屏只留 emoji） */}
+          <AttachBadge terminal={s.terminal} />
           <StatusBadge status={s.status} />
           {s.status === "running" && startedAt !== undefined && (
             <span className="session-elapsed">已运行 {elapsedMinutesLabel(startedAt, nowMs)}</span>
