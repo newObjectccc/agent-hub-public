@@ -43,6 +43,14 @@ export interface SessionListItem {
    * 实例驱动同一会话文件，电脑终端 pi 需 pi --resume 重开才能看到。可缺省按 terminal。
    */
   lastDrivenBy?: SessionDrivenBy;
+  /** 终端 pi 驱动状态（E3 双模式）：扩展心跳判定的在线/接管状态。仅 pi 会话有值。 */
+  terminal?: TerminalAttachInfo | null;
+}
+
+/** 终端 pi 状态（双模式会话驱动）：online=心跳 90s 内；attached=attach 接管生效 */
+export interface TerminalAttachInfo {
+  online: boolean;
+  attached: boolean;
 }
 
 export type ToolCallStatus = "pending" | "running" | "done" | "error";
@@ -171,6 +179,8 @@ export type ServerEvent =
       activity: SubAgentActivityUpdate;
     }
   | { type: "error"; code: string; message: string }
+  | { type: "attach_state"; attached: boolean; terminalOnline: boolean }
+  | { type: "command_ack"; commandId: string; ok: boolean; error: string | null }
   | { type: "pong" };
 
 /** KPI 卡片（docs/API_CONTRACT.md §3） */

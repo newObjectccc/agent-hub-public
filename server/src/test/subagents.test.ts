@@ -287,3 +287,28 @@ describe("轻量血缘扫描：静态子会话文件必现（AC2 回归）", () 
     }
   });
 });
+
+describe("E3 阻断缺陷回归（REV-E3）", () => {
+  it("未 attach 时长轮询挂起不热转（返回前至少等待 waitMs）", async () => {
+    const { AgentCommandHub } = await import("../agents.js");
+    const hub = new AgentCommandHub();
+    const t0 = Date.now();
+    const out = await hub.poll("no-such-session", 300);
+    const elapsed = Date.now() - t0;
+    assert.deepEqual(out, []);
+    assert.ok(elapsed >= 280, `未 attach 应挂起等待（实测 ${elapsed}ms），防热空转`);
+  });
+
+  it("clientMessageId 幂等跨指令完成仍有效（重复提交不二次注入）", async () => {
+    const { AgentCommandHub } = await import("../agents.js");
+    const hub = new AgentCommandHub();
+    hub.heartbeat({ sessionId: "sess-x", pid: 1, cwd: "/tmp", capabilities: ["attach"] });
+    hub.attach("sess-x");
+    const first = hub.enqueue("sess-x", { kind: "message", text: "hi", mode: "prompt", clientMessageId: "cm-1" } as never);
+    // 指令完成（ack）
+    hub.ack("sess-x", first.id, true);
+    // 重复提交同 clientMessageId：不得生成新指令（防二次注入）
+    const second = hub.enqueue("sess-x", { kind: "message", text: "hi", mode: "prompt", clientMessageId: "cm-1" } as never);
+    assert.equal(second.id, first.id, "重复提交应幂等返回既有指令");
+  });
+});

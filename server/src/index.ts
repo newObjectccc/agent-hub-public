@@ -10,12 +10,14 @@ import Fastify, { type FastifyInstance } from "fastify";
 import fastifyCors from "@fastify/cors";
 import fastifyStatic from "@fastify/static";
 import { VERSION } from "@earendil-works/pi-coding-agent";
+import { AgentCommandHub } from "./agents.js";
 import { ClaudeAdapter } from "./adapters/claude.js";
 import { findClaudeSessionFiles } from "./adapters/claude-transcript.js";
 import { PiAdapter } from "./adapters/pi.js";
 import { SessionRegistry } from "./adapters/registry.js";
 import { loadHubConfig, type HubConfig } from "./config.js";
 import { DashboardService } from "./dashboard.js";
+import { ErrorCodes } from "./errors.js";
 import { KpiService } from "./kpi.js";
 import { LiveIngest } from "./live.js";
 import { configDir, dataDir, webDistDir } from "./paths.js";
@@ -51,6 +53,7 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
     fsTree: options.fsTree,
     panelDriven: options.panelDriven,
     dashboard: options.dashboard,
+    agents: options.agents,
   });
   // 静态托管 web/dist（存在时），单进程即可服务 PWA
   const root = options.webRoot ?? null;
@@ -101,6 +104,8 @@ export async function startHub(): Promise<StartedHub> {
     if (routed) wshub.broadcast(routed.parentSessionId, routed.event);
   };
   const piHub = new SessionHub(config.sessionDir, emit);
+  // 终端 pi 反向指令通道（E3 双模式）：心跳 / 指令队列 / 回执（attach_state、command_ack 走同一 emit）
+  const agents = new AgentCommandHub(emit);
   // Claude Code 会话来源：~/.claude/projects/<encoded-cwd>/<uuid>.jsonl + history.jsonl
   const claudeProjectsDir = join(homedir(), ".claude", "projects");
   const claudeHistoryFile = join(homedir(), ".claude", "history.jsonl");
@@ -136,6 +141,7 @@ export async function startHub(): Promise<StartedHub> {
     dashboard,
     config,
     live: liveIngest,
+    agents,
     webRoot: webDistDir,
     logger: true,
     systemInfo: createSystemInfoProvider({
@@ -146,10 +152,16 @@ export async function startHub(): Promise<StartedHub> {
   });
 
   await app.listen({ port: config.port, host: config.host });
+  agents.startSweep();
   const tails = new SessionTailManager((sessionId, event) => emit(sessionId, event));
   // 会话一旦由本进程接管（live），停掉文件 tail，避免双推送源产生重复气泡
   hub.onLive = (sid) => tails.detach(sid);
-  wshub.attach(app.server, hub, tails);
+  // attach 接管期间拒绝 WS parallel 发送（与 REST /prompt 同一冲突保护）
+  wshub.attach(app.server, hub, tails, (id) =>
+    agents.isAttached(id)
+      ? { code: ErrorCodes.ATTACH_ACTIVE, message: "终端接管中：平行发送已停用（切回 📱 平行模式可恢复）" }
+      : null,
+  );
   // 全局存在感知：任一会话文件（pi / claude）变化 → 广播 sessions_changed + 搜索索引失效（fs.watch 事件驱动）
   const presence = new PresenceWatcher(
     async () => [
@@ -180,6 +192,7 @@ export async function startHub(): Promise<StartedHub> {
     kpi.stop();
     presence.stop();
     liveIngest.close();
+    agents.close();
     hub.disposeAll();
     // 先掐掉全部 WS 连接再关 HTTP，否则在线 WS 客户端会让 app.close() 永不 resolve
     wshub.closeAll();

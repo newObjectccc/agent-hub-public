@@ -1,8 +1,18 @@
 import { ChatSkeleton } from "../components/Skeletons";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type CSSProperties } from "react";
-import { api } from "../api/client";
+import { api, ApiError } from "../api/client";
+import {
+  isAttachSending,
+  loadAttachMode,
+  loadIntroSeen,
+  mapAttachSendMode,
+  markIntroSeen,
+  saveAttachMode,
+  type AttachMode,
+  type ChannelEchoState,
+} from "../api/attach";
 import { sendPromptWithMode, type SendMode } from "../api/prompt";
-import type { CommandItem, SessionMessage, SessionStatus, SessionSummary, SubAgentActivity } from "../api/types";
+import type { CommandItem, SessionMessage, SessionStatus, SessionSummary, SubAgentActivity, TerminalAttachInfo } from "../api/types";
 import { applyWsEvent, reconcileMessages, type WsEvent } from "../chat/messageStream";
 import { waitPhaseAfterEvent, type WaitPhase } from "../chat/waitPhase";
 import { DeltaBatcher } from "../chat/deltaBatcher";
@@ -22,6 +32,9 @@ import { SubAgentPanel } from "../components/SubAgentPanel";
 import { DrivenBadge } from "../components/DrivenBadge";
 import { WaitStageBar } from "../components/WaitStageBar";
 import { AttachmentStrip } from "../components/AttachmentStrip";
+import { AttachIntroSheet } from "../components/AttachIntroSheet";
+import { AttachModeMenu } from "../components/AttachModeMenu";
+import { ChannelEcho } from "../components/ChannelEcho";
 import { UploadButton } from "../components/UploadButton";
 import { SendModeMenu } from "../components/SendModeMenu";
 import { SessionActionsMenu } from "../components/SessionActionsMenu";
@@ -158,6 +171,20 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
   /** message_end 后的待定收尾定时器（tail 丢 status / 事件丢失时的 UI 兜底） */
   const pendingIdleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [sendMode, setSendMode] = useState<SendMode>("auto");
+  // 双模式会话驱动（E3）：📱 parallel（现状）/ 🖥 attach（消息注入电脑终端 pi）
+  const [attachMode, setAttachMode] = useState<AttachMode>(() => loadAttachMode(safeStorage(), sessionId));
+  const attachModeRef = useRef<AttachMode>(attachMode);
+  attachModeRef.current = attachMode;
+  /** 终端 pi 在线/接管状态（server 真值，WS attach_state 实时更新） */
+  const [terminal, setTerminal] = useState<TerminalAttachInfo | null>(null);
+  /** 发送后归属确认一行小字（独立状态字，不侵入 E1 阶段状态条） */
+  const [echo, setEcho] = useState<ChannelEchoState | null>(null);
+  /** 指令回执先于发送响应到达时的时序保护：commandId → 回执结果 */
+  const ackedRef = useRef(new Map<string, { ok: boolean; error: string | null }>());
+  const [attachBusy, setAttachBusy] = useState(false);
+  // 首次进入可双模式会话的轻量说明 sheet（一次性，用完即走）
+  const [introOpen, setIntroOpen] = useState(false);
+  const introCheckedRef = useRef(false);
   // 子代理活动（反馈轮 3 #4）：pi-subagents 派生会话的实时工作面板（快照 + WS 增量）
   const [subAgents, setSubAgents] = useState<SubAgentActivity[]>([]);
   // 面板驱动标识（反馈轮 3 #5，与驱动来源徽章统一）：本设备面板发过消息的会话，电脑端 pi 需重开才能看到实时变化
@@ -236,6 +263,14 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
       setMessages(reconcileMessages(messagesRef.current, detail.messages ?? []));
       setHasMore(Boolean(detail.hasMore));
       setStatus(detail.session.status);
+      setTerminal(detail.session.terminal ?? null);
+      // 首次进入可双模式会话：一次性说明 sheet（记住选择，用完即走，不常驻）
+      if (!introCheckedRef.current) {
+        introCheckedRef.current = true;
+        if (detail.session.terminal?.online === true && !loadIntroSeen(safeStorage())) {
+          setIntroOpen(true);
+        }
+      }
       setLoadError(null);
       // 驱动来源标注（心理预期管理）：server 持久集合为准，本地 panelHint 仅旧版兼容兑底
       const driven = detail.session.lastDrivenBy === "panel" ? "panel" : "terminal";
@@ -788,11 +823,39 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
           setSending(false);
           endWait();
           break;
+        case "attach_state": {
+          // 终端驱动状态实时回流（E3）：接管失效自动回落平行，绝不静默丢消息
+          const attached = event.attached === true;
+          const online = event.terminalOnline === true;
+          setTerminal({ online, attached });
+          if (!attached && attachModeRef.current === "attach") {
+            attachModeRef.current = "parallel";
+            setAttachMode("parallel");
+            saveAttachMode(safeStorage(), sessionId, "parallel");
+            setNotice("终端已退出接管（心跳超时或主动断开），已切回 📱 平行模式");
+          }
+          break;
+        }
+        case "command_ack": {
+          if (attachModeRef.current !== "attach") break;
+          const commandId = String(event.commandId ?? "");
+          const ok = event.ok !== false;
+          const error = event.error ? String(event.error) : null;
+          ackedRef.current.set(commandId, { ok, error });
+          // 旧指令的迟到回执不覆盖当前状态条
+          setEcho((prev) => {
+            if (prev && prev.channel === "attach" && prev.commandId && prev.commandId !== commandId) return prev;
+            return ok
+              ? { channel: "attach", phase: "acked", commandId }
+              : { channel: "attach", phase: "failed", detail: error, commandId };
+          });
+          break;
+        }
         default:
           break;
       }
     },
-    [],
+    [sessionId],
   );
 
   useSessionSocket({
@@ -806,6 +869,25 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
   const performSend = async (localId: string, text: string, images: string[]) => {
     beginWait("sending");
     try {
+      if (isAttachSending(attachModeRef.current, terminal)) {
+        // attach（E3 双模式）：消息入终端指令队列（终端 pi 实时显示并执行；回执经 WS command_ack 回流）
+        const queued = await api.sendAttachMessage(sessionId, text, mapAttachSendMode(sendMode), localId);
+        // 时序保护：回执可能先于发送响应到达（长轮询秒级投递），已回执则直接展示终态
+        const ack = ackedRef.current.get(queued.commandId);
+        if (ack) {
+          ackedRef.current.delete(queued.commandId);
+          setEcho(
+            ack.ok
+              ? { channel: "attach", phase: "acked", commandId: queued.commandId }
+              : { channel: "attach", phase: "failed", detail: ack.error, commandId: queued.commandId },
+          );
+        } else {
+          setEcho({ channel: "attach", phase: "sent", commandId: queued.commandId });
+        }
+        endWait();
+        vibrate(10);
+        return;
+      }
       // auto：409 自动降级（prompt → followUp）；手动模式直接带对应 mode；
       // 图片附件随 prompt 上传（pi 直接附图，claude 走 @path 引用，契约 §1/§11）
       const outcome = await sendPromptWithMode(
@@ -896,6 +978,37 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
       setSending(false);
     }
   };
+
+  /** 切换会话驱动模式（E3）：attach 先与 server 握手（终端在线才能接管）；detach 恢复平行通道 */
+  const changeAttachMode = async (mode: AttachMode) => {
+    if (mode === attachModeRef.current) return;
+    setAttachBusy(true);
+    try {
+      if (mode === "attach") {
+        const result = await api.attachSession(sessionId);
+        setTerminal({ online: result.agent?.online ?? true, attached: true });
+        setNotice("已接管终端：消息将发往电脑终端 pi 实时执行");
+      } else {
+        await api.detachSession(sessionId);
+        setTerminal((prev) => (prev ? { ...prev, attached: false } : prev));
+        setNotice("已切回 📱 平行模式：消息由 server 的 pi 实例继续处理");
+      }
+      attachModeRef.current = mode;
+      setAttachMode(mode);
+      saveAttachMode(safeStorage(), sessionId, mode);
+    } catch (e) {
+      setNotice(e instanceof Error ? e.message : "模式切换失败");
+    } finally {
+      setAttachBusy(false);
+    }
+  };
+
+  // 发送归属确认一行小字：6s 后自动收起（零常驻占位）
+  useEffect(() => {
+    if (!echo) return;
+    const timer = setTimeout(() => setEcho(null), 6000);
+    return () => clearTimeout(timer);
+  }, [echo]);
 
   /**
    * 面板驱动标识（与驱动来源徽章/预期提示条统一）：手机发消息实际由 server 的 pi SDK 实例干活，
@@ -1043,6 +1156,13 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
         <DrivenBadge drivenBy={drivenBy} />
         <SourceBadge source={session?.source ?? null} />
         <StatusBadge status={status} />
+        {/* 双模式切换（E3）：顶栏一个紧凑徽章，弹出小菜单二选一，零额外常驻占位 */}
+        <AttachModeMenu
+          mode={attachMode}
+          terminal={terminal}
+          busy={attachBusy}
+          onChange={(m) => void changeAttachMode(m)}
+        />
       </header>
 
       {notice && <div className="chat-notice">{notice}</div>}
@@ -1164,7 +1284,8 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
           )}
           <div className="modebar-right">
             <SendModeMenu value={sendMode} onChange={setSendMode} />
-            {status === "running" && (
+            {/* attach 下中止无意义（run 在终端 pi 进程里），隐藏以免误导 */}
+            {status === "running" && !isAttachSending(attachMode, terminal) && (
               <Button type="button" variant="destructive" size="sm" className="abort-btn" onClick={() => void doAbort()}>
                 中止
               </Button>
@@ -1183,6 +1304,8 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
             </button>
           </div>
         )}
+        {/* 发送归属确认一行小字（E3）："已发往终端" / "平行线工作中"；无内容零占位 */}
+        <ChannelEcho echo={echo} />
         <div className="composer">          <SlashCommandPanel
             ref={slashPanelRef}
             open={slashOpen && slashSpan !== null}
@@ -1298,6 +1421,20 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
           </div>
         </div>
       </footer>
+
+      {introOpen && (
+        <AttachIntroSheet
+          onClose={() => {
+            markIntroSeen(safeStorage());
+            setIntroOpen(false);
+          }}
+          onPick={(mode) => {
+            markIntroSeen(safeStorage());
+            setIntroOpen(false);
+            if (mode === "attach") void changeAttachMode("attach");
+          }}
+        />
+      )}
 
       {gitOpen && session && (
         <GitPanel

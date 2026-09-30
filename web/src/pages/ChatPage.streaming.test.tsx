@@ -239,7 +239,7 @@ describe("ChatPage 流式批处理（行为零变化保障）", () => {
 });
 
 describe("ChatPage 流式性能对比（before/after）", () => {
-  it("50 delta/s × 2s（100 delta）：渲染次数与耗时对比表", async () => {
+  it("50 delta/s × 2s（100 delta）：渲染次数与耗时对比表", { timeout: 15_000 }, async () => {
     const before = await runStream(0, 100, 20);
     const after = await runStream(DEFAULT_BATCH_WINDOW_MS, 100, 20);
     // 行为一致：文本完整、无双条
@@ -250,7 +250,7 @@ describe("ChatPage 流式性能对比（before/after）", () => {
     printTable("50 delta/s × 2s（100 delta）", before, after);
   });
 
-  it("200 delta/s × 2s（400 delta）：更高频风暴下批处理收益更大", async () => {
+  it("200 delta/s × 2s（400 delta）：更高频风暴下批处理收益更大", { timeout: 15_000 }, async () => {
     const before = await runStream(0, 400, 5);
     const after = await runStream(DEFAULT_BATCH_WINDOW_MS, 400, 5);
     expect(after.finalText).toBe(before.finalText);

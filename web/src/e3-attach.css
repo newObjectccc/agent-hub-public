@@ -1,0 +1,234 @@
+/* ============================================================
+ * e3-attach 双模式会话驱动（E3）：模式切换徽章 / 驱动方式徽章 /
+ * 发送归属状态条 / 首次说明 sheet。
+ * 独立文件（main.tsx 在 d-polish.css 之后引入）：与并行改动（E1 阶段状态条）
+ * 解耦，类名前缀 attach- / channel-echo 不碰撞；深浅色全部走 palette token。
+ * ============================================================ */
+
+/* ---------- 顶栏模式切换徽章：紧凑触发器 + 下拉小菜单（零常驻占位） ---------- */
+.attach-menu-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.attach-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-height: 34px;
+  padding: 0 8px;
+  font-family: var(--nb-font-head);
+  font-weight: 900;
+  font-size: 11.5px;
+  background: var(--card);
+  color: var(--card-foreground);
+  border: 2px solid var(--border);
+  border-radius: var(--nb-radius);
+  box-shadow: var(--nb-shadow-xs);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+
+/* 触控热区 ≥44px（视觉紧凑不缩水，命中区用伪元素扩展） */
+.attach-trigger::after {
+  content: "";
+  position: absolute;
+  inset: -5px -2px;
+}
+
+.attach-trigger:active {
+  transform: translate(1px, 1px);
+  box-shadow: none;
+}
+
+.attach-trigger:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.attach-trigger-caret {
+  font-size: 9px;
+}
+
+/* 模式弹层：锚定触发器下方、右缘对齐（320-1024 不超屏） */
+.attach-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: min(300px, calc(100vw - 24px - var(--safe-left, 0px) - var(--safe-right, 0px)));
+  padding: 5px;
+  background: var(--card);
+  color: var(--card-foreground);
+  border: var(--bw) solid var(--border);
+  border-radius: var(--nb-radius);
+  box-shadow: var(--shadow-card);
+}
+
+.attach-menu-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-height: 44px;
+  padding: 6px 8px;
+  text-align: left;
+  background: var(--muted);
+  color: var(--foreground);
+  border: var(--bw) solid var(--border);
+  border-radius: var(--nb-radius);
+  cursor: pointer;
+}
+
+.attach-menu-item.active {
+  background: var(--primary);
+  color: var(--primary-foreground);
+  box-shadow: var(--nb-shadow-xs);
+}
+
+.attach-menu-item.disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.attach-menu-label {
+  font-family: var(--nb-font-head);
+  font-weight: 900;
+  font-size: 12.5px;
+}
+
+.attach-menu-hint {
+  font-family: var(--nb-font-sans);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.45;
+  color: var(--muted-foreground);
+}
+
+.attach-menu-item.active .attach-menu-hint {
+  color: var(--foreground);
+}
+
+/* ---------- 会话列表驱动方式徽章（🖥⚡ 已接管 / 🖥 终端在线 / 📱 平行线） ---------- */
+.badge.attach-badge {
+  flex-shrink: 0;
+}
+
+.badge.attach-attached {
+  background: var(--primary);
+  color: var(--primary-foreground);
+}
+
+.badge.attach-online {
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+}
+
+.badge.attach-parallel {
+  background: var(--muted);
+  color: var(--muted-foreground);
+}
+
+/* ---------- 发送归属确认一行小字（独立状态字，不侵入 E1 区域） ---------- */
+.channel-echo {
+  margin-bottom: 4px;
+  padding: 2px 6px;
+  font-family: var(--nb-font-sans);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted-foreground);
+  background: var(--muted);
+  border: 1.5px solid var(--border);
+  border-radius: var(--nb-radius);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.channel-echo.attach {
+  color: var(--accent-foreground);
+  background: var(--accent);
+}
+
+.channel-echo.failed {
+  color: var(--destructive-foreground);
+  background: var(--destructive);
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) .channel-echo.failed {
+    color: var(--foreground);
+  }
+}
+:root[data-theme="light"] .channel-echo.failed {
+  color: var(--foreground);
+}
+
+/* ---------- 首次双模式说明 sheet（用完即走） ---------- */
+.attach-intro-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.attach-intro-list li {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px;
+  background: var(--muted);
+  border: var(--bw) solid var(--border);
+  border-radius: var(--nb-radius);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.attach-intro-list strong {
+  font-family: var(--nb-font-head);
+  font-weight: 900;
+  font-size: 13px;
+}
+
+.attach-intro-foot {
+  display: flex;
+  gap: 8px;
+}
+
+.attach-intro-btn {
+  flex: 1;
+  min-height: 44px;
+  padding: 8px 10px;
+  font-family: var(--nb-font-head);
+  font-weight: 900;
+  font-size: 13px;
+  background: var(--card);
+  color: var(--card-foreground);
+  border: var(--bw) solid var(--border);
+  border-radius: var(--nb-radius);
+  box-shadow: var(--nb-shadow-xs);
+  cursor: pointer;
+}
+
+.attach-intro-btn.primary {
+  background: var(--primary);
+  color: var(--primary-foreground);
+}
+
+.attach-intro-btn:active {
+  transform: translate(1px, 1px);
+  box-shadow: none;
+}
+
+/* ---------- reduced-motion：本文件无动画，仅保留全局降级一致性 ---------- */
+@media (prefers-reduced-motion: reduce) {
+  .attach-trigger {
+    transition: none;
+  }
+}
