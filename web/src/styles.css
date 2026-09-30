@@ -652,25 +652,23 @@ a {
 .session-list {
   display: flex;
   flex-direction: column;
-  gap: 0;
+  gap: var(--row-gap); /* list item 之间统一间距（设计语言一致性） */
 }
 
-/* 固定行高：卡片 + 行距，与 SessionList 的 SESSION_ITEM_HEIGHT 同步（密度断点可调） */
+/* 行高内容自适应：估算高仅作虚拟窗口布局，实际高度由内容决定（长摘要不截断） */
 .session-row {
-  height: var(--row-h);
+  min-height: var(--row-h);
   box-sizing: border-box;
-  padding-bottom: var(--row-gap);
 }
 
 /* 子代理子行（树形缩进，更矮更紧凑） */
 .session-row.sub-row {
-  height: var(--row-h-sub);
+  min-height: var(--row-h-sub);
 }
 
 .session-row .session-item {
-  height: 100%;
   box-sizing: border-box;
-  overflow: hidden;
+  overflow: visible; /* 内容完整展示，不遮挡 */
 }
 
 .session-item {
@@ -2243,7 +2241,8 @@ button.git-bar:active {  transform: translate(2px, 2px);
   display: flex;
   flex-direction: column;
   min-height: 100vh;
-  padding: calc(6px + var(--safe-top)) 10px calc(12px + var(--safe-bottom));
+  /* 与 .app 页面 padding 标准一致（设计语言统一：header 与内容列对齐） */
+  padding: calc(12px + var(--safe-top)) clamp(12px, 3.5vw, 24px) calc(20px + var(--safe-bottom));
   max-width: 760px;
   margin: 0 auto;
 }

@@ -104,6 +104,16 @@ export function sortSessions(sessions: SessionSummary[], priority?: SessionSortP
   });
 }
 
+/** 估算行高（虚拟窗口布局用，允许偏差；实际高度由 CSS 内容自适应）：基础 + 摘要行数 */
+export function estimateItemHeight(s: SessionSummary, isMobile: boolean): number {
+  const base = isMobile ? SESSION_ITEM_HEIGHT_MOBILE : SESSION_ITEM_HEIGHT;
+  const summary = s.lastAssistantMessage ?? s.lastUserMessage ?? "";
+  const perLine = isMobile ? 18 : 20;
+  const maxCharsPerLine = isMobile ? 26 : 42;
+  const lines = Math.max(1, Math.ceil(summary.length / maxCharsPerLine));
+  return base + (lines - 1) * perLine;
+}
+
 function summaryOf(s: SessionSummary): string {
   return s.lastAssistantMessage ?? s.lastUserMessage ?? "暂无对话内容";
 }
@@ -206,7 +216,11 @@ export function SessionList({
         itemHeight={mainHeight}
         getItemHeight={(s) => {
           const kids = childrenOf.get(s.id);
-          return mainHeight + (expanded.has(s.id) && kids ? kids.length * childHeight : 0);
+          // 估算高（虚拟窗口布局用）：基础 + 摘要文本行数；实际渲染高度由内容决定
+          return (
+            estimateItemHeight(s, isMobile) +
+            (expanded.has(s.id) && kids ? kids.length * childHeight : 0)
+          );
         }}
         getKey={(s) => s.id}
         className="session-list-scroll"
