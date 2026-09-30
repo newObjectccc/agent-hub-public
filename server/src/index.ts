@@ -20,6 +20,7 @@ import { KpiService } from "./kpi.js";
 import { LiveIngest } from "./live.js";
 import { configDir, dataDir, webDistDir } from "./paths.js";
 import { registerRoutes, type RouteDeps, type SessionHubLike } from "./routes.js";
+import { SubAgentRouter } from "./subagents.js";
 import { SessionHub } from "./sessions/hub.js";
 import { PresenceWatcher } from "./sessions/presence.js";
 import { findSessionFiles } from "./sessions/scan.js";
@@ -94,6 +95,9 @@ export async function startHub(): Promise<StartedHub> {
       wshub.broadcastGlobal({ type: "session_status", sessionId, status: event.status });
     }
     wshub.broadcast(sessionId, event);
+    // 子代理活动路由（反馈轮 3 #4）：子会话事件按 parentSessionId 汇到父会话通道
+    const routed = subAgentRouter.route(sessionId, event);
+    if (routed) wshub.broadcast(routed.parentSessionId, routed.event);
   };
   const piHub = new SessionHub(config.sessionDir, emit);
   // Claude Code 会话来源：~/.claude/projects/<encoded-cwd>/<uuid>.jsonl + history.jsonl
@@ -101,6 +105,8 @@ export async function startHub(): Promise<StartedHub> {
   const claudeHistoryFile = join(homedir(), ".claude", "history.jsonl");
   const claudeAdapter = new ClaudeAdapter({ projectsDir: claudeProjectsDir, historyFile: claudeHistoryFile, emit });
   const hub = new SessionRegistry(new PiAdapter(piHub), claudeAdapter);
+  // 子代理血缘路由器（emit 闭包延迟引用：事件只可能在 startHub 装配完成后到达）
+  const subAgentRouter = new SubAgentRouter((id) => hub.findSession(id));
   const dashboard = new DashboardService({
     sessionDir: config.sessionDir,
     workspaceRoot: config.workspaceRoot,

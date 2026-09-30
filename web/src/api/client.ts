@@ -13,6 +13,7 @@ import type {
   SessionSource,
   SessionSummary,
   SessionTree,
+  SubAgentsResponse,
   SystemStatus,
   ApiErrorBody,
   FileContentResult,
@@ -78,6 +79,11 @@ export const api = {
   /** 会话分支树（GET /api/sessions/:id/tree） */
   getSessionTree(id: string): Promise<SessionTree> {
     return request(`/api/sessions/${encodeURIComponent(id)}/tree`);
+  },
+
+  /** 子代理活动快照（GET /api/sessions/:id/agents，反馈轮 3 #4） */
+  getSessionAgents(id: string): Promise<SubAgentsResponse> {
+    return request(`/api/sessions/${encodeURIComponent(id)}/agents`);
   },
 
   createSession(cwd: string, name?: string, source?: SessionSource): Promise<{ session: SessionSummary }> {

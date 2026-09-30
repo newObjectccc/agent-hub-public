@@ -18,6 +18,8 @@ const WS_EVENTS_PATH = "/ws/events";
 export interface WsSessionHub {
   isLive(id: string): boolean;
   findSession(id: string): Promise<SessionListItem | null>;
+  /** 子代理会话列表（pi-subagents 派生，反馈轮 3 #4；可选，fake hub 可不实现） */
+  listChildren?(parentId: string): Promise<SessionListItem[]>;
   prompt(id: string, text: unknown, modeRaw: unknown): Promise<PromptResult>;
   abort(id: string): Promise<void>;
 }
@@ -148,15 +150,22 @@ export class WsHub {
     const pending: string[] = [];
     let ready = false;
     let acquired = false;
+    let closed = false;
+    /** 父会话订阅期间顺带 tail 的子代理会话（反馈轮 3 #4，cleanup 时释放） */
+    const childTails: string[] = [];
     const process = (text: string): void => {
       void this.handleClientMessage(socket, sessionId, hub, text);
     };
 
     const cleanup = (): void => {
+      closed = true;
       this.remove(sessionId, socket);
       if (acquired) {
         acquired = false;
         this.tails?.release(sessionId);
+      }
+      for (const childId of childTails.splice(0)) {
+        this.tails?.release(childId);
       }
     };
 
@@ -189,6 +198,23 @@ export class WsHub {
         const loader = session.source === "claude" ? loadClaudeSessionMessages : undefined;
         this.tails.acquire(sessionId, session.sessionFile, loader);
         acquired = true;
+      }
+
+      // 子代理会话 tail（反馈轮 3 #4）：父会话订阅期间顺带 tail 全部子代理会话，
+      // 其事件经 emit → SubAgentRouter 按 parentSessionId 路由回父通道（活动面板实时更新）。
+      // 异步解析完成前连接已关：不 acquire（或立即 release），防 tail 泄漏。
+      if (this.tails && hub.listChildren) {
+        void hub
+          .listChildren(sessionId)
+          .then((children) => {
+            for (const child of children) {
+              if (!this.tails || closed || hub.isLive(child.id) || socket.readyState !== WebSocket.OPEN) continue;
+              const childLoader = child.source === "claude" ? loadClaudeSessionMessages : undefined;
+              this.tails.acquire(child.id, child.sessionFile, childLoader);
+              childTails.push(child.id);
+            }
+          })
+          .catch(() => undefined);
       }
 
       ready = true;

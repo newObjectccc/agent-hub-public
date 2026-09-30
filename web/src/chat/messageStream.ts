@@ -29,6 +29,7 @@ function normalizeMessage(m: Partial<SessionMessage> & { id: string }): SessionM
     text: m.text ?? "",
     thinking: typeof m.thinking === "string" ? m.thinking : null,
     toolCalls: m.toolCalls ?? [],
+    streaming: m.streaming === true,
   };
 }
 
@@ -95,7 +96,8 @@ export function applyWsEvent(messages: SessionMessage[], event: WsEvent): Sessio
   switch (event.type) {
     case "message_start": {
       if (!event.message?.id) return messages;
-      const msg = normalizeMessage(event.message);
+      // 流式占位/重复 message_start 均标记 streaming（空内容时前端渲染"回复中"活占位）
+      const msg = { ...normalizeMessage(event.message), streaming: true };
       if (messages.some((m) => m.id === msg.id)) {
         return updateMessage(messages, msg.id, (m) => ({ ...m, ...msg, text: m.text, toolCalls: m.toolCalls }));
       }
@@ -106,7 +108,7 @@ export function applyWsEvent(messages: SessionMessage[], event: WsEvent): Sessio
         const dupIdx = findTailUserPlaceholder(messages);
         if (dupIdx >= 0) {
           const next = messages.slice();
-          next[dupIdx] = { ...next[dupIdx], id: msg.id, timestamp: msg.timestamp };
+          next[dupIdx] = { ...next[dupIdx], id: msg.id, timestamp: msg.timestamp, streaming: true };
           return next;
         }
       }
@@ -193,7 +195,10 @@ export function applyWsEvent(messages: SessionMessage[], event: WsEvent): Sessio
   }
 }
 
-/** 全量对账：用 GET /api/sessions/:id 的权威消息整体替换 */
-export function reconcileMessages(_prev: SessionMessage[], fresh: SessionMessage[]): SessionMessage[] {
-  return fresh;
+/** 全量对账：用 GET /api/sessions/:id 的权威消息整体替换；
+ *  在途流式消息（prev.streaming）的标志按 id 回填，避免重连对账把"回复中"打回"（无内容）" */
+export function reconcileMessages(prev: SessionMessage[], fresh: SessionMessage[]): SessionMessage[] {
+  const streamingIds = new Set(prev.filter((m) => m.streaming === true).map((m) => m.id));
+  if (streamingIds.size === 0) return fresh;
+  return fresh.map((m) => (streamingIds.has(m.id) && m.streaming !== true ? { ...m, streaming: true } : m));
 }

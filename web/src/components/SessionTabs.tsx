@@ -24,6 +24,42 @@ export function SessionTabs({
   /** 首帧（挂载/水合）定位不播动画，之后用户切换才播滑块 transition */
   const [ready, setReady] = useState(false);
   const firstRef = useRef(true);
+  /** 返回导航保护窗口：挂载后短时间内非交互横滚一律校正回 0（#6 tab 左侧 padding 被覆盖） */
+  const guardUntilRef = useRef(0);
+  const interactedRef = useRef(false);
+
+  // #6：从会话返回列表时，浏览器焦点/滚动恢复会把 tab 组横滚拉偏（左侧 padding 被"覆盖"）。
+  // 挂载即归零 + 短窗口内非用户交互的横滚一律校正回 0；用户 touch/wheel/pointer 交互后放行横滑。
+  useEffect(() => {
+    const scroller = scrollerRef.current;
+    if (!scroller) return;
+    guardUntilRef.current = Date.now() + 800;
+    interactedRef.current = false;
+    scroller.scrollLeft = 0;
+    const markInteracted = (): void => {
+      interactedRef.current = true;
+    };
+    const onScroll = (): void => {
+      if (!interactedRef.current && Date.now() < guardUntilRef.current && scroller.scrollLeft !== 0) {
+        scroller.scrollLeft = 0;
+      }
+    };
+    scroller.addEventListener("touchstart", markInteracted, { passive: true });
+    scroller.addEventListener("wheel", markInteracted, { passive: true });
+    scroller.addEventListener("pointerdown", markInteracted, { passive: true });
+    scroller.addEventListener("scroll", onScroll);
+    // 晚到的滚动恢复（rAF 后）再归零一次，覆盖时序在挂载帧之后的恢复
+    const raf = requestAnimationFrame(() => {
+      if (!interactedRef.current && scroller.scrollLeft !== 0) scroller.scrollLeft = 0;
+    });
+    return () => {
+      scroller.removeEventListener("touchstart", markInteracted);
+      scroller.removeEventListener("wheel", markInteracted);
+      scroller.removeEventListener("pointerdown", markInteracted);
+      scroller.removeEventListener("scroll", onScroll);
+      cancelAnimationFrame(raf);
+    };
+  }, []);
 
   // 滑块跟随选中 tab（测量按钮 offsetLeft/offsetWidth，与滚动位置无关）
   useLayoutEffect(() => {

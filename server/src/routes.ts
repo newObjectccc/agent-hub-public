@@ -15,6 +15,7 @@ import type { KpiService } from "./kpi.js";
 import type { LiveIngestLike } from "./live.js";
 import type { PromptResult } from "./sessions/hub.js";
 import { fullPage, paginateMessages, parseLimit } from "./sessions/paginate.js";
+import { buildSubAgentActivity } from "./subagents.js";
 import {
   loadImageAttachments,
   MAX_ATTACHMENTS_PER_MESSAGE,
@@ -41,6 +42,8 @@ export interface SessionHubLike {
   listSessions(): Promise<SessionListItem[]>;
   findSession(id: string): Promise<SessionListItem | null>;
   loadMessages(id: string): Promise<MessageDto[] | null>;
+  /** 轻量消息解析（已知 sessionFile 直读，跳过全量扫描；子代理活动快照聚合用） */
+  loadMessagesFast?(id: string, sessionFile: string): Promise<MessageDto[]>;
   search(query: string, limit?: number): Promise<SearchResultDto[]>;
   loadTree(id: string): Promise<SessionTreeDto | null>;
   createSession(cwd: string, name?: string, source?: SessionSource): Promise<SessionListItem>;
@@ -175,6 +178,33 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
         throw new HubError(ErrorCodes.SESSION_NOT_FOUND, `会话不存在: ${req.params.id}`, 404);
       }
       return reply.send(tree);
+    } catch (err) {
+      return handle(reply, err);
+    }
+  });
+
+  // GET /api/sessions/:id/agents：子代理活动快照（反馈轮 3 #4，父会话面板初始化）
+  app.get<{ Params: { id: string } }>("/api/sessions/:id/agents", async (req, reply) => {
+    try {
+      const all = await hub.listSessions();
+      // 只聚合 pi-subagents 派生子代理（fork 分支虽带 parentSessionId 但不是“子代理在干活”）
+      const children = all.filter((s) => s.isSubAgent && s.parentSessionId === req.params.id);
+      // 分批解析（6 并发）：长会话几十个子代理时避免一次性 40+ 个文件流排队拖慢首屏
+      const agents = [];
+      for (let i = 0; i < children.length; i += 6) {
+        const batch = children.slice(i, i + 6);
+        const built = await Promise.all(
+          batch.map(async (s) => {
+            // 轻量路径：直接按 sessionFile 解析（每个子代理一次 findSession 全量扫描会把聚合拖到秒级）
+            const messages = hub.loadMessagesFast
+              ? await hub.loadMessagesFast(s.id, s.sessionFile)
+              : (await hub.loadMessages(s.id)) ?? [];
+            return buildSubAgentActivity(s, messages);
+          }),
+        );
+        agents.push(...built);
+      }
+      return reply.send({ agents });
     } catch (err) {
       return handle(reply, err);
     }

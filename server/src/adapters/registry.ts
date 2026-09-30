@@ -13,6 +13,8 @@
  */
 import { ErrorCodes, HubError } from "../errors.js";
 import type { PromptResult } from "../sessions/hub.js";
+import { loadSessionMessages } from "../sessions/scan.js";
+import { loadClaudeSessionMessages } from "./claude-transcript.js";
 import type { MessageDto, PromptImageAttachment, SessionListItem, SessionSource, SessionStatus } from "../types.js";
 import type { ClaudeAdapter } from "./claude.js";
 import type { SessionAdapter } from "./types.js";
@@ -113,10 +115,25 @@ export class SessionRegistry {
     return adapter.findSession(id);
   }
 
+  /** 子代理会话列表（pi-subagents 派生 + 血缘指向 parentId；fork 分支不算，反馈轮 3 #4） */
+  async listChildren(parentId: string): Promise<SessionListItem[]> {
+    const all = await this.listSessions();
+    return all.filter((s) => s.isSubAgent && s.parentSessionId === parentId);
+  }
+
   async loadMessages(id: string): Promise<MessageDto[] | null> {
     const adapter = await this.resolve(id);
     if (!adapter) return null;
     return adapter.loadMessages(id);
+  }
+
+  /**
+   * 轻量消息解析（已知 sessionFile 时直接读文件，跳过 findSession 的全量扫描）：
+   * 子代理活动快照等聚合场景专用（每个子代理一次全量扫描会把聚合拖到秒级）。
+   */
+  async loadMessagesFast(id: string, sessionFile: string): Promise<MessageDto[]> {
+    const source = this.sources.get(id);
+    return source === "claude" ? loadClaudeSessionMessages(sessionFile) : loadSessionMessages(sessionFile);
   }
 
   /** 新建会话按 source 分发（缺省 pi；非法 source 由 routes 层拦截） */

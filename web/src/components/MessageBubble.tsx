@@ -47,29 +47,52 @@ function ThinkingBlock({ text }: { text: string }) {
   );
 }
 
+/** 流式进行中空回合的活占位：打字点点点（reduced-motion 降级静态文案，CSS 控制） */
+function StreamingPlaceholder() {
+  return (
+    <span className="streaming-placeholder" role="status">
+      <span className="streaming-placeholder-text">✍️ 回复中</span>
+      <span className="typing-dots" aria-hidden="true">
+        <i />
+        <i />
+        <i />
+      </span>
+    </span>
+  );
+}
+
 /**
  * 消息气泡：user 右侧，assistant 左侧（markdown 渲染），思维链折叠块 + toolCalls 折叠卡片。
  * highlight=true 时高亮（搜索定位 ?q= 跳转命中消息）；onOpenFile 点击文件引用打开弹层。
  * 长按气泡 → 操作菜单（复制文本 / 引用；触屏 long-press；桌面右键同入口）；
  * 图片例外：不拦截长按/右键，让 Android Chrome 原生"保存图片"菜单工作。
+ * streaming 消息（message_start → message_end）：空内容显示"✍️ 回复中…"活占位（绝不显示"（无内容）"），
+ * 气泡带进行中微光；同会话并行回合（sub agent 并行）带 🔗 序号标记。
  */
 export function MessageBubble({
   message,
   highlight,
   onOpenFile,
   onQuote,
+  liveIndex,
+  liveTotal,
 }: {
   message: SessionMessage;
   highlight?: boolean;
   onOpenFile?: (ref: FileRef) => void;
   /** 长按菜单"引用"：把消息文本送入输入框引用条 */
   onQuote?: (message: SessionMessage) => void;
+  /** 同会话并行流式回合序号（1 起）/ 总数：>1 时显示 🔗 标记 */
+  liveIndex?: number;
+  liveTotal?: number;
 }) {
   const thinking = message.thinking ?? "";
   const [menuOpen, setMenuOpen] = useState(false);
   const suppressClickRef = useRef(false);
   const hasText = message.text.trim() !== "";
   const images = message.images ?? [];
+  const streaming = message.streaming === true;
+  const empty = message.text === "" && message.toolCalls.length === 0 && !thinking && images.length === 0;
   /** 引用消息以 Markdown 引用块开头（`> `），用 markdown 渲染让两端 agent 口径一致 */
   const isQuoted = /^>\s?/.test(message.text);
 
@@ -96,7 +119,10 @@ export function MessageBubble({
   };
 
   return (
-    <div id={`msg-${message.id}`} className={`msg-row ${message.role}${highlight ? " search-hit" : ""}`}>
+    <div
+      id={`msg-${message.id}`}
+      className={`msg-row ${message.role}${highlight ? " search-hit" : ""}${streaming ? " streaming" : ""}`}
+    >
       <div
         className="msg-body"
         onPointerDown={(e) => {
@@ -129,6 +155,16 @@ export function MessageBubble({
         <div className="bubble">
           {message.role === "assistant" ? (
             <>
+              {(streaming || liveTotal !== undefined && liveTotal > 1) && (
+                <div className="msg-live-row">
+                  {streaming && <span className="live-tag">⚡ 进行中</span>}
+                  {liveTotal !== undefined && liveTotal > 1 && liveIndex !== undefined && (
+                    <span className="live-parallel" title="同会话并行回合（子代理并行）">
+                      🔗 回合 {liveIndex}
+                    </span>
+                  )}
+                </div>
+              )}
               {thinking && <ThinkingBlock text={thinking} />}
               {message.text && <Markdown text={message.text} />}
               {images.length > 0 && (
@@ -141,9 +177,8 @@ export function MessageBubble({
               {message.toolCalls.map((tc, i) => (
                 <ToolCallCard key={`${message.id}-tool-${i}`} toolCall={tc} onOpenFile={onOpenFile} />
               ))}
-              {!message.text && message.toolCalls.length === 0 && !thinking && images.length === 0 && (
-                <span className="hint-text">（无内容）</span>
-              )}
+              {empty && streaming && <StreamingPlaceholder />}
+              {empty && !streaming && <span className="hint-text">（无内容）</span>}
             </>
           ) : (
             <>

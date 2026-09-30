@@ -36,6 +36,7 @@ export function SessionActionsMenu({ onFork, forkBusy = false }: SessionActionsM
             role="menuitem"
             className="action-menu-item"
             disabled={forkBusy}
+            title="复制完整上下文到全新会话（推荐：避免电脑端 pi 与手机面板同时驱动一个会话）"
             onClick={() => {
               setOpen(false);
               onFork();
@@ -44,6 +45,10 @@ export function SessionActionsMenu({ onFork, forkBusy = false }: SessionActionsM
             <CopyIcon />
             <span>{forkBusy ? "复制中…" : "复制为新会话"}</span>
           </button>
+          <p className="action-menu-hint">
+            复制完整上下文到新会话；手机面板发消息后，电脑端 pi 需重新打开原会话才能看到，
+            复制新会话可避免两个进程同时驱动一个会话（推荐）。
+          </p>
         </div>
       )}
     </div>

@@ -79,6 +79,35 @@ export interface SessionTreeDto {
   activePath: string[];
 }
 
+/** 子代理活动（pi-subagents 派生会话，按 parentSessionId 归属父会话；反馈轮 3 #4） */
+export interface SubAgentActivityDto {
+  sessionId: string;
+  /** 子代理会话名（`<type>#<id>`，如 developer#abc123） */
+  name: string;
+  status: SessionStatus;
+  /** 当前/最近工具 summary（"正在执行：<currentTool>"） */
+  currentTool: string | null;
+  /** currentTool 是否仍在执行 */
+  toolRunning: boolean;
+  /** 最新输出摘要（最后一条 assistant 文本，截断） */
+  lastOutput: string | null;
+  /** 首次活动时间（ms），用于"已运行时长" */
+  startedAt: number | null;
+  updatedAt: number;
+  /** 已结束（非 running）：卡片转"✅ 完成，点击查看结果" */
+  done: boolean;
+  /** 完成后的结果摘要 */
+  resultSummary: string | null;
+}
+
+/** WS subagent_activity 增量（只带变化字段） */
+export type SubAgentActivityUpdate = Partial<Omit<SubAgentActivityDto, "sessionId">> & { sessionId: string };
+
+/** GET /api/sessions/:id/agents 响应 */
+export interface SubAgentsResponse {
+  agents: SubAgentActivityDto[];
+}
+
 /** 消息内嵌图片（pi ImageContent / claude image block → data URL 或 http(s) URL） */
 export interface MessageImage {
   /** `data:image/...;base64,...` 或 http(s) URL */
@@ -124,6 +153,12 @@ export type ServerEvent =
   | { type: "message_end"; message: MessageDto }
   | { type: "agent_settled" }
   | { type: "status"; status: SessionStatus }
+  | {
+      type: "subagent_activity";
+      sessionId: string;
+      parentSessionId: string;
+      activity: SubAgentActivityUpdate;
+    }
   | { type: "error"; code: string; message: string }
   | { type: "pong" };
 

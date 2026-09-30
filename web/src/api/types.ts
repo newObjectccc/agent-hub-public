@@ -91,6 +91,40 @@ export interface SessionMessage {
   toolCalls: ToolCall[];
   /** 内嵌图片（无图缺省）；按序渲染为 <img>（max-width 100%，不拦截长按） */
   images?: MessageImage[];
+  /**
+   * 流式进行中（message_start → message_end 之间为 true）：
+   * 空内容时渲染"回复中"活占位（绝不显示"（无内容）"），气泡带进行中视觉。
+   * 历史/权威消息缺省视为已 settle。
+   */
+  streaming?: boolean;
+}
+
+/**
+ * 子代理活动（pi-subagents 派生会话，按 parentSessionId 归属父会话）：
+ * GET /api/sessions/:id/agents 全量快照 + WS `subagent_activity` 增量推送共用。
+ */
+export interface SubAgentActivity {
+  sessionId: string;
+  /** 子代理会话名（`<type>#<id>`，如 developer#abc123） */
+  name: string;
+  status: SessionStatus;
+  /** 当前/最近工具 summary（"正在执行：<currentTool>"） */
+  currentTool: string | null;
+  /** currentTool 是否仍在执行 */
+  toolRunning: boolean;
+  /** 最新输出摘要（最后一条 assistant 文本，截断） */
+  lastOutput: string | null;
+  /** 首次活动时间（ms），用于"已运行时长" */
+  startedAt: number | null;
+  updatedAt: number;
+  /** 已结束（agent_settled / idle）：卡片转"✅ 完成，点击查看结果" */
+  done: boolean;
+  /** 完成后的结果摘要（最后一条 assistant 文本） */
+  resultSummary: string | null;
+}
+
+export interface SubAgentsResponse {
+  agents: SubAgentActivity[];
 }
 
 export interface SessionDetail {

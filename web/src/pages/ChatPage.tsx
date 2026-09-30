@@ -2,8 +2,9 @@ import { ChatSkeleton } from "../components/Skeletons";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent } from "react";
 import { api } from "../api/client";
 import { sendPromptWithMode, type SendMode } from "../api/prompt";
-import type { CommandItem, SessionMessage, SessionStatus, SessionSummary } from "../api/types";
-import { applyWsEvent, type WsEvent } from "../chat/messageStream";
+import type { CommandItem, SessionMessage, SessionStatus, SessionSummary, SubAgentActivity } from "../api/types";
+import { applyWsEvent, reconcileMessages, type WsEvent } from "../chat/messageStream";
+import { isSubAgentActivityUpdate, mergeSubAgentActivity } from "../chat/subAgents";
 import { useGitStatus } from "../hooks/useGitStatus";
 import { OLDER_PAGE_LIMIT, mergeOlderMessages, oldestMessageId, shouldLoadOlder, TAIL_MESSAGE_LIMIT } from "../chat/history";
 import { useSessionSocket } from "../hooks/useSessionSocket";
@@ -13,9 +14,10 @@ import { GitPanel } from "../components/GitPanel";
 import { GitStatusBadge } from "../components/GitStatusBadge";
 import { FileTreePanel } from "../components/FileTreePanel";
 import { MessageBubble } from "../components/MessageBubble";
+import { SubAgentPanel } from "../components/SubAgentPanel";
 import { AttachmentStrip } from "../components/AttachmentStrip";
 import { UploadButton } from "../components/UploadButton";
-import { SendModeSwitch } from "../components/SendModeSwitch";
+import { SendModeMenu } from "../components/SendModeMenu";
 import { SessionActionsMenu } from "../components/SessionActionsMenu";
 import { SlashCommandPanel } from "../components/SlashCommandPanel";import { SourceBadge } from "../components/SourceBadge";
 import { StatusBadge } from "../components/StatusBadge";
@@ -78,6 +80,14 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
   /** message_end 后的待定收尾定时器（tail 丢 status / 事件丢失时的 UI 兜底） */
   const pendingIdleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [sendMode, setSendMode] = useState<SendMode>("auto");
+  // 子代理活动（反馈轮 3 #4）：pi-subagents 派生会话的实时工作面板（快照 + WS 增量）
+  const [subAgents, setSubAgents] = useState<SubAgentActivity[]>([]);
+  // 面板驱动标识（反馈轮 3 #5）：本设备面板发过消息的会话，电脑端 pi 需重开才能看到实时变化
+  const [panelDriven, setPanelDriven] = useState<boolean>(() => {
+    const storage = safeStorage();
+    return storage?.getItem(`agent-hub.panelHint.v1:${sessionId}`) === "1";
+  });
+  const panelHintShownRef = useRef(false);
   // 上传附件（📎 选择 / 粘贴图片）：上传成功 → 预览条 + 输入框 `@path` 引用
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -143,10 +153,16 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
         limit: Math.max(TAIL_MESSAGE_LIMIT, loaded),
       });
       setSession(detail.session);
-      setMessages(detail.messages ?? []);
+      // 对账保留在途流式标志（重连时占位不被误判为“（无内容）”）
+      setMessages(reconcileMessages(messagesRef.current, detail.messages ?? []));
       setHasMore(Boolean(detail.hasMore));
       setStatus(detail.session.status);
       setLoadError(null);
+      // 子代理活动快照（失败静默降级：面板只是增强，不阻断会话）
+      api
+        .getSessionAgents(sessionId)
+        .then(({ agents }) => setSubAgents(agents))
+        .catch(() => undefined);
     } catch (e) {
       setLoadError(e instanceof Error ? e.message : "会话加载失败");
     } finally {
@@ -460,6 +476,12 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
           setSending(false);
           setSendMode("auto");
           break;
+        case "subagent_activity": {
+          // 子代理活动增量（反馈轮 3 #4）：按 sessionId 合并进活动面板
+          const act = event.activity;
+          if (isSubAgentActivityUpdate(act)) setSubAgents((prev) => mergeSubAgentActivity(prev, act));
+          break;
+        }
         case "error":
           clearPendingIdle();
           setNotice(event.message ? String(event.message) : `${event.code ?? "错误"}：运行期错误`);
@@ -527,6 +549,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
         setNotice("消息未被接受，请稍后重试");
       } else {
         setStatus("running");
+        markPanelDriven();
       }
     } catch (e) {
       setNotice(e instanceof Error ? e.message : "发送失败");
@@ -534,6 +557,24 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
       sendingRef.current = false;
       setSending(false);
     }
+  };
+
+  /**
+   * 面板驱动标识（反馈轮 3 #5）：手机发消息实际由 server 的 pi SDK 实例干活，
+   * 电脑终端里的 pi 进程看不到实时变化。首次发送 toast 提示 + 顶栏小标识，不阻断操作。
+   */
+  const markPanelDriven = () => {
+    setPanelDriven(true);
+    const storage = safeStorage();
+    const key = `agent-hub.panelHint.v1:${sessionId}`;
+    if (panelHintShownRef.current || storage?.getItem(key) === "1") return;
+    panelHintShownRef.current = true;
+    try {
+      storage?.setItem(key, "1");
+    } catch {
+      /* 存储不可用：仅本次会话内提示 */
+    }
+    showToast("⚡ 本会话由面板驱动：电脑端 pi 需重新打开会话才能看到这些消息");
   };
 
   const doAbort = async () => {
@@ -579,6 +620,14 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
 
   const hasContent = input.trim() !== "" || attachments.length > 0;
 
+  /** 同会话并行流式回合序号（sub agent 并行时多个回合同时进行）：气泡带 🔗 标记 */
+  const liveRanks = useMemo(() => {
+    const ranks = new Map<string, { index: number; total: number }>();
+    const liveIds = messages.filter((m) => m.streaming === true && m.role === "assistant").map((m) => m.id);
+    liveIds.forEach((id, i) => ranks.set(id, { index: i + 1, total: liveIds.length }));
+    return ranks;
+  }, [messages]);
+
   return (
     <div className="chat-page">
       <header className="chat-header">
@@ -614,6 +663,15 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
           </span>
         )}
         <SessionActionsMenu onFork={() => void doFork()} forkBusy={forkBusy} />
+        {/* 面板驱动标识（反馈轮 3 #5）：轻量提示，不阻断操作 */}
+        {panelDriven && (
+          <span
+            className="badge panel-driven"
+            title="手机面板发过消息：干活的是 server 进程的 pi 实例，电脑终端 pi 需重新打开本会话才能看到实时变化"
+          >
+            ⚡ 面板驱动中
+          </span>
+        )}
         <SourceBadge source={session?.source ?? null} />
         <StatusBadge status={status} />
       </header>
@@ -671,6 +729,8 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
               key={m.id}
               message={m}
               highlight={m.id === highlightId}
+              liveIndex={liveRanks.get(m.id)?.index}
+              liveTotal={liveRanks.get(m.id)?.total}
               onOpenFile={setFileRef}
               onQuote={(msg) => setQuote({ text: msg.text })}
             />
@@ -689,24 +749,25 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
             </button>
           </div>
         )}
-        {status === "running" && (
-          <div className="run-bar">
-            <SendModeSwitch value={sendMode} onChange={setSendMode} />
-            <Button type="button" variant="destructive" size="sm" onClick={() => void doAbort()}>
-              中止
-            </Button>
+        <SubAgentPanel agents={subAgents} onOpenSession={(id) => navigate(chatPath(id))} />
+        {/* 发送模式收纳（反馈轮 3 #3）：单行状态条 = 小图标模式选择 + 运行状态 + 独立中止 */}
+        <div className="composer-modebar">
+          {(status === "running" || !connected) && (
+            <div className="typing-indicator">
+              {status === "running" && <span className="spinner" />}
+              <span>{status === "running" ? "agent 运行中…" : "连接断开，重连中…（历史消息不会丢）"}</span>
+              {status === "running" && !connected && <span>（连接断开，重连中）</span>}
+            </div>
+          )}
+          <div className="modebar-right">
+            <SendModeMenu value={sendMode} onChange={setSendMode} />
+            {status === "running" && (
+              <Button type="button" variant="destructive" size="sm" className="abort-btn" onClick={() => void doAbort()}>
+                中止
+              </Button>
+            )}
           </div>
-        )}
-        {status === "running" && (
-          <div className="typing-indicator">
-            <span className="spinner" />
-            <span>agent 运行中…</span>
-            {!connected && <span>（连接断开，重连中）</span>}
-          </div>
-        )}
-        {status !== "running" && !connected && (
-          <div className="typing-indicator">连接断开，重连中…（历史消息不会丢）</div>
-        )}
+        </div>
         <div className="composer">          <SlashCommandPanel
             ref={slashPanelRef}
             open={slashOpen && slashSpan !== null}
@@ -739,7 +800,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
             <div className="chat-textarea-wrap" ref={inputWrapRef}>
               <Textarea
                 className="composer-textarea"
-                placeholder="输入消息…（/ 命令，@ 引用，📎 上传，Enter 发送）"
+                placeholder="输入消息…（/ 命令，@ 引用，Enter 发送）"
                 value={input}
                 rows={1}
                 onChange={(e) => {

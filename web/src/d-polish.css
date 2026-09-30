@@ -1,0 +1,431 @@
+/* ============================================================
+ * d-polish 反馈轮 3：发送模式收纳 / 子代理活动面板 / 流式占位 / 面板驱动标识
+ * 独立文件（main.tsx 在 styles.css 之后引入）：与并行改动的 styles.css 解耦，
+ * 后引入覆盖同名旧规则；深浅色全部走 palette token。
+ * ============================================================ */
+
+/* ---------- #3 发送模式收纳：小图标点开模式选择 + 每模式一句话说明 ---------- */
+.composer-modebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin-bottom: 6px;
+  min-height: 44px;
+}
+
+.composer-modebar .typing-indicator {
+  flex: 1;
+  min-width: 0;
+  margin-bottom: 0;
+}
+
+.modebar-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.mode-menu-wrap {
+  position: relative;
+}
+
+.mode-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 44px;
+  padding: 0 10px;
+  font-family: var(--nb-font-head);
+  font-weight: 900;
+  font-size: 12px;
+  background: var(--accent);
+  color: var(--accent-foreground);
+  border: var(--bw) solid var(--border);
+  border-radius: var(--nb-radius);
+  box-shadow: var(--nb-shadow-xs);
+  cursor: pointer;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+
+.mode-trigger:active {
+  transform: translate(1px, 1px);
+  box-shadow: none;
+}
+
+.mode-trigger-caret {
+  font-size: 10px;
+}
+
+/* 模式弹层：锚定触发按钮上方，右缘对齐（320-1024 不超屏） */
+.mode-menu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: min(320px, calc(100vw - 24px - var(--safe-left, 0px) - var(--safe-right, 0px)));
+  padding: 5px;
+  background: var(--card);
+  color: var(--card-foreground);
+  border: var(--bw) solid var(--border);
+  border-radius: var(--nb-radius);
+  box-shadow: var(--shadow-card);
+}
+
+.mode-menu-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-height: 44px;
+  padding: 6px 8px;
+  text-align: left;
+  background: var(--muted);
+  color: var(--foreground);
+  border: var(--bw) solid var(--border);
+  border-radius: var(--nb-radius);
+  cursor: pointer;
+}
+
+.mode-menu-item.active {
+  background: var(--primary);
+  color: var(--primary-foreground);
+  box-shadow: var(--nb-shadow-xs);
+}
+
+.mode-menu-label {
+  font-family: var(--nb-font-head);
+  font-weight: 900;
+  font-size: 12.5px;
+}
+
+.mode-menu-hint {
+  font-family: var(--nb-font-sans);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.45;
+  color: var(--muted-foreground);
+}
+
+.mode-menu-item.active .mode-menu-hint {
+  color: var(--foreground);
+}
+
+/* ---------- #4 子代理活动面板：pi TUI 式多 agent 工作面板 ---------- */
+.subagent-panel {
+  margin-bottom: 6px;
+  background: var(--card);
+  color: var(--card-foreground);
+  border: var(--bw) solid var(--border);
+  border-radius: var(--nb-radius);
+  box-shadow: var(--nb-shadow-xs);
+}
+
+.subagent-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-height: 36px;
+  padding: 3px 8px;
+  background: var(--muted);
+  border-bottom: var(--bw) solid var(--border);
+}
+
+.subagent-panel-title {
+  font-family: var(--nb-font-head);
+  font-weight: 900;
+  font-size: 12px;
+}
+
+.subagent-panel-toggle {
+  min-height: 32px;
+  padding: 0 8px;
+  font-family: var(--nb-font-head);
+  font-weight: 900;
+  font-size: 11px;
+  background: var(--accent);
+  color: var(--accent-foreground);
+  border: 2px solid var(--border);
+  border-radius: var(--nb-radius);
+  cursor: pointer;
+}
+
+@media (pointer: coarse) {
+  .subagent-panel-toggle {
+    min-height: 44px;
+  }
+}
+
+.subagent-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px;
+}
+
+.subagent-card {
+  padding: 5px 8px;
+  background: var(--background);
+  border: var(--bw) solid var(--border);
+  border-radius: var(--nb-radius);
+  box-shadow: var(--nb-shadow-xs);
+}
+
+.subagent-card.done {
+  background: var(--muted);
+}
+
+.subagent-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  width: 100%;
+  min-height: 40px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+@media (pointer: coarse) {
+  .subagent-head {
+    min-height: 44px;
+  }
+}
+
+.subagent-name {
+  font-family: var(--nb-font-head);
+  font-weight: 900;
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 已运行时长：tabular-nums 秒级跳动不抖动 */
+.subagent-elapsed {
+  flex-shrink: 0;
+  font-family: var(--nb-font-head);
+  font-weight: 900;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.subagent-tool,
+.subagent-output,
+.subagent-result {
+  display: flex;
+  gap: 4px;
+  margin-top: 2px;
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.subagent-tool-label {
+  flex-shrink: 0;
+  color: var(--muted-foreground);
+}
+
+.subagent-tool-text {
+  min-width: 0;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.subagent-tool.idle .subagent-tool-text {
+  color: var(--muted-foreground);
+  font-weight: 500;
+}
+
+.subagent-output-text {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted-foreground);
+}
+
+.subagent-result-text {
+  font-weight: 700;
+}
+
+.subagent-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 2px dashed var(--border);
+}
+
+.subagent-detail-row {
+  display: flex;
+  gap: 6px;
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.subagent-detail-row .hint-text {
+  flex-shrink: 0;
+  width: 4.5em;
+}
+
+.subagent-detail-mono {
+  min-width: 0;
+  word-break: break-all;
+}
+
+.subagent-detail-output {
+  min-width: 0;
+  white-space: pre-wrap;
+  max-height: 120px;
+  overflow-y: auto;
+}
+
+/* 已完成子代理收敛行（长会话面板默认只留最近 3 个） */
+.subagent-more {
+  min-height: 36px;
+  padding: 4px 8px;
+  font-family: var(--nb-font-sans);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted-foreground);
+  background: transparent;
+  border: 2px dashed var(--border);
+  border-radius: var(--nb-radius);
+  cursor: pointer;
+}
+
+/* 摘要滚动更新短渐变（动画克制：180ms 一次淡入） */
+.fade-swap {
+  animation: nb-fade-up 180ms ease-out;
+}
+
+/* ---------- #4 流式进行中占位：进行中绝不显示"（无内容）" ---------- */
+.streaming-placeholder {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted-foreground);
+}
+
+.typing-dots {
+  display: inline-flex;
+  gap: 3px;
+}
+
+.typing-dots i {
+  width: 5px;
+  height: 5px;
+  background: var(--foreground);
+  animation: typing-blink 1.2s ease-in-out infinite;
+}
+
+.typing-dots i:nth-child(2) {
+  animation-delay: 0.18s;
+}
+
+.typing-dots i:nth-child(3) {
+  animation-delay: 0.36s;
+}
+
+@keyframes typing-blink {
+  0%,
+  80%,
+  100% {
+    opacity: 0.25;
+  }
+  40% {
+    opacity: 1;
+  }
+}
+
+/* 流式气泡"进行中"视觉：微光脉冲（多并行回合 = 多个 agent 在干活） */
+.msg-row.assistant.streaming .bubble {
+  animation: live-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes live-pulse {
+  0%,
+  100% {
+    box-shadow: var(--nb-shadow-sm);
+  }
+  50% {
+    box-shadow: 0 0 0 2px var(--primary), var(--nb-shadow-sm);
+  }
+}
+
+.msg-live-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.live-tag {
+  font-family: var(--nb-font-head);
+  font-weight: 900;
+  font-size: 10.5px;
+  padding: 1px 5px;
+  background: var(--primary);
+  color: var(--primary-foreground);
+  border: 2px solid var(--border);
+}
+
+.live-parallel {
+  font-family: var(--nb-font-head);
+  font-weight: 900;
+  font-size: 10.5px;
+  padding: 1px 5px;
+  background: var(--info);
+  color: var(--info-foreground);
+  border: 2px solid var(--border);
+}
+
+/* ---------- #5 面板驱动标识 + fork 说明 ---------- */
+.badge.panel-driven {
+  flex-shrink: 0;
+  background: var(--info);
+  color: var(--info-foreground);
+}
+
+.action-menu-hint {
+  margin: 0;
+  padding: 6px 9px 8px;
+  font-family: var(--nb-font-sans);
+  font-size: 10.5px;
+  line-height: 1.55;
+  color: var(--muted-foreground);
+  border-top: 2px dashed var(--border);
+}
+
+/* ---------- reduced-motion：流式占位降级为静态文案/静态高亮 ---------- */
+@media (prefers-reduced-motion: reduce) {
+  .typing-dots i {
+    animation: none;
+    opacity: 0.55;
+  }
+
+  .msg-row.assistant.streaming .bubble {
+    animation: none;
+    box-shadow: 0 0 0 2px var(--primary), var(--nb-shadow-sm);
+  }
+
+  .fade-swap {
+    animation: none;
+  }
+}
