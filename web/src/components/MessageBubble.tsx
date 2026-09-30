@@ -17,6 +17,27 @@ function timeLabel(ts: number): string {
 export const COPY_SUCCESS_TOAST = "已复制消息文本";
 export const COPY_FAIL_TOAST = "复制失败，请手动选择文本";
 
+/**
+ * 消息图片：懒加载 + 16:10 占位防跳动；load 后标 .img-loaded、error 后标 .img-error
+ * 恢复布局（不永留占位）；缓存命中不再来事件 → ref 兜底按 naturalWidth 判定。
+ */
+function MsgImage({ src, alt }: { src: string; alt: string }) {
+  return (
+    <img
+      className="msg-img"
+      src={src}
+      alt={alt}
+      loading="lazy"
+      decoding="async"
+      ref={(el) => {
+        if (el && el.complete) el.classList.add(el.naturalWidth > 0 ? "img-loaded" : "img-error");
+      }}
+      onLoad={(e) => e.currentTarget.classList.add("img-loaded")}
+      onError={(e) => e.currentTarget.classList.add("img-error")}
+    />
+  );
+}
+
 /** 思维链折叠块：野兽派灰底，默认收起，点击展开（流式期间可反复开关） */
 const ThinkingBlock = memo(function ThinkingBlock({ text }: { text: string }) {
   const [open, setOpen] = useState(false);
@@ -179,15 +200,7 @@ export const MessageBubble = memo(function MessageBubble({
               {images.length > 0 && (
                 <div className="msg-images">
                   {images.map((img, i) => (
-                    <img
-                      key={`${message.id}-img-${i}`}
-                      className="msg-img"
-                      src={img.url}
-                      alt={img.alt ?? "图片"}
-                      loading="lazy"
-                      decoding="async"
-                      onLoad={(e) => e.currentTarget.classList.add("img-loaded")}
-                    />
+                    <MsgImage key={`${message.id}-img-${i}`} src={img.url} alt={img.alt ?? "图片"} />
                   ))}
                 </div>
               )}
@@ -208,15 +221,7 @@ export const MessageBubble = memo(function MessageBubble({
               {images.length > 0 && (
                 <div className="msg-images">
                   {images.map((img, i) => (
-                    <img
-                      key={`${message.id}-img-${i}`}
-                      className="msg-img"
-                      src={img.url}
-                      alt={img.alt ?? "图片"}
-                      loading="lazy"
-                      decoding="async"
-                      onLoad={(e) => e.currentTarget.classList.add("img-loaded")}
-                    />
+                    <MsgImage key={`${message.id}-img-${i}`} src={img.url} alt={img.alt ?? "图片"} />
                   ))}
                 </div>
               )}

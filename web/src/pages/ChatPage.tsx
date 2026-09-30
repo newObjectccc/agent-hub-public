@@ -5,7 +5,7 @@ import { sendPromptWithMode, type SendMode } from "../api/prompt";
 import type { CommandItem, SessionMessage, SessionStatus, SessionSummary, SubAgentActivity } from "../api/types";
 import { applyWsEvent, reconcileMessages, type WsEvent } from "../chat/messageStream";
 import { DeltaBatcher } from "../chat/deltaBatcher";
-import { computeMessageWindow, paddingTopFor } from "../chat/messageWindow";
+import { computeMessageWindow, paddingTopFor, pruneDetachedRowEls } from "../chat/messageWindow";
 import { isSubAgentActivityUpdate, mergeSubAgentActivity } from "../chat/subAgents";
 import { useGitStatus } from "../hooks/useGitStatus";
 import { OLDER_PAGE_LIMIT, mergeOlderMessages, oldestMessageId, shouldLoadOlder, TAIL_MESSAGE_LIMIT } from "../chat/history";
@@ -148,10 +148,10 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
   const messagesRef = useRef<SessionMessage[]>([]);
   const hasMoreRef = useRef(false);
   const loadingOlderRef = useRef(false);
-  /** 用户是否停在底部（不在底部时不自动滚底，避免与读历史冲突） */
-  const stickToBottomRef = useRef(true);
   /** 前插更早消息后按锚点恢复滚动位置（不触发自动滚底） */
   const pendingRestoreRef = useRef<{ height: number; top: number } | null>(null);
+  /** 上一次消息更新后的滚动内容总高（stick-to-bottom 判定用，见下方 useLayoutEffect） */
+  const lastContentHeightRef = useRef(0);
   /** status 镜像（WS 事件回调里判断是否需要翻 running，避免每条 delta 一次 setState） */
   const statusRef = useRef<SessionStatus>("idle");
 
@@ -404,6 +404,13 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
     try {
       const page = await api.getSession(sessionId, { before: anchor, limit: OLDER_PAGE_LIMIT });
       pendingRestoreRef.current = { height, top };
+      // 前插 P 条后 messages 下标整体位移，旧 windowStart 错位：同一更新批次重置为
+      // 全量（前插行必然未测量，recomputeWindow 本就选全量，无性能损失），
+      // 消除 slice(windowStart) 错位中间帧（渲染内容错位 → scrollHeight 恢复公式读错 → 跳动/夹底）
+      winStateRef.current = { virtualized: false, start: 0, paddingTop: 0 };
+      setVirtualized(false);
+      setWindowStart(0);
+      setWindowPad(0);
       setMessages((prev) => mergeOlderMessages(prev, page.messages ?? []));
       setHasMore(Boolean(page.hasMore));
     } catch (e) {
@@ -443,6 +450,9 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
     const el = scrollRef.current;
     const listEl = listRef.current;
     if (!el || !listEl) return;
+    // 清理已卸载行（ref 回调传 null 无法定位 id；窗口裁剪/消息替换都会留下 detached 条目）
+    // 行高缓存保留：paddingTop 与重新挂载后复测都要用
+    for (const { el: rowEl } of pruneDetachedRowEls(rowElsRef.current)) roRef.current?.unobserve(rowEl);
     const heights: number[] = [];
     let allMeasured = true;
     for (const m of messagesRef.current) {
@@ -533,15 +543,15 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
     };
   }, [measureRow, scheduleWindowUpdate]);
 
-  /** 滚动处理：rAF 合并（滚动事件 60+/秒 → 每帧最多一次布局读 + 状态更新，避免 layout thrash） */
+  /** 滚动处理：rAF 合并（滚动事件 60+/秒 → 每帧最多一次布局读 + 窗口重算，避免 layout thrash）。
+   * stick-to-bottom 不在这里判定：决策点（消息提交的布局 effect）必须用实时滚动量，
+   * 否则“用户上滚”与“流式提交”同帧时会读到过期的底部标志 → 错误自动滚底。 */
   const handleScroll = useCallback(() => {
     if (scrollRafRef.current !== null) return;
     scrollRafRef.current = requestAnimationFrame(() => {
       scrollRafRef.current = null;
       const el = scrollRef.current;
       if (!el) return;
-      // 停在底部附近才跟随新消息；向上翻历史时不被拉回
-      stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < STICK_TO_BOTTOM_PX;
       if (shouldLoadOlder({ scrollTop: el.scrollTop, hasMore: hasMoreRef.current, loading: loadingOlderRef.current })) {
         void loadOlder();
       }
@@ -565,10 +575,20 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
     if (restore && el) {
       pendingRestoreRef.current = null;
       el.scrollTop = el.scrollHeight - restore.height + restore.top;
+      lastContentHeightRef.current = el.scrollHeight;
       scheduleWindowUpdate();
       return;
     }
-    if (!stickToBottomRef.current || !el) return;
+    if (!el) return;
+    // stick-to-bottom 判定（160px 语义不变）双口径：
+    // - 更新前几何（上次 effect 时的内容总高 - 当前 scrollTop）：捕捉同帧“用户上滚 + 流式提交”
+    //   （scroll 事件/rAF 尚未跑，但 scrollTop 已变 → 两种口径都超阈值 → 不拉底）
+    // - 实时几何：捕捉内容收缩/外部布局变化后的贴底状态
+    // 任一口径贴底即跟随：保住首屏加载/图片撑高时的一次性大增长（旧 ref 初始 true 语义）
+    const distancePrev = lastContentHeightRef.current - el.scrollTop - el.clientHeight;
+    const distanceNow = el.scrollHeight - el.scrollTop - el.clientHeight;
+    lastContentHeightRef.current = el.scrollHeight;
+    if (distancePrev >= STICK_TO_BOTTOM_PX && distanceNow >= STICK_TO_BOTTOM_PX) return;
     // 大跨度跳到底部用瞬时滚动：避免平滑动画穿过顶部误触发"加载更早"；
     // 单次布局读 + 直接滚底（等价 scrollIntoView(block:end)，省掉整页布局计算）
     const target = el.scrollHeight - el.clientHeight;

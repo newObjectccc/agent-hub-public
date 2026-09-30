@@ -130,6 +130,47 @@ describe("消息组件 React.memo（历史消息不随相邻更新重渲）", ()
 });
 
 /**
+ * 图片加载失败恢复布局（.img-error）：不永留 16:10 占位。
+ */
+describe("图片 load/error 状态标记（占位防跳动 + 失败恢复布局）", () => {
+  it("MessageBubble 图片 load → img-loaded", () => {
+    renderWith(() => <MessageBubble message={message({ images: [{ url: "https://x.test/a.png", alt: "图" }] })} />);
+    const img = container!.querySelector<HTMLImageElement>("img.msg-img");
+    expect(img).not.toBeNull();
+    act(() => {
+      img!.dispatchEvent(new Event("load"));
+    });
+    expect(img!.classList.contains("img-loaded")).toBe(true);
+  });
+
+  it("MessageBubble 图片 error → img-error（撤掉占位，不永留 16:10）", () => {
+    renderWith(() => <MessageBubble message={message({ images: [{ url: "https://x.test/a.png", alt: "图" }] })} />);
+    const img = container!.querySelector<HTMLImageElement>("img.msg-img");
+    expect(img).not.toBeNull();
+    act(() => {
+      img!.dispatchEvent(new Event("error"));
+    });
+    expect(img!.classList.contains("img-error")).toBe(true);
+    expect(img!.classList.contains("img-loaded")).toBe(false);
+  });
+
+  it("Markdown 图片 error（捕获委托）→ img-error；后续 load → img-loaded", () => {
+    renderWith(() => <Markdown text={"![图](https://x.test/a.png)"} />);
+    const img = container!.querySelector<HTMLImageElement>("img.md-img");
+    expect(img).not.toBeNull();
+    act(() => {
+      img!.dispatchEvent(new Event("error"));
+    });
+    expect(img!.classList.contains("img-error")).toBe(true);
+    act(() => {
+      img!.classList.remove("img-error");
+      img!.dispatchEvent(new Event("load"));
+    });
+    expect(img!.classList.contains("img-loaded")).toBe(true);
+  });
+});
+
+/**
  * 渲染性能对比（memo 前后）：200 条消息会话 + 相邻消息流式更新 20 次。
  * before（改造前无 memo）用不稳定 handler 击穿 memo 模拟：每次父级重渲全部历史重渲。
  */

@@ -73,6 +73,22 @@ export function paddingTopFor(heights: readonly number[], start: number): number
 }
 
 /**
+ * 清理已卸载行的元素引用（ref 回调传 null 时拿不到 id，窗口裁剪/消息替换会留下 detached 条目）：
+ * 只清元素与观察，不碰行高缓存（paddingTop 与重新挂载复测都要用）。
+ * 返回被清理的条目，供调用方 unobserve。
+ */
+export function pruneDetachedRowEls(els: Map<string, HTMLElement>): Array<{ id: string; el: HTMLElement }> {
+  const removed: Array<{ id: string; el: HTMLElement }> = [];
+  for (const [id, el] of els) {
+    if (!el.isConnected) {
+      els.delete(id);
+      removed.push({ id, el });
+    }
+  }
+  return removed;
+}
+
+/**
  * 高度守恒（滚动不跳的关键）：
  * 全量总高 = Σh + (n-1)·g；窗口总高 = paddingTop + g + Σh[start..] + (n-start-1)·g
  * 代入 paddingTop = Σh[..start] + start·g - g 得两式相等。

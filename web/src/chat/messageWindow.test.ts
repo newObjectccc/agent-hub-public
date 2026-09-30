@@ -6,7 +6,7 @@
  * 4. 视口附近 [start, end) 才渲染，顶部裁剪 + 占位高度
  */
 import { describe, expect, it } from "vitest";
-import { computeMessageWindow, fullHeight, windowedHeight, paddingTopFor, MESSAGE_GAP_PX } from "./messageWindow";
+import { computeMessageWindow, fullHeight, windowedHeight, paddingTopFor, pruneDetachedRowEls, MESSAGE_GAP_PX } from "./messageWindow";
 
 function heights(count: number, h = 80): number[] {
   return new Array(count).fill(h);
@@ -123,5 +123,24 @@ describe("computeMessageWindow 尾部锚定窗口化", () => {
       expect(windowedHeight(win, hs)).toBe(fullHeight(hs));
     }
     expect(paddingTopFor(hs, 0)).toBe(0);
+  });
+});
+
+describe("pruneDetachedRowEls（已卸载行的元素引用清理）", () => {
+  it("剔除 detached 行、保留挂载行；行高缓存不受影响（调用方自管）", () => {
+    const attached = document.createElement("div");
+    document.body.appendChild(attached);
+    const detached = document.createElement("div"); // 未挂载 = 窗口裁剪/消息替换后残留
+    const els = new Map<string, HTMLElement>([
+      ["a", attached],
+      ["b", detached],
+    ]);
+    const removed = pruneDetachedRowEls(els);
+    expect(removed.map((r) => r.id)).toEqual(["b"]);
+    expect(removed[0].el).toBe(detached);
+    expect([...els.keys()]).toEqual(["a"]);
+    // 幂等：再次清理无变化
+    expect(pruneDetachedRowEls(els)).toEqual([]);
+    attached.remove();
   });
 });

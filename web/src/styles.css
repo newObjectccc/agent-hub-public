@@ -3621,11 +3621,19 @@ button.git-bar:active {  transform: translate(2px, 2px);
 }
 
 /* 大图占位：未加载完按 16:10 宽高比占位（防布局跳动），
-   .img-loaded（load 后 JS 标记）恢复 natural 比例与原视觉 */
-.md img:not(.img-loaded),
-.msg-img:not(.img-loaded) {
+   .img-loaded（load 后 JS 标记）恢复 natural 比例与原视觉，
+   .img-error（error 后 JS 标记）撤掉占位，按破图/alt 文本尺寸显示 */
+.md img:not(.img-loaded):not(.img-error),
+.msg-img:not(.img-loaded):not(.img-error) {
   width: 100%;
   aspect-ratio: 16 / 10;
+}
+
+/* 加载失败：不永留 16:10 占位（恢复布局） */
+.md img.img-error,
+.msg-img.img-error {
+  width: auto;
+  aspect-ratio: auto;
 }
 
 .msg-images {
