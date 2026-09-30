@@ -925,6 +925,19 @@ a {
   gap: 11px;
 }
 
+/* 消息列表层（长会话窗口化：顶部占位 + 尾部完整渲染）；gap 与 chat-stream 一致 */
+.msg-list {
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+}
+
+/* 窗口化顶部占位：高度 = 裁掉消息的实测高度之和（滚动位置不跳） */
+.msg-window-pad {
+  flex-shrink: 0;
+  pointer-events: none;
+}
+
 .msg-row {
   display: flex;
 }
@@ -3607,6 +3620,14 @@ button.git-bar:active {  transform: translate(2px, 2px);
   background: var(--muted);
 }
 
+/* 大图占位：未加载完按 16:10 宽高比占位（防布局跳动），
+   .img-loaded（load 后 JS 标记）恢复 natural 比例与原视觉 */
+.md img:not(.img-loaded),
+.msg-img:not(.img-loaded) {
+  width: 100%;
+  aspect-ratio: 16 / 10;
+}
+
 .msg-images {
   display: flex;
   flex-direction: column;
@@ -4202,6 +4223,12 @@ button.git-bar:active {  transform: translate(2px, 2px);
   align-items: center;
   justify-content: center;
   font-size: 13px;
+}
+
+/* 图片附件未加载占位（点击缩略图才加载原图预览） */
+.attach-thumb.pending {
+  background: var(--muted);
+  cursor: pointer;
 }
 
 .attach-name {

@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { probeRender } from "../utils/renderProbe";
 import type { SessionMessage } from "../api/types";
 import { copyText } from "../utils/clipboard";
 import type { FileRef } from "../utils/fileRefs";
@@ -17,7 +18,7 @@ export const COPY_SUCCESS_TOAST = "已复制消息文本";
 export const COPY_FAIL_TOAST = "复制失败，请手动选择文本";
 
 /** 思维链折叠块：野兽派灰底，默认收起，点击展开（流式期间可反复开关） */
-function ThinkingBlock({ text }: { text: string }) {
+const ThinkingBlock = memo(function ThinkingBlock({ text }: { text: string }) {
   const [open, setOpen] = useState(false);
   return (
     <div className="thinking-card">
@@ -45,7 +46,7 @@ function ThinkingBlock({ text }: { text: string }) {
       )}
     </div>
   );
-}
+});
 
 /** 流式进行中空回合的活占位：打字点点点（reduced-motion 降级静态文案，CSS 控制） */
 function StreamingPlaceholder() {
@@ -68,14 +69,18 @@ function StreamingPlaceholder() {
  * 图片例外：不拦截长按/右键，让 Android Chrome 原生"保存图片"菜单工作。
  * streaming 消息（message_start → message_end）：空内容显示"✍️ 回复中…"活占位（绝不显示"（无内容）"），
  * 气泡带进行中微光；同会话并行回合（sub agent 并行）带 🔗 序号标记。
+ *
+ * 渲染性能：React.memo（message 引用未变的历史消息不随相邻消息更新重渲）；
+ * measureRef 供长会话窗口化测量行高（传入方须保持引用稳定，否则 memo 失效）。
  */
-export function MessageBubble({
+export const MessageBubble = memo(function MessageBubble({
   message,
   highlight,
   onOpenFile,
   onQuote,
   liveIndex,
   liveTotal,
+  measureRef,
 }: {
   message: SessionMessage;
   highlight?: boolean;
@@ -85,7 +90,10 @@ export function MessageBubble({
   /** 同会话并行流式回合序号（1 起）/ 总数：>1 时显示 🔗 标记 */
   liveIndex?: number;
   liveTotal?: number;
+  /** 行高测量 ref（长会话窗口化；引用须稳定） */
+  measureRef?: (el: HTMLDivElement | null) => void;
 }) {
+  probeRender("MessageBubble");
   const thinking = message.thinking ?? "";
   const [menuOpen, setMenuOpen] = useState(false);
   const suppressClickRef = useRef(false);
@@ -121,6 +129,7 @@ export function MessageBubble({
   return (
     <div
       id={`msg-${message.id}`}
+      ref={measureRef}
       className={`msg-row ${message.role}${highlight ? " search-hit" : ""}${streaming ? " streaming" : ""}`}
     >
       <div
@@ -170,7 +179,15 @@ export function MessageBubble({
               {images.length > 0 && (
                 <div className="msg-images">
                   {images.map((img, i) => (
-                    <img key={`${message.id}-img-${i}`} className="msg-img" src={img.url} alt={img.alt ?? "图片"} loading="lazy" />
+                    <img
+                      key={`${message.id}-img-${i}`}
+                      className="msg-img"
+                      src={img.url}
+                      alt={img.alt ?? "图片"}
+                      loading="lazy"
+                      decoding="async"
+                      onLoad={(e) => e.currentTarget.classList.add("img-loaded")}
+                    />
                   ))}
                 </div>
               )}
@@ -191,7 +208,15 @@ export function MessageBubble({
               {images.length > 0 && (
                 <div className="msg-images">
                   {images.map((img, i) => (
-                    <img key={`${message.id}-img-${i}`} className="msg-img" src={img.url} alt={img.alt ?? "图片"} loading="lazy" />
+                    <img
+                      key={`${message.id}-img-${i}`}
+                      className="msg-img"
+                      src={img.url}
+                      alt={img.alt ?? "图片"}
+                      loading="lazy"
+                      decoding="async"
+                      onLoad={(e) => e.currentTarget.classList.add("img-loaded")}
+                    />
                   ))}
                 </div>
               )}
@@ -224,4 +249,4 @@ export function MessageBubble({
       </div>
     </div>
   );
-}
+});

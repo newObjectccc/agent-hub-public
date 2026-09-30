@@ -4,6 +4,8 @@ import { api } from "../api/client";
 import { sendPromptWithMode, type SendMode } from "../api/prompt";
 import type { CommandItem, SessionMessage, SessionStatus, SessionSummary, SubAgentActivity } from "../api/types";
 import { applyWsEvent, reconcileMessages, type WsEvent } from "../chat/messageStream";
+import { DeltaBatcher } from "../chat/deltaBatcher";
+import { computeMessageWindow, paddingTopFor } from "../chat/messageWindow";
 import { isSubAgentActivityUpdate, mergeSubAgentActivity } from "../chat/subAgents";
 import { useGitStatus } from "../hooks/useGitStatus";
 import { OLDER_PAGE_LIMIT, mergeOlderMessages, oldestMessageId, shouldLoadOlder, TAIL_MESSAGE_LIMIT } from "../chat/history";
@@ -62,6 +64,14 @@ import { chatPath, chatReturnPath, currentLocate, navigate, treePath } from "../
  */
 /** message_end 后无任何流事件/状态事件的待定收尾时长：超时推断回复完成（status 回 idle） */
 const REPLY_IDLE_FALLBACK_MS = 5_000;
+/** 停在底部附近才跟随新消息的阈值（px，语义不变） */
+const STICK_TO_BOTTOM_PX = 160;
+/** 长会话窗口化：消息数达到该值才启用（短会话零开销） */
+const VIRTUAL_MIN_COUNT = 60;
+/** 窗口化视口外上下多渲染的消息条数 */
+const VIRTUAL_OVERSCAN = 6;
+/** 窗口收缩/扩展限速（条/次）：避免一次性卸载大量 DOM 造成巨帧（渐进逼近） */
+const MAX_WINDOW_STEP = 24;
 
 export function ChatPage({ sessionId }: { sessionId: string }) {
   const [session, setSession] = useState<SessionSummary | null>(null);
@@ -121,6 +131,8 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
 
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  /** 消息列表层（长会话窗口化：滚动偏移按列表顶部折算） */
+  const listRef = useRef<HTMLDivElement | null>(null);
   /** 输入框容器（ui/textarea 不转发 ref，从容器内取真实 textarea） */
   const inputWrapRef = useRef<HTMLDivElement | null>(null);
   /** 输入框文本镜像（连续上传/插入时避免闭包旧值） */
@@ -140,10 +152,13 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
   const stickToBottomRef = useRef(true);
   /** 前插更早消息后按锚点恢复滚动位置（不触发自动滚底） */
   const pendingRestoreRef = useRef<{ height: number; top: number } | null>(null);
+  /** status 镜像（WS 事件回调里判断是否需要翻 running，避免每条 delta 一次 setState） */
+  const statusRef = useRef<SessionStatus>("idle");
 
   messagesRef.current = messages;
   hasMoreRef.current = hasMore;
   loadingOlderRef.current = loadingOlder;
+  statusRef.current = status;
 
   /** GET /api/sessions/:id 对账（首屏加载 + WS 重连后）：尾部窗口 = 已加载条数 */
   const loadSession = useCallback(async () => {
@@ -399,6 +414,150 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
     }
   }, [sessionId]);
 
+  // ===== 长会话窗口化（尾部锚定）：只裁顶部历史消息，尾部（流式）恒完整渲染 =====
+  /** 行高缓存（px，不含 flex gap）；高度不可测（jsdom）→ 不记录 → 窗口化自动禁用 */
+  const heightsRef = useRef<Map<string, number>>(new Map());
+  const rowElsRef = useRef<Map<string, HTMLElement>>(new Map());
+  const roRef = useRef<ResizeObserver | null>(null);
+  const windowRafRef = useRef<number | null>(null);
+  const scrollRafRef = useRef<number | null>(null);
+  /** 窗口状态镜像：值未变不 setState（避免每帧一次无效 render） */
+  const winStateRef = useRef({ virtualized: false, start: 0, paddingTop: 0 });
+  const [virtualized, setVirtualized] = useState(false);
+  const [windowStart, setWindowStart] = useState(0);
+  const [windowPad, setWindowPad] = useState(0);
+
+  /** 重算渲染窗口（一次布局读；值未变不 setState） */
+  const recomputeRef = useRef<() => void>(() => undefined);
+
+  /** rAF 合并窗口重算（滚动/测量/消息变化高频触发，每帧最多一次） */
+  const scheduleWindowUpdate = useCallback(() => {
+    if (windowRafRef.current !== null) return;
+    windowRafRef.current = requestAnimationFrame(() => {
+      windowRafRef.current = null;
+      recomputeRef.current();
+    });
+  }, []);
+
+  const recomputeWindow = useCallback(() => {
+    const el = scrollRef.current;
+    const listEl = listRef.current;
+    if (!el || !listEl) return;
+    const heights: number[] = [];
+    let allMeasured = true;
+    for (const m of messagesRef.current) {
+      const h = heightsRef.current.get(m.id) ?? 0;
+      if (!(h > 0)) allMeasured = false;
+      heights.push(h);
+    }
+    // 搜索定位（?q= / ?m=）：命中消息必须挂载，禁用窗口化
+    const locating = locate.q != null || locate.messageId != null;
+    const win = locating
+      ? { virtualized: false, start: 0, paddingTop: 0 }
+      : computeMessageWindow({
+          count: messagesRef.current.length,
+          heights,
+          allMeasured,
+          // 列表顶部相对滚动内容顶部的偏移（加载更早按钮等）已折算进 scrollTop
+          scrollTop: el.getBoundingClientRect().top - listEl.getBoundingClientRect().top,
+          viewportHeight: el.clientHeight,
+          minCount: VIRTUAL_MIN_COUNT,
+          overscan: VIRTUAL_OVERSCAN,
+        });
+    // 值未变不 setState：rAF 级高频重算不触发无效 render（re-render 巡查）
+    const prev = winStateRef.current;
+    let nextStart = win.start;
+    let nextPad = win.paddingTop;
+    if (win.virtualized && Math.abs(nextStart - prev.start) > MAX_WINDOW_STEP) {
+      // 渐进逼近：单次窗口变化限速（含首次全量→窗口收缩），避免巨帧；下帧继续收缩/扩展到目标
+      nextStart = prev.start + Math.sign(nextStart - prev.start) * MAX_WINDOW_STEP;
+      nextPad = paddingTopFor(heights, nextStart);
+      scheduleWindowUpdate();
+    }
+    if (prev.virtualized !== win.virtualized || prev.start !== nextStart || prev.paddingTop !== nextPad) {
+      winStateRef.current = { virtualized: win.virtualized, start: nextStart, paddingTop: nextPad };
+      setVirtualized(win.virtualized);
+      setWindowStart(nextStart);
+      setWindowPad(nextPad);
+    }
+  }, [locate, scheduleWindowUpdate]);
+  recomputeRef.current = recomputeWindow;
+
+  /** 行高测量：高度 > 0 才记录（jsdom 兜底：不记录 → 窗口化禁用 → 全量渲染） */
+  const measureRow = useCallback(
+    (id: string, el: HTMLElement) => {
+      const h = el.getBoundingClientRect().height || el.offsetHeight;
+      if (!(h > 0)) return;
+      if (heightsRef.current.get(id) !== h) {
+        heightsRef.current.set(id, h);
+        scheduleWindowUpdate();
+      }
+    },
+    [scheduleWindowUpdate],
+  );
+
+  /** 消息行测量 ref（引用恒定，配合 MessageBubble 的 React.memo；id 从 DOM id `msg-<id>` 解析） */
+  const rowMeasureRef = useCallback(
+    (el: HTMLDivElement | null) => {
+      if (!el) return;
+      const id = el.id.startsWith("msg-") ? el.id.slice(4) : "";
+      if (!id) return;
+      rowElsRef.current.set(id, el);
+      roRef.current?.observe(el);
+      measureRow(id, el);
+    },
+    [measureRow],
+  );
+
+  // 行高/视口尺寸变化跟踪（ResizeObserver 不可用时跳过，窗口化保持禁用）
+  useEffect(() => {
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const target = entry.target as HTMLElement;
+        if (target === scrollRef.current) {
+          // 视口尺寸变化（横竖屏/键盘弹出）：重算窗口
+          scheduleWindowUpdate();
+          continue;
+        }
+        const id = target.id.startsWith("msg-") ? target.id.slice(4) : "";
+        if (id) measureRow(id, target);
+      }
+    });
+    roRef.current = ro;
+    if (scrollRef.current) ro.observe(scrollRef.current);
+    for (const el of rowElsRef.current.values()) ro.observe(el);
+    return () => {
+      ro.disconnect();
+      roRef.current = null;
+    };
+  }, [measureRow, scheduleWindowUpdate]);
+
+  /** 滚动处理：rAF 合并（滚动事件 60+/秒 → 每帧最多一次布局读 + 状态更新，避免 layout thrash） */
+  const handleScroll = useCallback(() => {
+    if (scrollRafRef.current !== null) return;
+    scrollRafRef.current = requestAnimationFrame(() => {
+      scrollRafRef.current = null;
+      const el = scrollRef.current;
+      if (!el) return;
+      // 停在底部附近才跟随新消息；向上翻历史时不被拉回
+      stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < STICK_TO_BOTTOM_PX;
+      if (shouldLoadOlder({ scrollTop: el.scrollTop, hasMore: hasMoreRef.current, loading: loadingOlderRef.current })) {
+        void loadOlder();
+      }
+      recomputeWindow();
+    });
+  }, [loadOlder, recomputeWindow]);
+
+  // 卸载：丢弃未执行的 rAF（避免卸载后 setState）
+  useEffect(
+    () => () => {
+      if (scrollRafRef.current !== null) cancelAnimationFrame(scrollRafRef.current);
+      if (windowRafRef.current !== null) cancelAnimationFrame(windowRafRef.current);
+    },
+    [],
+  );
+
   // 前插历史：按锚点保持视口；尾部新消息/流式：自动滚底（保持既有行为）
   useLayoutEffect(() => {
     const el = scrollRef.current;
@@ -406,18 +565,21 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
     if (restore && el) {
       pendingRestoreRef.current = null;
       el.scrollTop = el.scrollHeight - restore.height + restore.top;
+      scheduleWindowUpdate();
       return;
     }
-    if (!stickToBottomRef.current || !bottomRef.current) return;
-    // 大跨度跳到底部用瞬时滚动：避免平滑动画穿过顶部误触发"加载更早"
-    if (el) {
-      const target = el.scrollHeight - el.clientHeight;
-      const behavior: ScrollBehavior = Math.abs(target - el.scrollTop) > el.clientHeight ? "auto" : "smooth";
-      bottomRef.current.scrollIntoView?.({ behavior, block: "end" });
+    if (!stickToBottomRef.current || !el) return;
+    // 大跨度跳到底部用瞬时滚动：避免平滑动画穿过顶部误触发"加载更早"；
+    // 单次布局读 + 直接滚底（等价 scrollIntoView(block:end)，省掉整页布局计算）
+    const target = el.scrollHeight - el.clientHeight;
+    const behavior: ScrollBehavior = Math.abs(target - el.scrollTop) > el.clientHeight ? "auto" : "smooth";
+    if (behavior === "smooth" && typeof el.scrollTo === "function") {
+      el.scrollTo({ top: target, behavior: "smooth" });
     } else {
-      bottomRef.current.scrollIntoView?.({ behavior: "smooth", block: "end" });
+      el.scrollTop = target;
     }
-  }, [messages]);
+    scheduleWindowUpdate();
+  }, [messages, scheduleWindowUpdate]);
 
   const clearPendingIdle = () => {
     if (pendingIdleRef.current) {
@@ -439,18 +601,41 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
 
   useEffect(() => () => clearPendingIdle(), []);
 
+  // ===== WS 风暴批处理：text/thinking delta（可达 50+/秒）合并成批，一次 setMessages/一次渲染 =====
+  const batcherRef = useRef<DeltaBatcher | null>(null);
+  if (batcherRef.current === null) {
+    batcherRef.current = new DeltaBatcher((events) => {
+      // 批内相邻同 messageId 的 delta 已合并，reduce 一次 setState 应用整批
+      clearPendingIdle();
+      setMessages((prev) => events.reduce((acc, e) => applyWsEvent(acc, e), prev));
+    });
+  }
+  useEffect(() => () => batcherRef.current?.cancel(), []);
+
+  /** 流事件自愈 running：仅状态需翻转时 setState（高频 delta 不重复 setState） */
+  const ensureRunning = () => {
+    if (statusRef.current !== "running") setStatus("running");
+  };
+
   const handleEvent = useCallback(
     (event: WsEvent) => {
+      if (event.type === "text_delta" || event.type === "thinking_delta") {
+        // 高频 delta：缓冲合并到窗一批落盘（打字机观感无损，渲染次数大降）
+        clearPendingIdle();
+        ensureRunning();
+        batcherRef.current?.push(event);
+        return;
+      }
+      // 非 delta 事件前先落盘在途 delta（保序：message_end 占位合并依赖占位文本已完整）
+      batcherRef.current?.flushNow();
       switch (event.type) {
         case "message_start":
-        case "text_delta":
-        case "thinking_delta":
         case "tool_start":
         case "tool_end":
           // 流事件说明 agent 还在跑：取消待定收尾，中止按钮保持；
           // 若 5s 待定误翻了 idle（段间长间隙），后续流事件自愈恢复 running
           clearPendingIdle();
-          setStatus((prev) => (prev === "running" ? prev : "running"));
+          ensureRunning();
           // 全部消息流事件统一走 applyWsEvent（含 message_end 去重兜底与占位回填）
           setMessages((prev) => applyWsEvent(prev, event));
           break;
@@ -620,6 +805,11 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
 
   const hasContent = input.trim() !== "" || attachments.length > 0;
 
+  /** 长按菜单"引用"（引用回复条）：handler 保持稳定，配合 MessageBubble 的 React.memo */
+  const handleQuote = useCallback((msg: SessionMessage) => {
+    setQuote({ text: msg.text });
+  }, []);
+
   /** 同会话并行流式回合序号（sub agent 并行时多个回合同时进行）：气泡带 🔗 标记 */
   const liveRanks = useMemo(() => {
     const ranks = new Map<string, { index: number; total: number }>();
@@ -692,14 +882,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
         role="log"
         aria-label="对话消息"
         ref={scrollRef}
-        onScroll={(e) => {
-          const el = e.currentTarget;
-          // 停在底部附近才跟随新消息；向上翻历史时不被拉回
-          stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 160;
-          if (shouldLoadOlder({ scrollTop: el.scrollTop, hasMore: hasMoreRef.current, loading: loadingOlderRef.current })) {
-            void loadOlder();
-          }
-        }}
+        onScroll={handleScroll}
       >
         <PullToRefresh
           onRefresh={ptrRefresh}
@@ -724,18 +907,24 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
             </div>
           )}
           {!loading && !loadError && messages.length === 0 && <div className="empty">还没有消息，发送第一条吧</div>}
-          {messages.map((m) => (
-            <MessageBubble
-              key={m.id}
-              message={m}
-              highlight={m.id === highlightId}
-              liveIndex={liveRanks.get(m.id)?.index}
-              liveTotal={liveRanks.get(m.id)?.total}
-              onOpenFile={setFileRef}
-              onQuote={(msg) => setQuote({ text: msg.text })}
-            />
-          ))}
-          <div ref={bottomRef} />
+          <div className="msg-list" ref={listRef}>
+            {virtualized && windowPad > 0 && (
+              <div className="msg-window-pad" aria-hidden="true" style={{ height: windowPad }} />
+            )}
+            {(virtualized ? messages.slice(windowStart) : messages).map((m) => (
+              <MessageBubble
+                key={m.id}
+                message={m}
+                highlight={m.id === highlightId}
+                liveIndex={liveRanks.get(m.id)?.index}
+                liveTotal={liveRanks.get(m.id)?.total}
+                onOpenFile={setFileRef}
+                onQuote={handleQuote}
+                measureRef={rowMeasureRef}
+              />
+            ))}
+            <div ref={bottomRef} />
+          </div>
         </PullToRefresh>
       </div>
 
