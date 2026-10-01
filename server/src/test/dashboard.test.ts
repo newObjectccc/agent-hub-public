@@ -9,7 +9,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import {
+  capReadIds,
   classifyAttention,
+  clampResidentText,
   computeStreak,
   countSettledRuns,
   countTodayMessages,
@@ -21,7 +23,10 @@ import {
   startOfWeek,
   sumCommitCounts,
   DashboardService,
+  LIVE_TEXT_LIMIT,
+  READ_IDS_MAX,
 } from "../dashboard.js";
+import { notificationSummary } from "../notifications.js";
 import { buildInsight, type SessionInsight } from "../sessions/scan.js";
 import type { MessageDto, SessionListItem } from "../types.js";
 
@@ -320,5 +325,60 @@ describe("dashboard: DashboardService 端到端（临时会话目录）", () => 
     const reasons = Object.fromEntries(stats.attentionSessions.map((a) => [a.id, a.reason]));
     assert.deepEqual(reasons, { s1: "settled", s2: "error" });
     assert.equal(stats.attentionSessions.find((a) => a.id === "s2")?.summary, "测试失败：TypeError");
+  });
+});
+
+describe("dashboard: 洞察计数守卫（AC4 口径逐字不变）", () => {
+  it("锚点日/周与 derive 不同窗时按 0 计（与逐条过滤口径等价）", () => {
+    // 上周六活跃的旧会话：今天 derive 时今日/本周计数都不窜入
+    const lastWeekDay = startOfWeek(NOW) - 2 * 86_400_000;
+    const oldMessages = [
+      msg("u1", "user", "上周任务", lastWeekDay + 10 * 3600_000),
+      msg("a1", "assistant", "上周完成", lastWeekDay + 11 * 3600_000),
+    ];
+    const oldInsight = makeInsight({
+      messages: oldMessages,
+      updatedAt: new Date(lastWeekDay + 11 * 3600_000).toISOString(),
+    });
+    const stats = deriveDashboard([oldInsight], { now: NOW, weekCommits: 0 });
+    // 对照口径：旧实现逐条按 derive-now 过滤同样为 0
+    assert.equal(countSettledRuns(oldMessages, { dayStart: DAY_START, dayEnd: NOW + 1, running: false }), 0);
+    assert.equal(stats.todayDone, 0);
+    assert.equal(stats.weekDone, 0);
+    assert.equal(stats.todayMessages, 0);
+    assert.equal(stats.weekMessages, 0);
+    assert.equal(stats.streak, 0);
+    // 同窗会话照常计数（守卫不冤枉今天的会话）
+    const todayStats = deriveDashboard([makeInsight({})], { now: NOW, weekCommits: 0 });
+    assert.equal(todayStats.todayDone, 1);
+    assert.equal(todayStats.todayMessages, 2);
+    assert.equal(todayStats.weekDone, 1);
+  });
+});
+
+describe("dashboard: 内存驻留裁剪（AC6）", () => {
+  it("clampResidentText 只留前缀上限，通知摘要输出逐字不变", () => {
+    const long = `任务${"长".repeat(5000)}结尾`;
+    const clamped = clampResidentText(long);
+    assert.equal(clamped.length, LIVE_TEXT_LIMIT);
+    assert.ok(long.startsWith(clamped));
+    assert.equal(clampResidentText("短文本"), "短文本");
+    // 摘要只用开头：截断前后 settled 文案逐字相同（行为不变性）
+    assert.equal(
+      notificationSummary({ kind: "settled", lastUserText: clamped, fallback: "x" }),
+      notificationSummary({ kind: "settled", lastUserText: long, fallback: "x" }),
+    );
+  });
+
+  it("capReadIds 只留最近 1000 条（对齐 saveReadMarks 磁盘上限）", () => {
+    const ids = new Set(Array.from({ length: 1500 }, (_, i) => `id-${i}`));
+    const capped = capReadIds(ids);
+    assert.equal(capped.size, READ_IDS_MAX);
+    assert.ok(capped.has("id-1499"));
+    assert.ok(!capped.has("id-0"));
+    assert.deepEqual([...capped], [...ids].slice(-READ_IDS_MAX));
+    // 未超上限不裁剪
+    const small = new Set(["a", "b"]);
+    assert.deepEqual([...capReadIds(small)], ["a", "b"]);
   });
 });

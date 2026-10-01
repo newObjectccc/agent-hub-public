@@ -25,7 +25,7 @@ import {
   unreadCountOf,
   type NotificationDraft,
 } from "./notifications.js";
-import { scanSessionInsights, truncateText, type SessionInsight } from "./sessions/scan.js";
+import { scanSessionInsights, startOfDay, startOfWeek, truncateText, type SessionInsight } from "./sessions/scan.js";
 import type {
   AttentionSessionCard,
   DashboardStats,
@@ -48,22 +48,10 @@ const INSIGHTS_CACHE_TTL_MS = 30_000;
 const WEEK_COMMITS_CACHE_TTL_MS = 60_000;
 
 // ---------- 时间窗（纯函数） ----------
-
-/** 本地时区当天 00:00（毫秒） */
-export function startOfDay(now: number): number {
-  const d = new Date(now);
-  d.setHours(0, 0, 0, 0);
-  return d.getTime();
-}
-
-/** 本地时区本周一 00:00（毫秒） */
-export function startOfWeek(now: number): number {
-  const d = new Date(startOfDay(now));
-  const weekday = d.getDay(); // 0=周日
-  const daysSinceMonday = (weekday + 6) % 7;
-  d.setDate(d.getDate() - daysSinceMonday);
-  return d.getTime();
-}
+// 实现已收敛到 sessions/scan.ts（洞察构建期与 dashboard 汇总共用同一实现，口径单一事实源）；
+// 这里再导出保持既有 import 路径（usage.ts / 测试）不变。
+export type { DayWindow } from "./sessions/scan.js";
+export { countSettledRuns, countTodayMessages, startOfDay, startOfWeek } from "./sessions/scan.js";
 
 /** 前一天的本地 00:00（毫秒；DST 安全，不用固定 24h 步长） */
 export function prevDayStart(dayStart: number): number {
@@ -92,43 +80,8 @@ export function computeStreak(dayStarts: Iterable<number>, now: number): number 
 }
 
 // ---------- 今日口径（纯函数） ----------
-
-export interface DayWindow {
-  dayStart: number;
-  dayEnd: number;
-  /** 会话是否仍在运行（最后一段 run 可能尚未 settled） */
-  running: boolean;
-}
-
-/**
- * 今日 agent_settled 次数（从消息时间推 run 边界）：
- * active branch 里 assistant 消息若为「一轮 run 的最后一条」（后随 user/custom，
- * 或是末条且会话不在运行中），则算一次 settled；只计落在今日窗口内的。
- *
- * 注：steer 插话会把一轮 run 切成多段，v0 按边界近似计数（契约已注明）。
- */
-export function countSettledRuns(messages: MessageDto[], window: DayWindow): number {
-  let count = 0;
-  for (let i = 0; i < messages.length; i += 1) {
-    const m = messages[i];
-    if (m.role !== "assistant") continue;
-    const next = messages[i + 1];
-    const isRunEnd = next === undefined ? !window.running : next.role === "user" || next.role === "custom";
-    if (!isRunEnd) continue;
-    if (m.timestamp >= window.dayStart && m.timestamp < window.dayEnd) count += 1;
-  }
-  return count;
-}
-
-/** 今日消息数（user + assistant） */
-export function countTodayMessages(messages: MessageDto[], window: { dayStart: number; dayEnd: number }): number {
-  let count = 0;
-  for (const m of messages) {
-    if (m.role !== "user" && m.role !== "assistant") continue;
-    if (m.timestamp >= window.dayStart && m.timestamp < window.dayEnd) count += 1;
-  }
-  return count;
-}
+// countSettledRuns / countTodayMessages 已收敛到 sessions/scan.ts（上方再导出）：
+// 洞察构建期当场算好计数，dashboard 直接消费计数字段，不再逐条扫描 messages。
 
 // ---------- “等你处理”分类（纯函数） ----------
 
@@ -391,13 +344,7 @@ export interface DeriveDashboardOptions {
 /** 洞察列表 → 首页统计（纯函数，数字与分区卡片同源） */
 export function deriveDashboard(insights: SessionInsight[], options: DeriveDashboardOptions): DashboardStats {
   const dayStart = startOfDay(options.now);
-  const window: { dayStart: number; dayEnd: number; running: boolean } = {
-    dayStart,
-    dayEnd: options.now + 1,
-    running: false,
-  };
   const maxCards = options.maxCards ?? MAX_SECTION_CARDS;
-
   let todayDone = 0;
   let todayMessages = 0;
   let weekMessages = 0;
@@ -412,21 +359,18 @@ export function deriveDashboard(insights: SessionInsight[], options: DeriveDashb
 
   for (const insight of insights) {
     const running = insight.summary.status === "running";
-    const settledToday = countSettledRuns(insight.messages, { ...window, running });
+    const counts = insight.counts;
+    // 计数守卫：counts 窗口锚定数据时间轴（anchorMs）；与 derive 的「今天/本周」不同窗时按 0 计——
+    // 与旧实现（逐条按 now 过滤 messages）口径逐字等价：消息时间戳恒 ≤ anchorMs，
+    // 跨日/跨周时旧实现同样计 0。
+    const settledToday = counts.dayStart === dayStart ? counts.settledToday : 0;
     todayDone += settledToday;
     if (settledToday > 0) todayDoneSessions.push(insight.summary.id);
-    const settledThisWeek = countSettledRuns(insight.messages, {
-      dayStart: weekStart,
-      dayEnd: options.now + 1,
-      running,
-    });
+    const settledThisWeek = counts.weekStart === weekStart ? counts.settledThisWeek : 0;
     if (settledThisWeek > 0) weekDone += 1;
-    todayMessages += countTodayMessages(insight.messages, window);
-    weekMessages += countTodayMessages(insight.messages, { dayStart: weekStart, dayEnd: options.now + 1 });
-    for (const m of insight.messages) {
-      if (m.role !== "user" && m.role !== "assistant") continue;
-      if (m.timestamp > 0) activeDayStarts.add(startOfDay(m.timestamp));
-    }
+    todayMessages += counts.dayStart === dayStart ? counts.todayMessages : 0;
+    weekMessages += counts.weekStart === weekStart ? counts.weekMessages : 0;
+    for (const day of counts.activeDays) activeDayStarts.add(day);
     if (running) {
       working += 1;
       if (workingSessions.length < maxCards) workingSessions.push(workingCard(insight));
@@ -454,6 +398,23 @@ export function deriveDashboard(insights: SessionInsight[], options: DeriveDashb
     workingSessions,
     attentionSessions,
   };
+}
+
+// ---------- 内存驻留裁剪（AC6，纯函数） ----------
+
+/** live 文本驻留上限（通知摘要只需开头；防超长输出常驻内存） */
+export const LIVE_TEXT_LIMIT = 2000;
+/** read 标记内存上限（对齐 saveReadMarks 的磁盘 1000 上限） */
+export const READ_IDS_MAX = 1000;
+
+/** 驻留文本截断（保留前缀——通知摘要只用开头；纯函数可测） */
+export function clampResidentText(text: string): string {
+  return text.length <= LIVE_TEXT_LIMIT ? text : text.slice(0, LIVE_TEXT_LIMIT);
+}
+
+/** read 标记集合裁剪：只保留最近 max 条（与 saveReadMarks 的磁盘口径一致） */
+export function capReadIds(readIds: ReadonlySet<string>, max: number = READ_IDS_MAX): Set<string> {
+  return readIds.size <= max ? new Set(readIds) : new Set([...readIds].slice(-max));
 }
 
 // ---------- 服务编排（IO） ----------
@@ -576,7 +537,8 @@ export class DashboardService implements DashboardServiceLike {
 
   private async ensureReadMarks(): Promise<Set<string>> {
     if (!this.readMarksLoaded) {
-      this.readIds = await loadReadMarks(this.options.storeFile);
+      // 加载即裁剪到磁盘同口径上限（防历史文件/长期运行内存无界增长）
+      this.readIds = capReadIds(await loadReadMarks(this.options.storeFile));
       this.readMarksLoaded = true;
     }
     return this.readIds;
@@ -619,6 +581,8 @@ export class DashboardService implements DashboardServiceLike {
       for (const id of ids) readIds.add(id);
     }
     await saveReadMarks(this.options.storeFile, readIds);
+    // 内存态与磁盘同样只留最近 1000 条（saveReadMarks 的磁盘上限）
+    this.readIds = capReadIds(readIds);
     const { unreadCount } = await this.listNotifications();
     return unreadCount;
   }
@@ -645,11 +609,12 @@ export class DashboardService implements DashboardServiceLike {
     switch (event.type) {
       case "message_end": {
         if (event.message.text.trim() === "") break;
+        // 驻留只留前缀（摘要只需开头）：超长输出不常驻内存（AC6）
         if (event.message.role === "assistant") {
-          this.lastAssistantText.set(sessionId, event.message.text);
+          this.lastAssistantText.set(sessionId, clampResidentText(event.message.text));
         } else if (event.message.role === "user") {
           // 任务名语义：settled/steering 摘要优先用本轮最后一条 user 消息
-          this.lastUserText.set(sessionId, event.message.text);
+          this.lastUserText.set(sessionId, clampResidentText(event.message.text));
         }
         break;
       }

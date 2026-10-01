@@ -76,6 +76,12 @@ export class ClaudeAdapter implements SessionAdapter {
   private readonly statuses = new Map<string, SessionStatus>();
   private historyIndex: Map<string, string> | null = null;
   private disposed = false;
+  /** 会话清单 TTL 缓存（listSessions/findSession/loadMessages 共享一次全量解析） */
+  private listCache: SessionListItem[] | null = null;
+  private listCacheAt = 0;
+  private listCacheInflight: Promise<SessionListItem[]> | null = null;
+  /** 清单全量扫描次数（测试基准：TTL 内重复查询/并发请求应为 0 新增） */
+  private listScans = 0;
   /** 会话转 live 时回调（用于停掉文件 tail，保持单一推送源） */
   onLive?: (id: string) => void;
 
@@ -119,7 +125,39 @@ export class ClaudeAdapter implements SessionAdapter {
     return this.historyIndex;
   }
 
-  async listSessions(): Promise<SessionListItem[]> {
+  /** 会话清单缓存 TTL：外部新会话最多晚 5s 可见；写路径 invalidate 立即可见（镜像 sessions/hub.ts 的 LIST_TTL_MS 方案） */
+  static readonly LIST_TTL_MS = 5_000;
+
+  /** 清单全量扫描次数（基准验证用） */
+  get scanCount(): number {
+    return this.listScans;
+  }
+
+  /**
+   * 会话清单（TTL 缓存 + 并发 inflight 去重）：
+   * findSession 每次调用、GET /api/sessions/:id 一次请求内多次查找共享一次扫描，
+   * 不再每次全量 parse 全部 transcript（曾是 claude 侧 CPU/OOM 放大源）。
+   */
+  listSessions(): Promise<SessionListItem[]> {
+    const now = Date.now();
+    if (this.listCache !== null && now - this.listCacheAt < ClaudeAdapter.LIST_TTL_MS) {
+      return Promise.resolve(this.listCache);
+    }
+    if (this.listCacheInflight !== null) return this.listCacheInflight;
+    this.listScans += 1;
+    this.listCacheInflight = this.scanSessionsUncached()
+      .then((items) => {
+        this.listCache = items;
+        this.listCacheAt = Date.now();
+        return items;
+      })
+      .finally(() => {
+        this.listCacheInflight = null;
+      });
+    return this.listCacheInflight;
+  }
+
+  private async scanSessionsUncached(): Promise<SessionListItem[]> {
     const history = await this.getHistoryIndex();
     return scanClaudeSessions(this.projectsDir, history, {
       statusOf: (id, updatedMs) => this.statusWithInference(id, updatedMs),
@@ -127,8 +165,17 @@ export class ClaudeAdapter implements SessionAdapter {
   }
 
   async findSession(id: string): Promise<SessionListItem | null> {
-    const all = await this.listSessions();
-    return all.find((item) => item.id === id) ?? null;
+    return this.listSessions().then((all) => {
+      const hit = all.find((item) => item.id === id);
+      // status 查询时重算（缓存里是扫描时刻值；与 sessions/hub.ts findSession 同口径）
+      return hit ? { ...hit, status: this.statusWithInference(hit.id, Date.parse(hit.updatedAt)) } : null;
+    });
+  }
+
+  /** 写盘后失效清单缓存（新建/fork 立即可见，不等 TTL；其余场景靠 TTL 失效） */
+  private invalidateList(): void {
+    this.listCache = null;
+    this.listCacheAt = 0;
   }
 
   async loadMessages(id: string): Promise<MessageDto[] | null> {
@@ -187,6 +234,7 @@ export class ClaudeAdapter implements SessionAdapter {
       lines.push(JSON.stringify({ type: "ai-title", aiTitle: trimmedName, sessionId, cwd, timestamp }));
     }
     await writeFile(file, `${lines.join("\n")}\n`, { flag: "wx" });
+    this.invalidateList();
     return {
       id: sessionId,
       source: "claude",
@@ -238,6 +286,7 @@ export class ClaudeAdapter implements SessionAdapter {
     }
     const file = join(dirname(found.sessionFile), `${newId}.jsonl`);
     await writeFile(file, `${outLines.join("\n")}\n`, { flag: "wx" });
+    this.invalidateList();
     const created = await this.findSession(newId);
     if (!created) {
       throw new HubError(ErrorCodes.INTERNAL, "会话复制后未能读回新会话", 500);
