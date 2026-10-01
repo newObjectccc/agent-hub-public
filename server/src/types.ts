@@ -423,6 +423,57 @@ export interface DashboardStats {
   attentionSessions: AttentionSessionCard[];
 }
 
+/** GET /api/usage：Token 用量汇总维度（契约 §15，pi 源；每次 API 调用的 usage 求和） */
+export interface UsageTotalsDto {
+  totalTokens: number;
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  reasoning: number;
+  /** cost.total 求和；数据源全程无 cost 字段时为 null（允许 null/0） */
+  costTotal: number | null;
+}
+
+/** 时间窗汇总：今日（本地 0 点起）/ 近 7 天（含今日）/ 全部 */
+export interface UsageWindowsDto {
+  today: UsageTotalsDto;
+  last7Days: UsageTotalsDto;
+  all: UsageTotalsDto;
+}
+
+/** 自定义时间窗（?days=N，最近 N 天含今日） */
+export interface UsageRangeDto {
+  days: number;
+  usage: UsageTotalsDto;
+}
+
+/** GET /api/usage 全局汇总里的单会话项（仅含有 usage 采样的会话） */
+export interface SessionUsageDto {
+  sessionId: string;
+  name: string | null;
+  updatedAt: string;
+  usage: UsageTotalsDto;
+}
+
+/** GET /api/usage 响应（无 sessionId：全局汇总 + 会话明细） */
+export interface UsageOverviewDto {
+  windows: UsageWindowsDto;
+  /** 仅带 ?days=N 时返回 */
+  range?: UsageRangeDto;
+  sessions: SessionUsageDto[];
+}
+
+/** GET /api/usage?sessionId= 响应（单会话汇总） */
+export interface UsageSessionDto {
+  sessionId: string;
+  name: string | null;
+  updatedAt: string;
+  windows: UsageWindowsDto;
+  /** 仅带 ?days=N 时返回 */
+  range?: UsageRangeDto;
+}
+
 /** 通知类型：settled=本轮干完；error=出错；steering=被插话；done=手动中止 */
 export type NotificationKind = "settled" | "error" | "steering" | "done";
 

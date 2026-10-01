@@ -10,6 +10,7 @@ import { api } from "../api/client";
 import type {
   DashboardStats,
   SessionSummary,
+  UsageTotals,
 } from "../api/types";
 import { NewSessionForm } from "../components/NewSessionForm";
 import { PullToRefresh } from "../components/PullToRefresh";
@@ -22,6 +23,7 @@ import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { SESSION_TABS, filterSessionsByTab, type SessionTab } from "../utils/sessionTabs";
 import { peekListScrollTop, saveListScrollTop } from "../utils/scrollMemory";
+import { usageBySession } from "../utils/usage";
 import { chatPath, navigate } from "../utils/router";
 
 /** 刷新超过此时长才显示顶部进度条（快速静默刷新保持视觉安静） */
@@ -36,6 +38,8 @@ function tabFromSearch(search: string): SessionTab {
 export function SessionsPage() {
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [stats, setStats] = useState<DashboardStats | null>(null);
+  /** 会话 Token 用量索引（/api/usage；失败安静降级为空表，行内不显示） */
+  const [usageMap, setUsageMap] = useState<Map<string, UsageTotals>>(() => new Map());
   const [listError, setListError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [progressVisible, setProgressVisible] = useState(false);
@@ -69,7 +73,11 @@ export function SessionsPage() {
         setListError(err instanceof Error ? err.message : "会话列表加载失败");
       },
     );
-    const statsRes = await api.getDashboardStats().catch(() => null);
+    // token 用量与 dashboard 并行拉取：失败安静降级（行内不显示），不拖住列表
+    const [statsRes, usageRes] = await Promise.all([
+      api.getDashboardStats().catch(() => null),
+      api.getUsage().catch(() => null),
+    ]);
     await sessionsPromise;
     if (progressTimer.current) {
       clearTimeout(progressTimer.current);
@@ -77,6 +85,7 @@ export function SessionsPage() {
     }
     setProgressVisible(false);
     if (statsRes) setStats(statsRes);
+    if (usageRes) setUsageMap(usageBySession(usageRes.sessions));
     setRefreshing(false);
     setLoaded(true);
   }, []);
@@ -207,6 +216,7 @@ export function SessionsPage() {
             sessions={tabSessions}
             priority={listPriority}
             runningSince={runningSince}
+            usageBySession={usageMap}
             scrollRef={listScrollRef}
             initialScrollTop={peekListScrollTop()}
             onScrollTop={saveListScrollTop}

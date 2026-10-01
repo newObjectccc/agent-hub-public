@@ -352,6 +352,57 @@ export interface DashboardStats {
   attentionSessions: AttentionSessionCard[];
 }
 
+/** GET /api/usage：Token 用量汇总维度（契约 §14，pi 源；每次 API 调用的 usage 求和） */
+export interface UsageTotals {
+  totalTokens: number;
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  reasoning: number;
+  /** cost.total 求和；数据源无 cost 字段时 null（0 是有效金额） */
+  costTotal: number | null;
+}
+
+/** 时间窗汇总：今日 / 近 7 天（含今日）/ 全部 */
+export interface UsageWindows {
+  today: UsageTotals;
+  last7Days: UsageTotals;
+  all: UsageTotals;
+}
+
+/** 自定义时间窗（?days=N，最近 N 天含今日） */
+export interface UsageRange {
+  days: number;
+  usage: UsageTotals;
+}
+
+/** GET /api/usage 全局汇总里的单会话项 */
+export interface SessionUsage {
+  sessionId: string;
+  name: string | null;
+  updatedAt: string;
+  usage: UsageTotals;
+}
+
+/** GET /api/usage 响应（全局汇总 + 会话明细） */
+export interface UsageOverview {
+  windows: UsageWindows;
+  /** 仅带 ?days=N 时返回 */
+  range?: UsageRange;
+  sessions: SessionUsage[];
+}
+
+/** GET /api/usage?sessionId= 响应（单会话汇总） */
+export interface UsageSessionDetail {
+  sessionId: string;
+  name: string | null;
+  updatedAt: string;
+  windows: UsageWindows;
+  /** 仅带 ?days=N 时返回 */
+  range?: UsageRange;
+}
+
 /** 通知类型：settled=本轮干完；error=出错；steering=被插话；done=手动中止 */
 export type NotificationKind = "settled" | "error" | "steering" | "done";
 

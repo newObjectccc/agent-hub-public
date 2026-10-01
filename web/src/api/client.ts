@@ -26,6 +26,8 @@ import type {
   GitDiffResult,
   GitStatusResult,
   UploadResponse,
+  UsageOverview,
+  UsageSessionDetail,
 } from "./types";
 
 export type PromptMode = "prompt" | "steer" | "followUp";
@@ -184,6 +186,21 @@ export const api = {
 
   getDashboardStats(): Promise<DashboardStats> {
     return request("/api/dashboard/stats");
+  },
+
+  /** GET /api/usage：Token 用量全局汇总（?days=N 自定义时间窗，契约 §14，pi 源） */
+  getUsage(opts: { days?: number } = {}): Promise<UsageOverview> {
+    const params = new URLSearchParams();
+    if (opts.days !== undefined) params.set("days", String(opts.days));
+    const qs = params.toString();
+    return request(`/api/usage${qs ? `?${qs}` : ""}`);
+  },
+
+  /** GET /api/usage?sessionId=：单会话 Token 用量汇总（契约 §14） */
+  getSessionUsage(id: string, opts: { days?: number } = {}): Promise<UsageSessionDetail> {
+    const params = new URLSearchParams({ sessionId: id });
+    if (opts.days !== undefined) params.set("days", String(opts.days));
+    return request(`/api/usage?${params.toString()}`);
   },
 
   getNotifications(): Promise<NotificationListResponse> {

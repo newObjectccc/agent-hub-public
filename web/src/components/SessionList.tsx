@@ -1,12 +1,13 @@
 import type { MutableRefObject } from "react";
 import { useState } from "react";
-import type { SessionSummary } from "../api/types";
+import type { SessionSummary, UsageTotals } from "../api/types";
 import { useFirstSeen } from "../hooks/useFirstSeen";
 import { useIsMobile } from "../hooks/useIsMobile";
 import { useNowTicker } from "../hooks/useNowTicker";
 import { sessionTitle, shortPath } from "../utils/display";
 import { elapsedMinutesLabel, relativeTime } from "../utils/relativeTime";
 import { groupSessions, loadExpanded, saveExpanded } from "../utils/sessionTree";
+import { formatTokens } from "../utils/usage";
 import { DrivenBadge } from "./DrivenBadge";
 import { GitStatusBadge } from "./GitStatusBadge";
 import { AttachBadge } from "./AttachBadge";
@@ -48,6 +49,8 @@ export interface SessionListProps {
   priority?: SessionSortPriority;
   /** 会话运行起点（行内"已运行 X 分钟"实时标记） */
   runningSince?: Map<string, number>;
+  /** 会话 Token 用量索引（/api/usage sessions[] 映射；缺省/无数据则行内不显示） */
+  usageBySession?: Map<string, UsageTotals>;
 }
 
 function priorityRank(s: SessionSummary, priority?: SessionSortPriority): number {
@@ -130,11 +133,13 @@ interface SessionRowProps {
   isNew: boolean;
   now?: number;
   runningSince?: Map<string, number>;
+  /** 该会话 Token 用量（无数据/加载失败缺省，行内安静隐藏） */
+  usage?: UsageTotals;
   onSelect: (session: SessionSummary) => void;
 }
 
 /** 单行会话（主列表与子代理行共用） */
-function SessionRow({ session: s, index, isNew, now, runningSince, onSelect }: SessionRowProps) {
+function SessionRow({ session: s, index, isNew, now, runningSince, usage, onSelect }: SessionRowProps) {
   const nowMs = now ?? Date.now();
   const startedAt = runningSince?.get(s.id);
   return (
@@ -163,6 +168,12 @@ function SessionRow({ session: s, index, isNew, now, runningSince, onSelect }: S
           <StatusBadge status={s.status} />
           {s.status === "running" && startedAt !== undefined && (
             <span className="session-elapsed">已运行 {elapsedMinutesLabel(startedAt, nowMs)}</span>
+          )}
+          {/* Token 用量（pi 源）：无数据/加载失败安静隐藏 */}
+          {usage !== undefined && usage.totalTokens > 0 && (
+            <span className="session-tokens" title="Token 用量（全部）">
+              🧮 {formatTokens(usage.totalTokens)}
+            </span>
           )}
           <span className="session-time">{relativeTime(s.updatedAt, now)}</span>
         </div>
@@ -193,6 +204,7 @@ export function SessionList({
   seenIds,
   priority,
   runningSince,
+  usageBySession,
 }: SessionListProps) {
   const isMobile = useIsMobile();
   const mainHeight = isMobile ? SESSION_ITEM_HEIGHT_MOBILE : SESSION_ITEM_HEIGHT;
@@ -247,6 +259,7 @@ export function SessionList({
                 isNew={newIds.has(s.id)}
                 now={now}
                 runningSince={runningSince}
+                usage={usageBySession?.get(s.id)}
                 onSelect={onSelect}
               />
               {kids !== undefined && kids.length > 0 && (
@@ -272,6 +285,7 @@ export function SessionList({
                     isNew={newIds.has(c.id)}
                     now={now}
                     runningSince={runningSince}
+                    usage={usageBySession?.get(c.id)}
                     onSelect={onSelect}
                   />
                 ))}
@@ -300,6 +314,7 @@ export function SessionList({
                   isNew={newIds.has(s.id)}
                   now={now}
                   runningSince={runningSince}
+                  usage={usageBySession?.get(s.id)}
                   onSelect={onSelect}
                 />
               ))}

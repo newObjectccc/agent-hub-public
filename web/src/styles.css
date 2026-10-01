@@ -812,6 +812,18 @@ button.syschip.terminal-entry:hover {
   font-variant-numeric: tabular-nums;
 }
 
+/* 行内 token 用量（pi 源，契约 §14）：无数据时整体不渲染 */
+.session-tokens {
+  font-size: 11.5px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  border: 2px solid var(--border);
+  border-radius: var(--nb-radius);
+  padding: 0 5px;
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+
 .session-cwd {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 11.5px;
