@@ -15,6 +15,7 @@ import {
   SNIPPET_OPEN,
   SNIPPET_RADIUS,
 } from "../sessions/search.js";
+import { resetSessionCaches, sessionCacheStats } from "../sessions/scan.js";
 
 const header = { type: "session", version: 3, id: "sess-0001", timestamp: "2026-02-18T10:00:00.000Z", cwd: "/Users/me/Workspace/demo" };
 
@@ -220,5 +221,45 @@ describe("search: SearchService 匹配/排序/上限/缓存失效", () => {
       ].join("\n") + "\n",
     );
     assert.equal((await eager.search("临时字段")).length, 1);
+  });
+
+  it("重建索引零读盘（复用 scan 解析缓存，AC5）且结果完整不缩水", async () => {
+    resetSessionCaches();
+    const svc = new SearchService(root, 0); // TTL=0：每次搜索都重建索引
+    const first = await svc.search("kpi");
+    const cold = sessionCacheStats().fileReads;
+    assert.ok(cold > 0, "冷重建应读盘");
+    const second = await svc.search("kpi");
+    assert.equal(sessionCacheStats().fileReads, cold, "重建索引复用解析缓存：零读盘");
+    assert.deepEqual(
+      second.map((r) => r.messageId),
+      first.map((r) => r.messageId),
+      "结果完整不变（不因缓存缩量）",
+    );
+  });
+
+  it("全文索引不截断：长文本中段命中也能搜到（AC5 硬约束）", async () => {
+    const dir = join(root, "--Users-me-Workspace-demo--");
+    const long = `${"深".repeat(3000)}中段命中词${"深".repeat(3000)}`;
+    await writeFile(
+      join(dir, "2026-02-18T13-00-00-000Z_sess-0005.jsonl"),
+      [
+        line({ type: "session", version: 3, id: "sess-0005", timestamp: "2026-02-18T13:00:00.000Z", cwd: "/Users/me/Workspace/demo" }),
+        line({
+          type: "message",
+          id: "l1",
+          parentId: null,
+          timestamp: "2026-02-18T13:00:01.000Z",
+          message: { role: "user", content: long, timestamp: 1733244001000 },
+        }),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    const svc = new SearchService(root, 0);
+    const hits = await svc.search("中段命中词");
+    assert.equal(hits.length, 1);
+    assert.equal(hits[0].sessionId, "sess-0005");
+    assert.ok(hits[0].snippet.includes(`${SNIPPET_OPEN}中段命中词${SNIPPET_CLOSE}`));
+    assert.ok(hits[0].snippet.length < 200, "snippet 仍只截展示窗口，索引本身不截断");
   });
 });

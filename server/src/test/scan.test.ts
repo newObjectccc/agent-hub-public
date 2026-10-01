@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import {
+  buildInsight,
   buildMessages,
   buildSessionSummary,
   contentToImages,
@@ -16,12 +17,18 @@ import {
   isSubAgentSession,
   parentSessionIdFromPath,
   MAX_MESSAGE_IMAGES,  parseSessionJsonl,
+  resetSessionCaches,
+  scanSessionInsights,
   scanSessions,
+  scanSubAgentLineage,
   selectActiveBranch,
+  sessionCacheStats,
   sessionFileName,
   truncateText,
   LAST_MESSAGE_LIMIT,
 } from "../sessions/scan.js";
+import { countSettledRuns, countTodayMessages, startOfDay, startOfWeek } from "../dashboard.js";
+import type { MessageDto, SessionListItem } from "../types.js";
 
 let root: string;
 
@@ -440,6 +447,123 @@ describe("scan: 父子关联（parentSessionId）", () => {
       const parent = items.find((x) => x.id === "p-1");
       assert.equal(parent?.parentSessionId, null);
       assert.equal(parent?.isSubAgent, false);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("scan: 洞察计数与 per-file 增量缓存（AC2/AC3/AC4 基准）", () => {
+  it("buildInsight 计数与 dashboard 口径逐字一致；Insight 不携带全量 messages", () => {
+    const ts = (min: number): number => Date.parse("2026-02-18T12:00:00.000Z") - min * 60_000;
+    const messages: MessageDto[] = [
+      { id: "u1", role: "user", timestamp: ts(30), text: "一", toolCalls: [] },
+      { id: "a1", role: "assistant", timestamp: ts(29), text: "好", toolCalls: [] },
+      { id: "u2", role: "user", timestamp: ts(10), text: "二", toolCalls: [] },
+      { id: "a2", role: "assistant", timestamp: ts(29 + 20), text: "好", toolCalls: [] },
+      { id: "a3", role: "assistant", timestamp: ts(8), text: "补充", toolCalls: [] },
+    ];
+    const summary: SessionListItem = {
+      id: "ins-1",
+      name: null,
+      cwd: "/tmp/x",
+      updatedAt: new Date(ts(8)).toISOString(),
+      messageCount: messages.length,
+      status: "idle",
+      lastUserMessage: "二",
+      lastAssistantMessage: "补充",
+      sessionFile: "/tmp/ins-1.jsonl",
+      isSubAgent: false,
+      source: "pi",
+    };
+    const insight = buildInsight(summary, messages);
+    assert.ok(!("messages" in insight), "Insight 不再携带全量 messages（防全语料驻留）");
+    // 口径等价：与旧实现（derive 时逐条按 now 过滤）逐字一致（同窗基准：derive-now = 锚点）
+    const now = insight.counts.anchorMs;
+    const window = { dayStart: startOfDay(now), dayEnd: now + 1, running: false };
+    assert.equal(insight.counts.settledToday, countSettledRuns(messages, window));
+    assert.equal(insight.counts.todayMessages, countTodayMessages(messages, window));
+    assert.equal(
+      insight.counts.settledThisWeek,
+      countSettledRuns(messages, { dayStart: startOfWeek(now), dayEnd: now + 1, running: false }),
+    );
+    assert.equal(
+      insight.counts.weekMessages,
+      countTodayMessages(messages, { dayStart: startOfWeek(now), dayEnd: now + 1 }),
+    );
+    // 两轮 run（a1 后随 user；a3 是末条且未运行）
+    assert.equal(insight.counts.settledToday, 2);
+    assert.equal(insight.counts.todayMessages, 5);
+    assert.equal(insight.counts.activeDays.length, 1);
+    // running 口径：末条 assistant 不算 settled（与 countSettledRuns 的 window.running 同源）
+    const runningInsight = buildInsight({ ...summary, status: "running" }, messages);
+    assert.equal(runningInsight.counts.settledToday, 1);
+    assert.equal(
+      runningInsight.counts.settledToday,
+      countSettledRuns(messages, { ...window, running: true }),
+    );
+  });
+
+  it("per-file 增量：第二次扫描零读盘零 parse，变更文件只重读自身（AC2）", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agent-hub-inc-"));
+    try {
+      const fileOf = (id: string, extra = ""): string =>
+        [
+          JSON.stringify({ type: "session", version: 3, id, timestamp: "2026-02-18T12:00:00.000Z", cwd: "/tmp/x" }),
+          JSON.stringify({ type: "message", id: "m1", parentId: null, timestamp: "2026-02-18T12:00:01.000Z", message: { role: "user", content: `hi ${extra}` } }),
+        ].join("\n") + "\n";
+      for (const id of ["inc-a", "inc-b", "inc-c"]) {
+        await writeFile(join(dir, `${id}.jsonl`), fileOf(id), "utf8");
+      }
+      resetSessionCaches();
+      await scanSessions(dir);
+      const cold = sessionCacheStats();
+      assert.equal(cold.fileReads, 3, "冷扫描每文件读盘一次");
+      assert.equal(cold.fileParses, 3);
+      await scanSessionInsights(dir);
+      await scanSessions(dir);
+      await scanSessionInsights(dir);
+      const hot = sessionCacheStats();
+      assert.equal(hot.fileReads, 3, "第二次起扫描零读盘（列表/洞察共享解析缓存）");
+      assert.equal(hot.fileParses, 3, "第二次起零 parse");
+      // 变更一个文件 → 只重读自身
+      await writeFile(join(dir, "inc-b.jsonl"), fileOf("inc-b", "v2"), "utf8");
+      await scanSessions(dir);
+      assert.equal(sessionCacheStats().fileReads, 4, "仅变更文件重读");
+      // 删除文件 → 快照清账，后续扫描不再累积
+      await rm(join(dir, "inc-c.jsonl"));
+      await scanSessions(dir);
+      assert.equal(sessionCacheStats().fileReads, 4, "删除文件不重读");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("scanSubAgentLineage：TTL 内重复调用零读盘，新文件立即可见（AC3）", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agent-hub-lin-"));
+    try {
+      const childLine = (id: string, name: string): string =>
+        [
+          JSON.stringify({ type: "session", version: 3, id, timestamp: "2026-01-01T00:00:00.000Z", cwd: "/tmp/x", parentSession: "parent-x" }),
+          JSON.stringify({ type: "session_info", name, timestamp: "2026-01-01T00:00:00.000Z" }),
+        ].join("\n") + "\n";
+      await writeFile(join(dir, "c1.jsonl"), childLine("child-1", "developer#aaaa01"), "utf8");
+      resetSessionCaches();
+      let lineage = await scanSubAgentLineage(dir);
+      assert.equal(sessionCacheStats().fileReads, 1);
+      assert.equal(lineage.length, 1);
+      await scanSubAgentLineage(dir);
+      await scanSubAgentLineage(dir);
+      assert.equal(sessionCacheStats().fileReads, 1, "TTL 内重复调用零读盘（跨连接共享同一次扫描）");
+      // 新写入静态子会话立即可见（名单校验，不等 TTL）
+      await writeFile(join(dir, "c2.jsonl"), childLine("child-2", "developer#bbbb02"), "utf8");
+      lineage = await scanSubAgentLineage(dir);
+      assert.ok(lineage.some((l) => l.id === "child-2"), "新文件立即可见");
+      assert.equal(sessionCacheStats().fileReads, 2, "只读新文件");
+      // TTL=0（每次重扫）下未变文件也不重读（per-file mtime+size 复用）
+      await scanSubAgentLineage(dir, { ttlMs: 0 });
+      await scanSubAgentLineage(dir, { ttlMs: 0 });
+      assert.equal(sessionCacheStats().fileReads, 2, "重扫不重读未变文件");
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

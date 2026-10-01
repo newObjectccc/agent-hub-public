@@ -7,15 +7,17 @@
  * messages 一致），保证结果点击直达 chat 页可定位；toolResult 已折叠进
  * assistant 的 toolCalls，不参与文本搜索（v0 口径，见契约）。
  */
-import { stat } from "node:fs/promises";
-import type { MessageRole, SearchResultDto } from "../types.js";
+import type { SearchResultDto } from "../types.js";
 import {
   buildMessages,
   findSessionFiles,
+  loadSessionSnapshot,
   parseSessionJsonl,
-  readSessionFile,
+  pruneSessionFileCache,
   selectActiveBranch,
   sessionName,
+  textIndexFromMessages,
+  type SessionTextIndexEntry,
 } from "./scan.js";
 
 /** 摘要半径：命中词前后各 ~60 字符 */
@@ -60,34 +62,16 @@ export function makeSnippet(text: string, query: string, radius: number = SNIPPE
   return prefix + marked + suffix;
 }
 
-/** 搜索索引条目（单条消息） */
-export interface SearchIndexEntry {
-  sessionId: string;
-  sessionName: string | null;
-  messageId: string;
-  role: MessageRole;
-  text: string;
-  /** 毫秒（pi 原始值；缺失时 0） */
-  timestamp: number;
-}
+/** 搜索索引条目（单条消息；与 scan.ts 的文本快照同构，共用同一份全文） */
+export type SearchIndexEntry = SessionTextIndexEntry;
 
-/** 会话文件 → 索引条目（active branch 消息文本） */
+/** 会话文件 → 索引条目（active branch 消息文本，全文不截断） */
 export function indexSessionFile(file: string, content: string, mtimeMs: number): SearchIndexEntry[] {
   const { header, entries } = parseSessionJsonl(content);
   if (!header || typeof header.id !== "string" || header.id === "") return [];
   const name = sessionName(entries);
   const messages = buildMessages(selectActiveBranch(entries));
-  return messages
-    .filter((m) => m.text.trim() !== "")
-    .map((m) => ({
-      sessionId: header.id,
-      sessionName: name,
-      messageId: m.id,
-      role: m.role,
-      text: m.text,
-      // 时间戳缺失时用文件 mtime 兜底，保证排序稳定
-      timestamp: m.timestamp || mtimeMs,
-    }));
+  return textIndexFromMessages(messages, { sessionId: header.id, sessionName: name, mtimeMs });
 }
 
 /**
@@ -114,16 +98,18 @@ export class SearchService {
   private async ensureIndex(): Promise<SearchIndexEntry[]> {
     const now = Date.now();
     if (this.index !== null && now - this.builtAt < this.ttlMs) return this.index;
+    // 重建：旧索引整体丢弃可 GC（只保留这一份）；全文不截断（搜索结果完整性硬约束）
     const index: SearchIndexEntry[] = [];
     const files = await findSessionFiles(this.sessionDir);
     for (const file of files) {
       try {
-        const fileStat = await stat(file);
-        index.push(...indexSessionFile(file, await readSessionFile(file), fileStat.mtimeMs));
+        // 复用 scan 的 per-file 解析缓存（mtime+size 未变零读盘），避免重复读盘 parse（AC5）
+        index.push(...(await loadSessionSnapshot(file)).textIndex);
       } catch {
         // 单个文件损坏不影响其它会话
       }
     }
+    pruneSessionFileCache(new Set(files));
     this.index = index;
     this.builtAt = now;
     return index;

@@ -363,3 +363,31 @@ describe("claude adapter: createSession 空白 transcript + forkSession 复制�
     }
   });
 });
+
+describe("claude adapter: 会话清单 TTL 缓存（AC1 基准）", () => {
+  it("list/find 共享一次全量扫描（TTL + inflight 去重），写路径立即失效", async () => {
+    const adapter = makeAdapter(() => undefined);
+    try {
+      const base = adapter.scanCount;
+      // 并发 list + find：inflight 去重，只全量扫描一次（GET /api/sessions/:id 一次请求内两次查找同理）
+      const [list, found] = await Promise.all([adapter.listSessions(), adapter.findSession(SID)]);
+      assert.equal(adapter.scanCount - base, 1, "并发请求共享一次全量解析");
+      assert.ok(list.some((s) => s.id === SID));
+      assert.ok(found);
+      assert.equal(found.status, "idle");
+      // TTL 内重复查询零新增扫描（findSession 走缓存 filter）
+      await adapter.findSession(SID);
+      await adapter.findSession(SID);
+      const again = await adapter.listSessions();
+      assert.equal(again, list, "TTL 内复用同一次扫描结果");
+      assert.equal(adapter.scanCount - base, 1, "TTL 内零新增扫描");
+      // 写路径失效缓存：新建会话立即可见（不等 TTL）
+      const created = await adapter.createSession(root, "缓存可见性");
+      const hit = await adapter.findSession(created.id);
+      assert.ok(hit, "写路径 invalidate：立即可见");
+      assert.equal(hit.name, "缓存可见性");
+    } finally {
+      adapter.disposeAll();
+    }
+  });
+});

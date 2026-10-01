@@ -182,7 +182,13 @@ export function unreadCountOf(items: NotificationItem[]): number {
   return items.reduce((n, item) => (countsAsUnread(item) ? n + 1 : n), 0);
 }
 
-/** 会话历史扫描 → 回填通知（等你处理/出错的会话浮出，含最后输出摘要） */
+/**
+ * 会话历史扫描 → 回填通知（等你处理/出错的会话浮出，含最后输出摘要）。
+ *
+ * 依赖检查（AC4）：本函数只消费 insight.summary / lastMessageRole（摘要文本
+ * lastUserMessage/lastAssistantMessage 已由 buildSessionSummary 在构建期算好），
+ * 不依赖全量 messages——Insight 瘦身后输出逐字不变。
+ */
 export function seedNotificationsFromInsights(insights: SessionInsight[]): NotificationItem[] {
   const items: NotificationItem[] = [];
   for (const insight of insights) {

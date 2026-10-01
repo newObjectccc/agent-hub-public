@@ -470,7 +470,7 @@ export interface ScanOptions {
 /** 扫描全部会话（所有 cwd 分组），按 updatedAt 倒序 */
 export async function scanSessions(sessionDir: string, options: ScanOptions = {}): Promise<SessionListItem[]> {
   const files = await findSessionFiles(sessionDir);
-  // 并发解析（分批 8）：与 scanSessionInsights 同策略，避免串行读盘卡列表接口
+  // 并发解析（分批 4）：与 scanSessionInsights 同策略，避免串行读盘卡列表接口
   const CONCURRENCY = 4;
   const items: SessionListItem[] = [];
   const yieldLoop = (): Promise<void> => new Promise((r) => setImmediate(r));
@@ -479,10 +479,10 @@ export async function scanSessions(sessionDir: string, options: ScanOptions = {}
     const batch = await Promise.all(
       files.slice(i, i + CONCURRENCY).map(async (file) => {
         try {
-          const fileStat = await stat(file);
-          const parsed = parseSessionJsonl(await readSessionFile(file));
-          const summary = buildSessionSummary(file, parsed, fileStat.mtimeMs);
-          if (!summary) return null;
+          // per-file 增量快照：mtime+size 未变的文件零读盘零 parse（AC2）
+          const snap = await loadSessionSnapshot(file);
+          if (!snap.summary) return null;
+          const summary = snap.summary;
           return { ...summary, status: options.statusOf ? options.statusOf(summary.id, Date.parse(summary.updatedAt)) : "idle" };
         } catch {
           // 单个文件损坏不影响其它会话
@@ -494,6 +494,7 @@ export async function scanSessions(sessionDir: string, options: ScanOptions = {}
       if (item) items.push(item);
     }
   }
+  pruneSessionFileCache(new Set(files));
   // 确定性 tiebreaker：updatedAt 相同时按 id 升序（与 web sortSessions 口径一致，刷新绝不重排）
   items.sort((a, b) => {
     const d = Date.parse(b.updatedAt) - Date.parse(a.updatedAt);
@@ -514,13 +515,92 @@ export async function loadSessionMessages(file: string): Promise<MessageDto[]> {
   return buildMessages(selectActiveBranch(parsed.entries));
 }
 
+// ---------- 今日/本周时间窗口径（纯函数；dashboard.ts 再导出复用，单一事实源防口径漂移） ----------
+
+/** 本地时区当天 00:00（毫秒） */
+export function startOfDay(now: number): number {
+  const d = new Date(now);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+/** 本地时区本周一 00:00（毫秒） */
+export function startOfWeek(now: number): number {
+  const d = new Date(startOfDay(now));
+  const weekday = d.getDay(); // 0=周日
+  const daysSinceMonday = (weekday + 6) % 7;
+  d.setDate(d.getDate() - daysSinceMonday);
+  return d.getTime();
+}
+
+/** 计数只需要 role+timestamp（洞察缓存不携带全文，防全语料常驻） */
+export type MessageFact = Pick<MessageDto, "role" | "timestamp">;
+
+export interface DayWindow {
+  dayStart: number;
+  dayEnd: number;
+  /** 会话是否仍在运行（最后一段 run 可能尚未 settled） */
+  running: boolean;
+}
+
 /**
- * 会话深度洞察（dashboard/通知聚合用）：摘要 + active branch 消息 +
- * 推导字段（最后消息角色 / 最近工具摘要 / 当前 run 起点）。
+ * 今日 agent_settled 次数（从消息时间推 run 边界）：
+ * active branch 里 assistant 消息若为「一轮 run 的最后一条」（后随 user/custom，
+ * 或是末条且会话不在运行中），则算一次 settled；只计落在今日窗口内的。
+ *
+ * 注：steer 插话会把一轮 run 切成多段，v0 按边界近似计数（契约已注明）。
  */
+export function countSettledRuns(messages: readonly MessageFact[], window: DayWindow): number {
+  let count = 0;
+  for (let i = 0; i < messages.length; i += 1) {
+    const m = messages[i];
+    if (m.role !== "assistant") continue;
+    const next = messages[i + 1];
+    const isRunEnd = next === undefined ? !window.running : next.role === "user" || next.role === "custom";
+    if (!isRunEnd) continue;
+    if (m.timestamp >= window.dayStart && m.timestamp < window.dayEnd) count += 1;
+  }
+  return count;
+}
+
+/** 今日消息数（user + assistant） */
+export function countTodayMessages(messages: readonly MessageFact[], window: { dayStart: number; dayEnd: number }): number {
+  let count = 0;
+  for (const m of messages) {
+    if (m.role !== "user" && m.role !== "assistant") continue;
+    if (m.timestamp >= window.dayStart && m.timestamp < window.dayEnd) count += 1;
+  }
+  return count;
+}
+
+/**
+ * 会话深度洞察（dashboard/通知聚合用）：摘要 + 推导字段 + 构建期算好的计数。
+ * 不再携带全量 messages（曾是 cachedInsights 常驻全语料的 OOM 放大源）：
+ * dashboard 直接消费 counts 计数字段。
+ */
+export interface InsightCounts {
+  /** 计数窗口锚点：数据时间轴上的「现在」= max(全部消息时间戳, updatedAt) */
+  anchorMs: number;
+  /** 今日窗口 [dayStart, anchorMs+1] 的起点（本地 00:00）——跨日守卫键 */
+  dayStart: number;
+  /** 本周窗口 [weekStart, anchorMs+1] 的起点（本地周一 00:00）——跨周守卫键 */
+  weekStart: number;
+  /** 今日 settled run 数（口径同 countSettledRuns） */
+  settledToday: number;
+  /** 本周 settled run 数 */
+  settledThisWeek: number;
+  /** 今日 user/assistant 消息数（口径同 countTodayMessages） */
+  todayMessages: number;
+  /** 本周 user/assistant 消息数 */
+  weekMessages: number;
+  /** 活跃日集合（user/assistant 消息 ts>0 的本地 00:00 毫秒，升序去重）——streak 输入 */
+  activeDays: number[];
+}
+
 export interface SessionInsight {
   summary: SessionListItem;
-  messages: MessageDto[];
+  /** 构建期算好的计数（dashboard 直接用，不再逐条扫描 messages） */
+  counts: InsightCounts;
   /** active branch 最后一条 user/assistant 消息的 role（无消息为 null） */
   lastMessageRole: MessageRole | null;
   /** 最近一次工具调用摘要（最后一条带 toolCalls 的 assistant 消息里最后一个） */
@@ -529,8 +609,52 @@ export interface SessionInsight {
   lastRunStartedAt: string | null;
 }
 
-/** 摘要 + active branch 消息 → 洞察（纯函数） */
-export function buildInsight(summary: SessionListItem, messages: MessageDto[]): SessionInsight {
+/** 计数锚点：数据时间轴上的「现在」（消息时间戳与 updatedAt 取新；全无则 0） */
+function countAnchorMs(messages: readonly MessageFact[], updatedAtIso: string): number {
+  const parsedUpdatedAt = Date.parse(updatedAtIso);
+  let anchor = Number.isNaN(parsedUpdatedAt) ? 0 : parsedUpdatedAt;
+  for (const m of messages) {
+    if (m.timestamp > anchor) anchor = m.timestamp;
+  }
+  return anchor;
+}
+
+/**
+ * 消息事实 → 计数聚合（纯函数）。
+ * 窗口锚定数据时间轴（anchorMs）；dashboard 按「今天/本周」同窗守卫后累加——
+ * 与旧实现（derive 时逐条按 now 过滤 messages）口径逐字等价：
+ * 消息时间戳恒 ≤ anchorMs，跨日/跨周时旧实现同样计 0。
+ */
+export function deriveInsightCounts(
+  messages: readonly MessageFact[],
+  updatedAtIso: string,
+  running: boolean,
+): InsightCounts {
+  const anchorMs = countAnchorMs(messages, updatedAtIso);
+  const dayStart = startOfDay(anchorMs);
+  const weekStart = startOfWeek(anchorMs);
+  return {
+    anchorMs,
+    dayStart,
+    weekStart,
+    settledToday: countSettledRuns(messages, { dayStart, dayEnd: anchorMs + 1, running }),
+    settledThisWeek: countSettledRuns(messages, { dayStart: weekStart, dayEnd: anchorMs + 1, running }),
+    todayMessages: countTodayMessages(messages, { dayStart, dayEnd: anchorMs + 1 }),
+    weekMessages: countTodayMessages(messages, { dayStart: weekStart, dayEnd: anchorMs + 1 }),
+    activeDays: [
+      ...new Set(
+        messages
+          .filter((m) => (m.role === "user" || m.role === "assistant") && m.timestamp > 0)
+          .map((m) => startOfDay(m.timestamp)),
+      ),
+    ].sort((a, b) => a - b),
+  };
+}
+
+/** 洞察推导字段（纯函数）：最后消息角色 / 最近工具摘要 / 当前 run 起点 */
+export function deriveInsightFields(
+  messages: MessageDto[],
+): Pick<SessionInsight, "lastMessageRole" | "lastToolSummary" | "lastRunStartedAt"> {
   let lastMessageRole: MessageRole | null = null;
   let lastToolSummary: string | null = null;
   let lastRunStartedAt: string | null = null;
@@ -547,13 +671,142 @@ export function buildInsight(summary: SessionListItem, messages: MessageDto[]): 
     }
     if (lastMessageRole !== null && lastToolSummary !== null && lastRunStartedAt !== null) break;
   }
-  return { summary, messages, lastMessageRole, lastToolSummary, lastRunStartedAt };
+  return { lastMessageRole, lastToolSummary, lastRunStartedAt };
 }
 
-/** 扫描全部会话的深度洞察（每个文件一次读写：摘要 + 消息 + 推导字段） */
+/** 摘要 + active branch 消息 → 洞察（纯函数） */
+export function buildInsight(summary: SessionListItem, messages: MessageDto[]): SessionInsight {
+  return {
+    summary,
+    counts: deriveInsightCounts(messages, summary.updatedAt, summary.status === "running"),
+    ...deriveInsightFields(messages),
+  };
+}
+
+/**
+ * per-file 派生快照（AC2）：mtime+size 未变的文件不读盘不 parse（参照 usage.ts 的
+ * FileUsageEntry 增量模式）。快照只存计数事实与全文文本索引，不驻留全量 messages。
+ */
+export interface SessionFileSnapshot {
+  mtimeMs: number;
+  size: number;
+  /** 无 session header 的损坏文件为 null（负面结果同样缓存，避免反复重读） */
+  summary: Omit<SessionListItem, "status"> | null;
+  /** 计数事实（role+timestamp）：按当前 running 现算计数，无全文驻留 */
+  facts: MessageFact[];
+  /** 洞察推导字段（不可变，跨扫描复用） */
+  insightFields: Pick<SessionInsight, "lastMessageRole" | "lastToolSummary" | "lastRunStartedAt">;
+  /** active branch 全文文本索引（search.ts 复用同一份，禁止截断） */
+  textIndex: SessionTextIndexEntry[];
+}
+
+/** 文本索引条目（active branch 消息全文；search 索引与快照共用同一份，避免双份驻留） */
+export interface SessionTextIndexEntry {
+  sessionId: string;
+  sessionName: string | null;
+  messageId: string;
+  role: MessageRole;
+  text: string;
+  /** 毫秒（pi 原始值；缺失时用文件 mtime 兜底） */
+  timestamp: number;
+}
+
+/** active branch 消息 → 文本索引条目（全文不截断：搜索是核心功能，禁止缩量） */
+export function textIndexFromMessages(
+  messages: MessageDto[],
+  ctx: { sessionId: string; sessionName: string | null; mtimeMs: number },
+): SessionTextIndexEntry[] {
+  return messages
+    .filter((m) => m.text.trim() !== "")
+    .map((m) => ({
+      sessionId: ctx.sessionId,
+      sessionName: ctx.sessionName,
+      messageId: m.id,
+      role: m.role,
+      text: m.text,
+      // 时间戳缺失时用文件 mtime 兜底，保证排序稳定
+      timestamp: m.timestamp || ctx.mtimeMs,
+    }));
+}
+
+const snapshotCache = new Map<string, SessionFileSnapshot>();
+const cacheStats = { fileReads: 0, fileParses: 0, cacheHits: 0 };
+
+export interface SessionCacheStats {
+  /** 读盘（读文件内容）次数 */
+  fileReads: number;
+  /** JSON parse 次数 */
+  fileParses: number;
+  /** per-file 快照命中次数 */
+  cacheHits: number;
+}
+
+/** 缓存 IO 计数（基准测试固化用：如「第二次扫描零读盘」） */
+export function sessionCacheStats(): SessionCacheStats {
+  return { ...cacheStats };
+}
+
+/** 清空全部会话扫描缓存与计数（测试基准/自检用） */
+export function resetSessionCaches(): void {
+  snapshotCache.clear();
+  lineageCache.clear();
+  lineageFileCaches.clear();
+  cacheStats.fileReads = 0;
+  cacheStats.fileParses = 0;
+  cacheStats.cacheHits = 0;
+}
+
+/** 已删除文件的快照清理（防缓存无限增长；调用方给出本次扫描见到的文件集） */
+export function pruneSessionFileCache(seen: ReadonlySet<string>): void {
+  for (const file of [...snapshotCache.keys()]) {
+    if (!seen.has(file)) snapshotCache.delete(file);
+  }
+}
+
+function deriveSnapshot(
+  file: string,
+  parsed: ParsedSession,
+  fileStat: { mtimeMs: number; size: number },
+): SessionFileSnapshot {
+  const summary = buildSessionSummary(file, parsed, fileStat.mtimeMs);
+  const base = { mtimeMs: fileStat.mtimeMs, size: fileStat.size };
+  if (summary === null) {
+    return { ...base, summary: null, facts: [], insightFields: deriveInsightFields([]), textIndex: [] };
+  }
+  const messages = buildMessages(selectActiveBranch(parsed.entries));
+  return {
+    ...base,
+    summary,
+    facts: messages.map((m) => ({ role: m.role, timestamp: m.timestamp })),
+    insightFields: deriveInsightFields(messages),
+    textIndex: textIndexFromMessages(messages, {
+      sessionId: summary.id,
+      sessionName: summary.name,
+      mtimeMs: fileStat.mtimeMs,
+    }),
+  };
+}
+
+/** per-file 派生快照：mtime+size 未变直接复用（零读盘零 parse），变更才重读重派生 */
+export async function loadSessionSnapshot(file: string): Promise<SessionFileSnapshot> {
+  const fileStat = await stat(file);
+  const cached = snapshotCache.get(file);
+  if (cached && cached.mtimeMs === fileStat.mtimeMs && cached.size === fileStat.size) {
+    cacheStats.cacheHits += 1;
+    return cached;
+  }
+  cacheStats.fileReads += 1;
+  const content = await readSessionFile(file);
+  cacheStats.fileParses += 1;
+  const snap = deriveSnapshot(file, parseSessionJsonl(content), fileStat);
+  snapshotCache.set(file, snap);
+  return snap;
+}
+
+/** 扫描全部会话的深度洞察（快照复用：未变文件零读盘；计数构建期算好，不携带全量 messages） */
 export async function scanSessionInsights(sessionDir: string, options: ScanOptions = {}): Promise<SessionInsight[]> {
   const files = await findSessionFiles(sessionDir);
-  // 并发解析（分批 8）：60+ 会话文件串行读盘是 dashboard 秒级卡顿的根源
+  // 并发解析（分批 4）：60+ 会话文件串行读盘是 dashboard 秒级卡顿的根源
   const CONCURRENCY = 4;
   const items: SessionInsight[] = [];
   const yieldLoop = (): Promise<void> => new Promise((r) => setImmediate(r));
@@ -563,14 +816,17 @@ export async function scanSessionInsights(sessionDir: string, options: ScanOptio
     const parsedBatch = await Promise.all(
       batch.map(async (file) => {
         try {
-          const fileStat = await stat(file);
-          const parsed = parseSessionJsonl(await readSessionFile(file));
-          const summaryBase = buildSessionSummary(file, parsed, fileStat.mtimeMs);
-          if (!summaryBase) return null;
-          const status = options.statusOf ? options.statusOf(summaryBase.id, Date.parse(summaryBase.updatedAt)) : "idle";
-          const summary: SessionListItem = { ...summaryBase, status };
-          const messages = buildMessages(selectActiveBranch(parsed.entries));
-          return buildInsight(summary, messages);
+          const snap = await loadSessionSnapshot(file);
+          if (!snap.summary) return null;
+          const status = options.statusOf ? options.statusOf(snap.summary.id, Date.parse(snap.summary.updatedAt)) : "idle";
+          const summary: SessionListItem = { ...snap.summary, status };
+          const insight: SessionInsight = {
+            summary,
+            // running 影响末条 run 边界口径：按当前状态现算（事实缓存里只有 role+timestamp）
+            counts: deriveInsightCounts(snap.facts, summary.updatedAt, status === "running"),
+            ...snap.insightFields,
+          };
+          return insight;
         } catch {
           // 单个文件损坏不影响其它会话
           return null;
@@ -581,6 +837,7 @@ export async function scanSessionInsights(sessionDir: string, options: ScanOptio
       if (item) items.push(item);
     }
   }
+  pruneSessionFileCache(new Set(files));
   items.sort((a, b) => {
     const d = Date.parse(b.summary.updatedAt) - Date.parse(a.summary.updatedAt);
     return d !== 0 ? d : a.summary.id < b.summary.id ? -1 : a.summary.id > b.summary.id ? 1 : 0;
@@ -593,6 +850,10 @@ export async function scanSessionInsights(sessionDir: string, options: ScanOptio
  * 轻量子代血缘扫描（子代理发现专用）：
  * 只读每个会话文件头部若干 KB（header 首行含 parentSession；前几行含 session_info.name），
  * 不解析全量消息——60+ 会话毫秒级，绕过 listSessions 的 SWR 缓存相位问题。
+ *
+ * 进程级缓存（AC3，跨连接共享）：结果 TTL + 文件名校验 + per-file mtime+size 增量——
+ * ws syncChildren 每 10s/连接调用时共享同一次扫描，未变文件零 open/read。
+ * 文件名单（readdir）每次校验：新写入的静态子会话立即可见（体验契约，不等 TTL）。
  */
 export interface SubAgentLineage {
   id: string;
@@ -601,54 +862,111 @@ export interface SubAgentLineage {
   sessionFile: string;
 }
 
-export async function scanSubAgentLineage(sessionDir: string): Promise<SubAgentLineage[]> {
-  const files = await findSessionFiles(sessionDir);
-  const out: SubAgentLineage[] = [];
+/** 血缘结果 TTL：名单未变窗口内重复调用直接复用（5s；TTL 外按 per-file 增量重扫） */
+export const LINEAGE_CACHE_TTL_MS = 5_000;
+
+interface LineageFileEntry {
+  mtimeMs: number;
+  size: number;
+  /** 非子代理文件为 null（负面结果同样缓存） */
+  value: SubAgentLineage | null;
+}
+
+interface LineageCacheEntry {
+  at: number;
+  /** 本次扫描的文件名签名（新增/删除立即失效） */
+  namesSig: string;
+  value: SubAgentLineage[];
+}
+
+const lineageCache = new Map<string, LineageCacheEntry>();
+const lineageFileCaches = new Map<string, Map<string, LineageFileEntry>>();
+
+/** 单文件头读取 → 血缘（语义与旧实现逐字一致：8KB 头 + 命名/父血缘双口径） */
+async function readSubAgentLineage(file: string): Promise<SubAgentLineage | null> {
   const HEAD_BYTES = 8192;
-  await Promise.all(
+  const { open } = await import("node:fs/promises");
+  const fh = await open(file, "r");
+  try {
+    const buf = Buffer.alloc(HEAD_BYTES);
+    const { bytesRead } = await fh.read(buf, 0, HEAD_BYTES, 0);
+    const head = buf.subarray(0, bytesRead).toString("utf8");
+    const lines = head.split("\n").filter((l) => l.trim() !== "");
+    let id: string | null = null;
+    let parentSessionId: string | null = null;
+    let name: string | null = null;
+    for (const line of lines) {
+      let row: unknown;
+      try {
+        row = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (!isRecord(row)) continue;
+      if (row.type === "session" && typeof row.id === "string") {
+        id = row.id;
+      } else if (row.type === "session_info" && typeof row.name === "string" && row.name.trim() !== "") {
+        name = row.name.trim();
+      }
+      // header 行内 parentSession（路径或裸 id，统一归一化为父会话 id）
+      if (parentSessionId === null) {
+        parentSessionId = parentSessionIdFromPath(row.parentSession);
+      }
+    }
+    if (id === null) return null;
+    // 口径与 isSubAgentSession 对齐：命名特征优先（fork 分支带 parentSession 但不叫子代理）；
+    // 无名时以父血缘兜底（pi-subagents 派生即使缺 session_info 也应入面板）
+    const isSub = name !== null ? SUB_AGENT_NAME_RE.test(name) : parentSessionId !== null;
+    if (!isSub) return null;
+    return { id, parentSessionId, name, sessionFile: file };
+  } finally {
+    await fh.close();
+  }
+}
+
+export async function scanSubAgentLineage(
+  sessionDir: string,
+  options: { ttlMs?: number; now?: () => number } = {},
+): Promise<SubAgentLineage[]> {
+  const ttlMs = options.ttlMs ?? LINEAGE_CACHE_TTL_MS;
+  const now = options.now ? options.now() : Date.now();
+  const files = await findSessionFiles(sessionDir);
+  const namesSig = files.join("\n");
+  // 名单未变 + TTL 内：直接复用（跨连接共享同一次扫描结果）
+  const cached = lineageCache.get(sessionDir);
+  if (cached && cached.namesSig === namesSig && now - cached.at < ttlMs) {
+    cacheStats.cacheHits += 1;
+    return cached.value;
+  }
+  let fileCache = lineageFileCaches.get(sessionDir);
+  if (!fileCache) {
+    fileCache = new Map();
+    lineageFileCaches.set(sessionDir, fileCache);
+  }
+  const seen = new Set(files);
+  const out = await Promise.all(
     files.map(async (file) => {
       try {
-        const { open } = await import("node:fs/promises");
-        const fh = await open(file, "r");
-        try {
-          const buf = Buffer.alloc(HEAD_BYTES);
-          const { bytesRead } = await fh.read(buf, 0, HEAD_BYTES, 0);
-          const head = buf.subarray(0, bytesRead).toString("utf8");
-          const lines = head.split("\n").filter((l) => l.trim() !== "");
-          let id: string | null = null;
-          let parentSessionId: string | null = null;
-          let name: string | null = null;
-          for (const line of lines) {
-            let row: unknown;
-            try {
-              row = JSON.parse(line);
-            } catch {
-              continue;
-            }
-            if (!isRecord(row)) continue;
-            if (row.type === "session" && typeof row.id === "string") {
-              id = row.id;
-            } else if (row.type === "session_info" && typeof row.name === "string" && row.name.trim() !== "") {
-              name = row.name.trim();
-            }
-            // header 行内 parentSession（路径或裸 id，统一归一化为父会话 id）
-            if (parentSessionId === null) {
-              parentSessionId = parentSessionIdFromPath(row.parentSession);
-            }
-          }
-          if (id === null) return;
-          // 口径与 isSubAgentSession 对齐：命名特征优先（fork 分支带 parentSession 但不叫子代理）；
-          // 无名时以父血缘兜底（pi-subagents 派生即使缺 session_info 也应入面板）
-          const isSub = name !== null ? SUB_AGENT_NAME_RE.test(name) : parentSessionId !== null;
-          if (!isSub) return;
-          out.push({ id, parentSessionId, name, sessionFile: file });
-        } finally {
-          await fh.close();
+        const fileStat = await stat(file);
+        const hit = fileCache.get(file);
+        if (hit && hit.mtimeMs === fileStat.mtimeMs && hit.size === fileStat.size) {
+          cacheStats.cacheHits += 1;
+          return hit.value; // 未变文件零 open/read
         }
+        cacheStats.fileReads += 1;
+        const value = await readSubAgentLineage(file);
+        fileCache.set(file, { mtimeMs: fileStat.mtimeMs, size: fileStat.size, value });
+        return value;
       } catch {
         // 单文件损坏不影响整体
+        return null;
       }
     }),
   );
-  return out;
+  for (const file of [...fileCache.keys()]) {
+    if (!seen.has(file)) fileCache.delete(file); // 文件删除：清账
+  }
+  const value = out.filter((v): v is SubAgentLineage => v !== null);
+  lineageCache.set(sessionDir, { at: now, namesSig, value });
+  return value;
 }
