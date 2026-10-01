@@ -12,10 +12,14 @@
 }
 
 .attach-trigger {
+  /* 触控热区 ≥44px：按钮盒子本身 44×44（图标小居中）——与 header 其它按钮一致。
+     根治说明：伪元素扩热区三轮翻车（inset 横向基数不足 / z-index:-1 不可命中），
+     实心按钮盒是最稳语义：命中=按钮自身，无重叠争议 */
+  min-width: 44px;
+  min-height: 44px; /* 触控标准（覆盖下方紧凑 min-height） */
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  min-height: 34px;
   padding: 0 8px;
   font-family: var(--nb-font-head);
   font-weight: 900;
@@ -30,20 +34,6 @@
   transition: transform 0.12s ease, box-shadow 0.12s ease;
 }
 
-/* 触控热区 ≥44px（视觉紧凑不缩水，命中区用伪元素扩展）：
-   显式 44×44 居中盒（纵横双达标——REV-I1c 实测 inset 法横向受按钮宽度基数限制仅 33.5px）；
-   z-index:-1 使热区位于按钮实心层之下，与相邻按钮重叠时让位（防误触） */
-.attach-trigger::after {
-  content: "";
-  position: absolute;
-  width: 44px;
-  height: 44px;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  inset: auto;
-  z-index: -1;
-}
 
 .attach-trigger:active {
   transform: translate(1px, 1px);
