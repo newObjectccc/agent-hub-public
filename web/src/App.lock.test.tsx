@@ -56,6 +56,7 @@ const lockState = vi.hoisted(() => ({
     biometricUnlock: () => Promise.resolve(),
     registerBiometric: () => Promise.resolve(true),
     lockNow: () => undefined,
+    retry: () => Promise.resolve(),
     clearError: () => undefined,
   },
 }));
@@ -138,5 +139,32 @@ describe("App 应用锁门控", () => {
     expect(el.querySelector(".lock-screen")).toBeNull();
     expect(el.querySelector(".settings-panel-page")).not.toBeNull();
     expect(el.textContent).toContain("应用锁");
+  });
+
+  it("解锁失败（error 停在 locked 相位）：仍是解锁屏，绝不回落「设置应用锁」首屏", async () => {
+    lockState.current.phase = "locked";
+    lockState.current.error = "PIN 不正确";
+    const el = await renderApp("/");
+    expect(el.querySelector(".lock-screen")).not.toBeNull();
+    expect(el.textContent).toContain("🔒 应用锁");
+    expect(el.textContent).not.toContain("设置应用锁");
+    expect(el.querySelector(".lock-error")!.textContent).toContain("PIN 不正确");
+    lockState.current.error = null;
+  });
+
+  it("错误条「重试」可用（调用锁状态机 retry，不裸露死胡同）", async () => {
+    const retry = vi.fn(() => Promise.resolve());
+    lockState.current.phase = "locked";
+    lockState.current.error = "无法连接服务端，暂时无法解锁";
+    lockState.current.retry = retry;
+    const el = await renderApp("/");
+    const btn = el.querySelector<HTMLButtonElement>(".lock-retry");
+    expect(btn).not.toBeNull();
+    act(() => {
+      btn!.click();
+    });
+    expect(retry).toHaveBeenCalledTimes(1);
+    lockState.current.error = null;
+    lockState.current.retry = () => Promise.resolve();
   });
 });

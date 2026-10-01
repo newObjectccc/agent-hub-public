@@ -4,7 +4,11 @@
  * 设计：PIN/口令只交给 server 做 SHA-256 加盐哈希；解锁后 server 发 7 天令牌，
  * 本地只存令牌（localStorage），**不存 PIN 明文**。令牌只走 `X-App-Lock-Token`
  * 请求头，绝不进 URL/日志。token 失效/过期 → 显示解锁屏。
+ *
+ * 错误路径（UX 审查 AC3）：响应体严格校验（坏体 = 错误，绝不落入 setup 相位）；
+ * 错误文案友好化（原始 JS 异常绝不直接抛给用户）。
  */
+import type { AppLockStatus } from "../api/appLock";
 
 export const LOCK_TOKEN_KEY = "agent-hub.appLockToken.v1";
 
@@ -69,4 +73,43 @@ export function clearLockToken(storage: StorageLike | null): void {
 /** 令牌是否仍在有效期内（含 30s 时钟偏差余量） */
 export function isTokenFresh(token: LockToken | null, now: number = Date.now()): boolean {
   return token !== null && token.expiresAt - 30_000 > now;
+}
+
+/**
+ * 错误 → 用户可读文案（UX 审查 AC3 错误裸露修复）：
+ * 只信任服务端业务错误（ApiError）的中文提示；其余 JS 异常（TypeError、
+ * JSON 解析错等）一律映射为 fallback，绝不把原始异常渲染给用户。
+ */
+export function friendlyLockError(e: unknown, fallback: string): string {
+  // 只信服务端业务错误（ApiError，name 鸭子判定：跨模块实例也可靠）；TypeError 等一律 fallback
+  if (e instanceof Error && e.name === "ApiError" && e.message.trim() !== "") return e.message;
+  return fallback;
+}
+
+/**
+ * 严格校验 /status 响应体（UX 审查 AC3）：坏体（null/缺字段/代理返回 HTML 解析失败等）
+ * 返回 null → 调用方按错误处理（停在 locked），绝不因 undefined.configured 误落 setup。
+ */
+export function parseAppLockStatus(raw: unknown): AppLockStatus | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.configured !== "boolean" || typeof r.unlocked !== "boolean") return null;
+  return {
+    configured: r.configured,
+    webauthn: r.webauthn === true,
+    unlocked: r.unlocked,
+    expiresAt: typeof r.expiresAt === "number" && Number.isFinite(r.expiresAt) ? r.expiresAt : null,
+  };
+}
+
+/**
+ * 严格校验发令牌响应体：无令牌/坏令牌视为失败（防止 `{ok:false}` 等坏体被当成解锁成功）。
+ * 合法返回 LockToken，否则 null。
+ */
+export function parseLockTokenResult(raw: unknown): LockToken | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.token !== "string" || r.token === "") return null;
+  if (typeof r.expiresAt !== "number" || !Number.isFinite(r.expiresAt)) return null;
+  return { token: r.token, expiresAt: r.expiresAt };
 }

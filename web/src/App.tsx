@@ -60,6 +60,7 @@ export function App() {
           onUnlock={(secret) => void lock.unlock(secret)}
           onSetup={(secret) => void lock.setup(secret)}
           onBiometric={() => void lock.biometricUnlock()}
+          onRetry={() => void lock.retry()}
         />
         <ToastHost />
       </>

@@ -109,11 +109,32 @@
 }
 
 .lock-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   padding: 8px 10px;
   border: 2px solid var(--color-destructive, #d33);
   background: var(--color-destructive, #d33);
   color: var(--color-destructive-foreground, #fff);
   font-size: 13px;
+}
+
+.lock-error-text {
+  flex: 1;
+}
+
+/* 错误条「重试」：同色系描边小按钮（≥40px 触控热区，不引入新色值） */
+.lock-retry {
+  appearance: none;
+  border: 2px solid currentColor;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: 700;
+  min-height: 40px;
+  min-width: 56px;
+  padding: 0 10px;
+  cursor: pointer;
 }
 
 .lock-submit {

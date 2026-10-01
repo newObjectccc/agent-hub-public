@@ -1,8 +1,10 @@
 /**
  * 野兽派底部弹层（modal sheet）：厚描边 + 硬阴影 + 全屏遮罩。
  * 移动优先：默认占满底部、可滚动；Esc / 遮罩点击关闭。
+ * 焦点管理（UX 审查 AC6）：Tab 弹层内循环、Esc 关闭、关闭归还焦点到打开前元素。
  */
-import { useEffect, type ReactNode } from "react";
+import { useRef, type ReactNode } from "react";
+import { useFocusTrap } from "../hooks/useFocusTrap";
 
 export interface SheetProps {
   title: string;
@@ -15,13 +17,9 @@ export interface SheetProps {
 }
 
 export function Sheet({ title, subtitle, onClose, children, footer, action }: SheetProps) {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent): void => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  const sheetRef = useRef<HTMLDivElement | null>(null);
+  // Tab 循环 + Esc 关闭 + 关闭归还焦点（Esc 统一走此通道，不再另挂 window 监听）
+  useFocusTrap({ active: true, onClose, rootRef: sheetRef });
 
   return (
     <div className="sheet-overlay" role="presentation" onClick={onClose}>
@@ -30,6 +28,7 @@ export function Sheet({ title, subtitle, onClose, children, footer, action }: Sh
         role="dialog"
         aria-modal="true"
         aria-label={title}
+        ref={sheetRef}
         onClick={(e) => e.stopPropagation()}
       >
         <header className="sheet-head">

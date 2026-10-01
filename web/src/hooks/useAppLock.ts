@@ -7,11 +7,13 @@
  */
 import { useSyncExternalStore } from "react";
 import { appLockApi } from "../api/appLock";
-import { ApiError } from "../api/client";
 import {
   clearLockToken,
+  friendlyLockError,
   isTokenFresh,
   loadLockToken,
+  parseAppLockStatus,
+  parseLockTokenResult,
   safeSecretCheck,
   saveLockToken,
   type StorageLike,
@@ -54,9 +56,12 @@ function storage(): StorageLike | null {
 }
 
 function errorMessage(e: unknown, fallback: string): string {
-  if (e instanceof ApiError) return e.message || fallback;
-  return e instanceof Error ? e.message : fallback;
+  // UX 审查 AC3：原始 JS 异常（TypeError 等）绝不裸露，统一映射友好文案
+  return friendlyLockError(e, fallback);
 }
+
+/** 发令牌响应校验失败的统一错误（内部信号，最终展示为友好 fallback 文案） */
+const BAD_TOKEN_RESPONSE = new Error("bad lock token response");
 
 class AppLockController {
   private state: AppLockState = initialState;
@@ -87,7 +92,8 @@ class AppLockController {
       this.set({ phase: "unlocked", busy: false, error: null, configured: true });
       // 后台复核（令牌被 server 轮换/关闭锁等情况）；失败不打扰（离线时以本地为准）
       try {
-        const status = await appLockApi.status(token.token);
+        const status = parseAppLockStatus(await appLockApi.status(token.token));
+        if (!status) throw BAD_TOKEN_RESPONSE;
         if (!status.unlocked) {
           clearLockToken(storage());
           this.set({ phase: status.configured ? "locked" : "setup", configured: status.configured, hasWebAuthnCredential: status.webauthn });
@@ -95,15 +101,26 @@ class AppLockController {
           this.set({ hasWebAuthnCredential: status.webauthn });
         }
       } catch {
-        // 离线/服务不可达：保持本地解锁（页面数据本也拉不到）
+        // 离线/服务不可达/坏响应体：保持本地解锁（页面数据本也拉不到）
       }
       void this.detectBiometric();
       return;
     }
     if (token && !fresh) clearLockToken(storage());
+    await this.refreshStatus("无法连接服务端，暂时无法解锁");
+    void this.detectBiometric();
+  }
+
+  /**
+   * 无本地令牌时向 server 取锁状态（启动/重试共用）。
+   * 错误路径严格停在 locked 相位（UX 审查 AC3）：坏响应体/异常都不落入 setup；
+   * 只有 server 明确回答 configured=false 才进 setup。
+   */
+  private async refreshStatus(fallback: string): Promise<void> {
     this.set({ phase: "loading", busy: true, error: null });
     try {
-      const status = await appLockApi.status(null);
+      const status = parseAppLockStatus(await appLockApi.status(null));
+      if (!status) throw BAD_TOKEN_RESPONSE;
       this.set({
         phase: status.configured ? "locked" : "setup",
         configured: status.configured,
@@ -115,10 +132,9 @@ class AppLockController {
         phase: "locked",
         busy: false,
         configured: true,
-        error: errorMessage(e, "无法连接服务端，暂时无法解锁"),
+        error: errorMessage(e, fallback),
       });
     }
-    void this.detectBiometric();
   }
 
   private async detectBiometric(): Promise<void> {
@@ -136,10 +152,12 @@ class AppLockController {
     }
     this.set({ busy: true, error: null });
     try {
-      const issued = await appLockApi.setup(secret);
-      saveLockToken(storage(), { token: issued.token, expiresAt: issued.expiresAt });
+      const issued = parseLockTokenResult(await appLockApi.setup(secret));
+      if (!issued) throw BAD_TOKEN_RESPONSE;
+      saveLockToken(storage(), issued);
       this.set({ phase: "unlocked", busy: false, configured: true });
     } catch (e) {
+      // 错误路径停在 setup 相位（设置未完成，留在设置屏重试），不误跳 unlocked
       this.set({ busy: false, error: errorMessage(e, "设置失败，请重试") });
     }
   };
@@ -149,11 +167,13 @@ class AppLockController {
     if (this.state.busy) return;
     this.set({ busy: true, error: null });
     try {
-      const issued = await appLockApi.unlock(secret);
-      saveLockToken(storage(), { token: issued.token, expiresAt: issued.expiresAt });
+      const issued = parseLockTokenResult(await appLockApi.unlock(secret));
+      if (!issued) throw BAD_TOKEN_RESPONSE;
+      saveLockToken(storage(), issued);
       this.set({ phase: "unlocked", busy: false });
     } catch (e) {
-      this.set({ busy: false, error: errorMessage(e, "解锁失败，请重试") });
+      // 错误路径严格停在 locked 相位（UX 审查 AC3）：PIN 错/坏响应体都留在解锁屏重试
+      this.set({ busy: false, phase: "locked", error: errorMessage(e, "解锁失败，请重试") });
     }
   };
 
@@ -166,8 +186,9 @@ class AppLockController {
     }
     this.set({ busy: true, error: null });
     try {
-      const issued = await appLockApi.change(oldSecret, newSecret);
-      saveLockToken(storage(), { token: issued.token, expiresAt: issued.expiresAt });
+      const issued = parseLockTokenResult(await appLockApi.change(oldSecret, newSecret));
+      if (!issued) throw BAD_TOKEN_RESPONSE;
+      saveLockToken(storage(), issued);
       this.set({ busy: false, configured: true });
       return true;
     } catch (e) {
@@ -197,11 +218,13 @@ class AppLockController {
     try {
       const start = await appLockApi.webauthnLoginStart();
       const assertion = await getBiometricAssertion(normalizeRequestOptions(start.options.publicKey));
-      const issued = await appLockApi.webauthnLoginFinish({ challengeId: start.challengeId, credential: assertion });
-      saveLockToken(storage(), { token: issued.token, expiresAt: issued.expiresAt });
+      const issued = parseLockTokenResult(await appLockApi.webauthnLoginFinish({ challengeId: start.challengeId, credential: assertion }));
+      if (!issued) throw BAD_TOKEN_RESPONSE;
+      saveLockToken(storage(), issued);
       this.set({ phase: "unlocked", busy: false });
     } catch (e) {
-      this.set({ busy: false, error: errorMessage(e, "生物识别失败，请改用 PIN") });
+      // 错误路径严格停在 locked 相位：回落 PIN 解锁屏重试
+      this.set({ busy: false, phase: "locked", error: errorMessage(e, "生物识别失败，请改用 PIN") });
     }
   };
 
@@ -231,6 +254,12 @@ class AppLockController {
     this.set({ phase: this.state.configured ? "locked" : "setup", error: null });
   };
 
+  /** 状态获取失败后的重试（解锁屏错误条「重试」按钮）：重新拉 server 锁状态 */
+  readonly retry = async (): Promise<void> => {
+    if (this.state.busy) return;
+    await this.refreshStatus("无法连接服务端，暂时无法解锁");
+  };
+
   /** 清除错误提示 */
   readonly clearError = (): void => {
     if (this.state.error !== null) this.set({ error: null });
@@ -247,6 +276,7 @@ export function useAppLock(): AppLockState & {
   biometricUnlock: () => Promise<void>;
   registerBiometric: () => Promise<boolean>;
   lockNow: () => void;
+  retry: () => Promise<void>;
   clearError: () => void;
 } {
   const state = useSyncExternalStore(appLockController.subscribe, appLockController.getSnapshot, appLockController.getSnapshot);
@@ -259,6 +289,7 @@ export function useAppLock(): AppLockState & {
     biometricUnlock: appLockController.biometricUnlock,
     registerBiometric: appLockController.registerBiometric,
     lockNow: appLockController.lockNow,
+    retry: appLockController.retry,
     clearError: appLockController.clearError,
   };
 }

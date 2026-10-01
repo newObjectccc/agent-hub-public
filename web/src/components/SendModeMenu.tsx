@@ -22,8 +22,8 @@ export interface SendModeOption {
 export const SEND_MODE_OPTIONS: readonly SendModeOption[] = [
   { key: "auto", label: "⚡ 自动", short: "⚡ 自动", hint: "默认：会话正忙时自动排队（followUp）" },
   { key: "prompt", label: "💬 新消息", short: "💬 新消息", hint: "直接以 mode=prompt 发送（正忙时会 409）" },
-  { key: "steer", label: "✋ 插话(steer)", short: "✋ 插话", hint: "插入当前运行之后，让 agent 立即转向" },
-  { key: "followUp", label: "⏭ 排队(followUp)", short: "⏭ 排队", hint: "排队到当前这轮结束后发送" },
+  { key: "steer", label: "✋ 插话(steer)", short: "✋ 插话", hint: "插入当前运行之后，让 agent 立即转向（仅本轮生效）" },
+  { key: "followUp", label: "⏭ 排队(followUp)", short: "⏭ 排队", hint: "排队到当前这轮结束后发送（仅本轮生效）" },
 ];
 
 export function SendModeMenu({ value, onChange }: { value: SendMode; onChange: (mode: SendMode) => void }) {

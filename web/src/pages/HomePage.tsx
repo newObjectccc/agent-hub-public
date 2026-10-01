@@ -31,6 +31,8 @@ export function HomePage() {
   const [refreshing, setRefreshing] = useState(false);
   const [progressVisible, setProgressVisible] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  /** 看板拉取失败的错误条（UX 审查 AC6：不再静默失败，参照 SessionsPage error-banner） */
+  const [loadError, setLoadError] = useState<string | null>(null);
   const progressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const refresh = useCallback(async () => {
@@ -38,7 +40,11 @@ export function HomePage() {
     // 慢刷新才露出进度条：连续快速刷新视觉上零变化（不闪不跳）
     if (progressTimer.current) clearTimeout(progressTimer.current);
     progressTimer.current = setTimeout(() => setProgressVisible(true), PROGRESS_REVEAL_MS);
-    const statsRes = await api.getDashboardStats().catch(() => null);
+    const statsRes = await api.getDashboardStats().catch((e: unknown) => {
+      // 友好文案（原始 JS 异常不裸露）：业务错误（ApiError）用服务端中文提示
+      setLoadError(e instanceof Error && e.name === "ApiError" && e.message.trim() !== "" ? e.message : "工作台数据加载失败，请重试");
+      return null;
+    });
     // Token 用量独立拉取：失败安静降级（占位），不拖垮概览其它格
     const usageRes = await api.getUsage().catch(() => null);
     if (progressTimer.current) {
@@ -46,7 +52,10 @@ export function HomePage() {
       progressTimer.current = null;
     }
     setProgressVisible(false);
-    if (statsRes) setStats(statsRes);
+    if (statsRes) {
+      setStats(statsRes);
+      setLoadError(null);
+    }
     if (usageRes) setUsage(usageRes.windows);
     setRefreshing(false);
     setLoaded(true);
@@ -74,6 +83,15 @@ export function HomePage() {
       {progressVisible && loaded && <div className="refresh-bar" role="progressbar" aria-label="刷新中" />}
 
       <PullToRefresh onRefresh={refresh} refreshing={refreshing}>
+        {/* 看板拉取失败：错误条 + 重试（参照 SessionsPage），旧数据可继续展示（stale-while-revalidate） */}
+        {loadError && (
+          <div className="error-banner">
+            <span>{loadError}</span>
+            <Button type="button" variant="secondary" size="sm" onClick={() => void refresh()}>
+              重试
+            </Button>
+          </div>
+        )}
         <CollapsibleSection title="今日概览" storageKey={OVERVIEW_OPEN_KEY}>
           <OverviewBar stats={stats} loaded={loaded} usage={usage} />
           <WeekStatsCard stats={stats} loaded={loaded} />

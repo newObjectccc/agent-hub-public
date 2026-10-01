@@ -4,14 +4,18 @@
 import { describe, expect, it } from "vitest";
 import {
   clearLockToken,
+  friendlyLockError,
   isPinSecret,
   isTokenFresh,
   isValidSecret,
   loadLockToken,
   LOCK_TOKEN_KEY,
+  parseAppLockStatus,
+  parseLockTokenResult,
   safeSecretCheck,
   saveLockToken,
 } from "./appLock";
+import { ApiError } from "../api/client";
 
 function fakeStorage(): { getItem: (k: string) => string | null; setItem: (k: string, v: string) => void; removeItem: (k: string) => void; data: Map<string, string> } {
   const data = new Map<string, string>();
@@ -71,5 +75,34 @@ describe("appLock 前端：解锁令牌持久化", () => {
     expect(isTokenFresh({ token: "t", expiresAt: now + 10_000 }, now)).toBe(false);
     expect(isTokenFresh({ token: "t", expiresAt: now - 1 }, now)).toBe(false);
     expect(isTokenFresh(null, now)).toBe(false);
+  });
+});
+
+describe("appLock 错误映射与响应校验（UX 审查 AC3）", () => {
+  it("friendlyLockError：ApiError 用服务端中文提示；JS 异常映射 fallback（不裸露）", () => {
+    expect(friendlyLockError(new ApiError(401, "UNAUTHORIZED", "PIN 不正确"), "解锁失败，请重试")).toBe("PIN 不正确");
+    const raw = new TypeError("Cannot read properties of null (reading 'configured')");
+    const friendly = friendlyLockError(raw, "解锁失败，请重试");
+    expect(friendly).toBe("解锁失败，请重试");
+    expect(friendly).not.toContain("Cannot read");
+    expect(friendlyLockError("字符串异常", "兜底")).toBe("兜底");
+  });
+
+  it("parseAppLockStatus：坏响应体（null/缺字段/错型）→ null（不误落 setup）", () => {
+    expect(parseAppLockStatus(null)).toBeNull();
+    expect(parseAppLockStatus({ error: { code: "X" } })).toBeNull();
+    expect(parseAppLockStatus({ configured: "yes", unlocked: false })).toBeNull();
+    expect(parseAppLockStatus("html body")).toBeNull();
+    expect(
+      parseAppLockStatus({ configured: true, webauthn: true, unlocked: false, expiresAt: null }),
+    ).toEqual({ configured: true, webauthn: true, unlocked: false, expiresAt: null });
+  });
+
+  it("parseLockTokenResult：无令牌/坏令牌 → null（坏体不当解锁成功）", () => {
+    expect(parseLockTokenResult({ ok: false })).toBeNull();
+    expect(parseLockTokenResult({ token: "", expiresAt: 1 })).toBeNull();
+    expect(parseLockTokenResult({ token: "t", expiresAt: Number.NaN })).toBeNull();
+    expect(parseLockTokenResult(null)).toBeNull();
+    expect(parseLockTokenResult({ token: "tok", expiresAt: 123 })).toEqual({ token: "tok", expiresAt: 123 });
   });
 });

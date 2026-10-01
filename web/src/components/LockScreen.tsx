@@ -4,7 +4,7 @@
  * - unlock：PIN/口令解锁；WebAuthn 可用时额外给生物识别快捷按钮（否则隐藏）
  * 安全：本组件不拉任何会话数据（由 App 门控保证页面组件不挂载）。
  */
-import { useMemo, useState, type FormEvent } from "react";
+import { useMemo, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { Button } from "./ui/button";
 import { isValidSecret, secretRuleHint } from "../utils/appLock";
 
@@ -17,11 +17,13 @@ export interface LockScreenProps {
   onUnlock: (secret: string) => void;
   onSetup: (secret: string) => void;
   onBiometric: () => void;
+  /** 状态获取失败后的重试（错误条「重试」）；缺省不显示 */
+  onRetry?: () => void;
 }
 
 const KEYS = ["1", "2", "3", "4", "5", "6", "7", "8", "9"];
 
-export function LockScreen({ mode, busy, error, webauthnAvailable, onUnlock, onSetup, onBiometric }: LockScreenProps) {
+export function LockScreen({ mode, busy, error, webauthnAvailable, onUnlock, onSetup, onBiometric, onRetry }: LockScreenProps) {
   const [entry, setEntry] = useState("");
   const [confirm, setConfirm] = useState("");
   const [usePassphrase, setUsePassphrase] = useState(false);
@@ -63,14 +65,28 @@ export function LockScreen({ mode, busy, error, webauthnAvailable, onUnlock, onS
 
   const appendDigit = (d: string) => {
     if (busy || !pinMode) return;
-    if (shown.length >= 6) return;
-    setShown(shown + d);
+    // 函数式更新：物理键盘连击/自动填充不丢位（避免闭包旧值覆盖）
+    setShown((prev) => (prev.length >= 6 ? prev : prev + d));
     setLocalError(null);
   };
   const backspace = () => {
     if (busy || !pinMode) return;
-    setShown(shown.slice(0, -1));
+    setShown((prev) => prev.slice(0, -1));
     setLocalError(null);
+  };
+  /** readOnly 输入的 keydown 只来自物理键盘（软键盘不会弹出）：直接喂给自绘键盘逻辑 */
+  const handlePinKeyDown = (e: ReactKeyboardEvent<HTMLInputElement>) => {
+    if (busy || !pinMode) return;
+    if (/^\d$/.test(e.key)) {
+      e.preventDefault();
+      appendDigit(e.key);
+      return;
+    }
+    if (e.key === "Backspace") {
+      e.preventDefault();
+      backspace();
+    }
+    // Enter 交给 form 隐式提交（与「解锁」按钮同路）
   };
 
   const message = localError ?? error;
@@ -102,12 +118,13 @@ export function LockScreen({ mode, busy, error, webauthnAvailable, onUnlock, onS
               pattern="[0-9]*"
               autoComplete="off"
               maxLength={6}
+              /* readOnly：自绘数字键盘是唯一输入通道——不弹系统键盘（双键盘叠加），顺带防肩窥；
+                 物理键盘输入走 onKeyDown，aria 可达性保留（仍可聚焦/读屏播报） */
+              readOnly
               value={shown}
-              onChange={(e) => {
-                setShown(e.target.value.replace(/\D/g, "").slice(0, 6));
-                setLocalError(null);
-              }}
+              onKeyDown={handlePinKeyDown}
               aria-label={step === "confirm" ? "再次输入 PIN" : "输入 PIN"}
+              aria-readonly="true"
             />
             <div className="lock-keypad" role="group" aria-label="数字键盘">
               {KEYS.map((d) => (
@@ -142,7 +159,12 @@ export function LockScreen({ mode, busy, error, webauthnAvailable, onUnlock, onS
 
         {message && (
           <div className="lock-error" role="alert">
-            {message}
+            <span className="lock-error-text">{message}</span>
+            {onRetry && !busy && (
+              <button type="button" className="lock-retry" onClick={onRetry}>
+                重试
+              </button>
+            )}
           </div>
         )}
 

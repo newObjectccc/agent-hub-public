@@ -1,5 +1,5 @@
 import { memo, useEffect, useMemo, useRef, type MouseEvent as ReactMouseEvent } from "react";
-import { renderMarkdown } from "../utils/markdown";
+import { MarkdownRenderCache, renderMarkdown } from "../utils/markdown";
 import { copyText } from "../utils/clipboard";
 import { showToast } from "../utils/toast";
 import { probeRender } from "../utils/renderProbe";
@@ -9,13 +9,17 @@ export const CODE_COPY_FAIL_TOAST = "复制失败，请手动选择代码";
 
 /**
  * 轻量 markdown 渲染（内容先转义后标记）。
- * 渲染性能：memo + 按 text 的 useMemo（历史消息不重复 parse）。
+ * 渲染性能：memo + 按 text 的 useMemo（历史消息不重复 parse）；
+ * 流式增量（UX 审查 AC5）：每实例一个块级缓存，尾部增长只重解析尾块，未变块复用渲染结果
+ * （输出与全量解析逐字符一致）。
  * 代码块右上角「复制」：事件委托 + toast（HTML 由 dangerouslySetInnerHTML 生成）。
  * 图片宽高比占位：load 打 .img-loaded、error 打 .img-error（捕获委托防跳动）。
  */
 export const Markdown = memo(function Markdown({ text }: { text: string }) {
   probeRender("Markdown");
-  const html = useMemo(() => renderMarkdown(text), [text]);
+  const cacheRef = useRef<MarkdownRenderCache | null>(null);
+  if (cacheRef.current === null) cacheRef.current = new MarkdownRenderCache();
+  const html = useMemo(() => cacheRef.current?.render(text) ?? renderMarkdown(text), [text]);
   const rootRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
