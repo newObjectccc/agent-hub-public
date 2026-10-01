@@ -26,6 +26,7 @@ import type { PromptResult } from "./sessions/hub.js";
 import { fullPage, paginateMessages, parseLimit } from "./sessions/paginate.js";
 import { buildSubAgentActivity } from "./subagents.js";
 import type { TerminalServiceLike } from "./terminal.js";
+import { parseDaysParam, UsageService, type UsageServiceLike } from "./usage.js";
 import {
   loadImageAttachments,
   MAX_ATTACHMENTS_PER_MESSAGE,
@@ -75,6 +76,8 @@ export interface RouteDeps {
   live?: LiveIngestLike;
   /** 首页工作台统计 + 通知（docs/API_CONTRACT.md §4-§5） */
   dashboard: DashboardServiceLike;
+  /** Token 用量汇总（docs/API_CONTRACT.md §15，pi 源；缺省按 config.sessionDir 自建） */
+  usage?: UsageServiceLike;
   /** slash 命令清单（可注入 mock；缺省真实扫描 ~/.claude/commands） */
   commands?: CommandsApi;
   /** 文件树只读列表（可注入 mock；缺省真实 fs） */
@@ -131,6 +134,8 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   const git = deps.git ?? createGitApi();
   const commands: CommandsApi = deps.commands ?? createCommandsApi();
   const fsTree = deps.fsTree ?? { listDir: (cwd: string, options: ListDirOptions) => listDir(cwd, options) };
+  /** Token 用量服务（缺省自建：pi 会话目录增量扫描） */
+  const usageService: UsageServiceLike = deps.usage ?? new UsageService({ sessionDir: config.sessionDir });
   const panelDriven: PanelDrivenStoreLike = deps.panelDriven ?? createPanelDrivenStore(dataDir);
   const appLock: AppLockStoreLike = deps.appLock ?? createAppLockStore(dataDir);
   /** 会话 DTO 附加最后驱动来源（契约 §1，面板驱动过即 panel） */
@@ -616,6 +621,27 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   app.get("/api/dashboard/stats", async (_req, reply) => {
     try {
       return reply.send(await dashboard.getStats());
+    } catch (err) {
+      return handle(reply, err);
+    }
+  });
+
+  // GET /api/usage?sessionId=&days=（Token 用量汇总，契约 §15；仅 pi 源）
+  app.get<{ Querystring: { sessionId?: string; days?: string } }>("/api/usage", async (req, reply) => {
+    try {
+      const query = (req.query ?? {}) as { sessionId?: unknown; days?: unknown };
+      const days = parseDaysParam(query.days);
+      const sessionId =
+        typeof query.sessionId === "string" && query.sessionId.trim() !== "" ? query.sessionId.trim() : undefined;
+      const now = Date.now();
+      if (sessionId !== undefined) {
+        const detail = await usageService.session(sessionId, now, { days });
+        if (!detail) {
+          throw new HubError(ErrorCodes.SESSION_NOT_FOUND, `会话不存在: ${sessionId}`, 404);
+        }
+        return reply.send(detail);
+      }
+      return reply.send(await usageService.overview(now, { days }));
     } catch (err) {
       return handle(reply, err);
     }

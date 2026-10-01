@@ -7,7 +7,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useGlobalEvents } from "../hooks/useGlobalEvents";
 import { api } from "../api/client";
-import type { DashboardStats } from "../api/types";
+import type { DashboardStats, UsageWindows } from "../api/types";
 import { AttentionList } from "../components/AttentionList";
 import { CollapsibleSection } from "../components/CollapsibleSection";
 import { OverviewBar } from "../components/OverviewBar";
@@ -27,6 +27,7 @@ const HOME_CARD_LIMIT = 3;
 
 export function HomePage() {
   const [stats, setStats] = useState<DashboardStats | null>(null);
+  const [usage, setUsage] = useState<UsageWindows | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [progressVisible, setProgressVisible] = useState(false);
   const [loaded, setLoaded] = useState(false);
@@ -38,12 +39,16 @@ export function HomePage() {
     if (progressTimer.current) clearTimeout(progressTimer.current);
     progressTimer.current = setTimeout(() => setProgressVisible(true), PROGRESS_REVEAL_MS);
     const statsRes = await api.getDashboardStats().catch(() => null);
+    // Token 用量独立拉取：失败安静降级（占位），不拖垮概览其它格
+    const usageRes = await api.getUsage().catch(() => null);
     if (progressTimer.current) {
       clearTimeout(progressTimer.current);
       progressTimer.current = null;
     }
     setProgressVisible(false);
-    if (statsRes) setStats(statsRes);    setRefreshing(false);
+    if (statsRes) setStats(statsRes);
+    if (usageRes) setUsage(usageRes.windows);
+    setRefreshing(false);
     setLoaded(true);
   }, []);
 
@@ -70,7 +75,7 @@ export function HomePage() {
 
       <PullToRefresh onRefresh={refresh} refreshing={refreshing}>
         <CollapsibleSection title="今日概览" storageKey={OVERVIEW_OPEN_KEY}>
-          <OverviewBar stats={stats} loaded={loaded} />
+          <OverviewBar stats={stats} loaded={loaded} usage={usage} />
           <WeekStatsCard stats={stats} loaded={loaded} />
         </CollapsibleSection>
 

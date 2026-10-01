@@ -844,3 +844,57 @@ Linux `sudo apt install ttyd`）。与 §12 的「终端接管」是两回事：
 - 鉴权：token 能力凭证（`?t=` 查询串）或 `hub-terminal-token` HttpOnly Cookie（Path=/terminal）。
   无效/过期 → 401 信封；ttyd 未运行 → 503。token 校验不过的 upgrade 直接断连。
 - 与 §6 的 SPA 路由 `/terminal`（无斜杠）不冲突：`/terminal` 回前端页面，`/terminal/*` 走反代。
+## 14. Token 用量统计（GET /api/usage，pi 源新增）
+
+pi 会话 JSONL 中每条 assistant 消息的 `message.usage` 记录一次 API 调用的用量，
+聚合即逐条求和（坏行 / 缺 usage 字段优雅跳过）。**仅 pi 源**（claude 源延后）。
+
+### GET /api/usage（全局汇总）
+
+```json
+{
+  "windows": {
+    "today":     { "totalTokens": 14085, "input": 1784, "output": 13, "cacheRead": 12288, "cacheWrite": 0, "reasoning": 10, "costTotal": 0 },
+    "last7Days": { "totalTokens": 98000, "input": 9000, "output": 800, "cacheRead": 80000, "cacheWrite": 3000, "reasoning": 400, "costTotal": null },
+    "all":       { "totalTokens": 260000, "input": 20000, "output": 3000, "cacheRead": 210000, "cacheWrite": 9000, "reasoning": 1200, "costTotal": 12.5 }
+  },
+  "range": { "days": 30, "usage": { "totalTokens": 260000, "input": 20000, "output": 3000, "cacheRead": 210000, "cacheWrite": 9000, "reasoning": 1200, "costTotal": 12.5 } },
+  "sessions": [
+    {
+      "sessionId": "uuid-1",
+      "name": "pi-report-KPI",
+      "updatedAt": "2026-02-18T11:58:00.000Z",
+      "usage": { "totalTokens": 14085, "input": 1784, "output": 13, "cacheRead": 12288, "cacheWrite": 0, "reasoning": 10, "costTotal": 0 }
+    }
+  ]
+}
+```
+
+字段口径：
+- `windows.today`：今日（本地时区 0 点起）；`windows.last7Days`：近 7 个自然日（含今日）；
+  `windows.all`：全部（含时间戳缺失的采样，此类采样只计入 `all`）
+- `range`：仅带 `?days=N` 时返回，最近 N 个自然日（含今日，N 为 1..3650 整数）
+- `costTotal`：`cost.total` 求和；数据源全程无 `cost` 字段时为 `null`（`0` 是有效金额，勿混淆）
+- `sessions`：仅含有 usage 采样的会话，`updatedAt` 倒序（采样时间与文件 mtime 取新），
+  `usage` 为该会话全量汇总；单文件损坏 / 无采样会话不影响整体
+
+### GET /api/usage?sessionId=（单会话汇总）
+
+```json
+{
+  "sessionId": "uuid-1",
+  "name": "pi-report-KPI",
+  "updatedAt": "2026-02-18T11:58:00.000Z",
+  "windows": { "today": {}, "last7Days": {}, "all": {} },
+  "range": { "days": 7, "usage": {} }
+}
+```
+
+- 会话存在但无 usage 采样 → 三窗口全 0（`costTotal: null`），仍 200
+- `sessionId` 不存在 → 404 `SESSION_NOT_FOUND`
+- `?days=` 非法（非 1..3650 整数）→ 400 `INVALID_REQUEST`（错误信封同 §1 约定）
+
+### 前端呈现（口径）
+
+- 工作台「今日概览」：今日 tokens / 近 7 天 tokens；会话列表行内显示该会话 tokens
+- 加载失败 / 无数据安静降级（占位或隐藏），不阻塞其它面板

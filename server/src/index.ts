@@ -29,6 +29,7 @@ import { findSessionFiles } from "./sessions/scan.js";
 import { SessionTailManager } from "./sessions/tail.js";
 import { createSystemInfoProvider } from "./system.js";
 import { attachTerminalProxy, TerminalService, type TerminalRuntime } from "./terminal.js";
+import { UsageService } from "./usage.js";
 import type { ServerEvent } from "./types.js";
 import { WsHub } from "./ws.js";
 
@@ -56,6 +57,7 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
     fsTree: options.fsTree,
     panelDriven: options.panelDriven,
     dashboard: options.dashboard,
+    usage: options.usage,
     agents: options.agents,
     appLock: options.appLock,
     terminal: options.terminal,
@@ -134,6 +136,8 @@ export async function startHub(): Promise<StartedHub> {
     onNotification: (item) => wshub.broadcastGlobal({ type: "notification", notification: item }),
   });
   piHub.onActivity = (sessionId, activity) => dashboard.recordActivity(sessionId, activity);
+  // Token 用量汇总（契约 §15，pi 源）：按文件 mtime+size 增量重读，presence 变更时失效
+  const usage = new UsageService({ sessionDir: config.sessionDir });
   const kpi = new KpiService({ configDir, kpiRefreshMinutes: config.kpiRefreshMinutes });
   // ttyd Web 终端服务（F2）：生命周期归 server 管（关闭时回收 ttyd）
   const terminalService = new TerminalService();
@@ -155,6 +159,7 @@ export async function startHub(): Promise<StartedHub> {
     hub,
     kpi,
     dashboard,
+    usage,
     config,
     live: liveIngest,
     agents,
@@ -189,6 +194,7 @@ export async function startHub(): Promise<StartedHub> {
       hub.invalidateSearch();
       hub.invalidateList();
       dashboard.invalidate();
+      usage.invalidate();
       wshub.broadcastGlobal({ type: "sessions_changed" });
     },
     [config.sessionDir, claudeProjectsDir],
