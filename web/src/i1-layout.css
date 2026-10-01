@@ -58,9 +58,6 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .chat-badges {
-    flex-shrink: 0;
-  }
   .chat-title .cwd {
     display: block;
   }
@@ -134,7 +131,8 @@
 .chat-badges {
   flex-wrap: nowrap;
   overflow: hidden;
-  flex: 0 1 auto;
+  /* 徽章簇不收缩（标题侧收缩省略）：flex 简写勿再写 0 1 auto——会覆盖 flex-shrink:0（级联坑，REV-I1b 实测） */
+  flex: 0 0 auto;
   min-width: 0;
 }
 

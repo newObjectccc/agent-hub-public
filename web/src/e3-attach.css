@@ -30,11 +30,12 @@
   transition: transform 0.12s ease, box-shadow 0.12s ease;
 }
 
-/* 触控热区 ≥44px（视觉紧凑不缩水，命中区用伪元素扩展） */
+/* 触控热区 ≥44px（视觉紧凑不缩水，命中区用伪元素扩展）；
+   inset 按 padding box 计算：按钮 34px + 边框 2×(9-2) = 48px 命中（REV-I1b 实测 -5px 仅得 40px） */
 .attach-trigger::after {
   content: "";
   position: absolute;
-  inset: -5px -2px;
+  inset: -9px -6px;
 }
 
 .attach-trigger:active {
