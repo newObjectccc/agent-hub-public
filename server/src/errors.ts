@@ -25,6 +25,10 @@ export const ErrorCodes = {
   // 上传 API（契约 §11）
   UPLOAD_TOO_LARGE: "UPLOAD_TOO_LARGE",
   UNSUPPORTED_MEDIA_TYPE: "UNSUPPORTED_MEDIA_TYPE",
+  // 应用锁（契约 §13，F1）
+  APP_LOCK_EXISTS: "APP_LOCK_EXISTS",
+  APP_LOCK_NOT_CONFIGURED: "APP_LOCK_NOT_CONFIGURED",
+  APP_LOCK_DENIED: "APP_LOCK_DENIED",
 } as const;
 
 export type ErrorCode = (typeof ErrorCodes)[keyof typeof ErrorCodes];

@@ -4,6 +4,7 @@ import { App } from "./App";
 import "./styles.css";
 import "./d-polish.css";
 import "./e3-attach.css";
+import "./f1-security.css";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

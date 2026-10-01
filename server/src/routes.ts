@@ -5,6 +5,12 @@
 import { timingSafeEqual } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { AgentLinkLike, CommandMode } from "./agents.js";
+import {
+  createAppLockStore,
+  isValidSecret,
+  secretRuleHint,
+  type AppLockStoreLike,
+} from "./appLock.js";
 import type { CommandsApi } from "./commands.js";
 import { createCommandsApi } from "./commands.js";
 import type { HubConfig } from "./config.js";
@@ -76,6 +82,8 @@ export interface RouteDeps {
   panelDriven?: PanelDrivenStoreLike;
   /** 终端 pi 反向指令通道（E3 双模式；可注入 mock，缺省不启用接管相关路由） */
   agents?: AgentLinkLike;
+  /** 应用锁（F1；可注入 mock/临时目录，缺省持久化到 data/app-lock.json） */
+  appLock?: AppLockStoreLike;
 }
 
 /** 会话项注入终端驱动状态（仅 pi 会话；agents 未启用时原样返回） */
@@ -120,6 +128,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   const commands: CommandsApi = deps.commands ?? createCommandsApi();
   const fsTree = deps.fsTree ?? { listDir: (cwd: string, options: ListDirOptions) => listDir(cwd, options) };
   const panelDriven: PanelDrivenStoreLike = deps.panelDriven ?? createPanelDrivenStore(dataDir);
+  const appLock: AppLockStoreLike = deps.appLock ?? createAppLockStore(dataDir);
   /** 会话 DTO 附加最后驱动来源（契约 §1，面板驱动过即 panel） */
   const decorateSession = (s: SessionListItem): SessionListItem => ({
     ...s,
@@ -694,6 +703,215 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
       }
       const unreadCount = await dashboard.markRead(body.ids as string[] | undefined);
       return reply.send({ ok: true, unreadCount });
+    } catch (err) {
+      return handle(reply, err);
+    }
+  });
+
+  /* ===== 应用锁（契约 §13，F1）：UI 解锁与 auth.token（API 鉴权）完全独立 ===== */
+
+  /** 解锁令牌只走 `X-App-Lock-Token` 请求头（绝不进 URL/日志） */
+  const lockTokenOf = (req: FastifyRequest): string => {
+    const raw = req.headers["x-app-lock-token"];
+    const value = Array.isArray(raw) ? raw[0] : raw;
+    return typeof value === "string" ? value : "";
+  };
+
+  const requireUnlocked = (req: FastifyRequest): void => {
+    if (!appLock.verifyToken(lockTokenOf(req)).ok) {
+      throw new HubError(ErrorCodes.UNAUTHORIZED, "应用锁未解锁或令牌过期", 401);
+    }
+  };
+
+  /** WebAuthn rpId = 请求 host 的 hostname（不含端口；dev 反代/直连同口径） */
+  const rpIdOf = (req: FastifyRequest): string => {
+    const forwarded = req.headers["x-forwarded-host"];
+    const rawHost = (Array.isArray(forwarded) ? forwarded[0] : forwarded) ?? req.headers.host ?? "";
+    const host = String(rawHost).split(",")[0].trim();
+    const hostname = host.replace(/^\[/, "").split(":")[0].replace(/\]$/, "").toLowerCase();
+    if (hostname === "") {
+      throw new HubError(ErrorCodes.INVALID_REQUEST, "无法解析 rpId（缺 Host 头）");
+    }
+    return hostname;
+  };
+
+  const secretOf = (body: Record<string, unknown>, field: string): string => {
+    const value = body[field];
+    if (typeof value !== "string" || !isValidSecret(value)) {
+      throw new HubError(ErrorCodes.INVALID_REQUEST, secretRuleHint());
+    }
+    return value;
+  };
+
+  // GET /api/app-lock/status：仅状态（configured/webauthn/unlocked），绝不泄漏哈希/令牌
+  app.get("/api/app-lock/status", async (req, reply) => {
+    try {
+      const status = appLock.status();
+      const unlocked = appLock.verifyToken(lockTokenOf(req)).ok;
+      return reply.send({
+        configured: status.configured,
+        webauthn: status.webauthn,
+        unlocked,
+        expiresAt: unlocked ? status.expiresAt : null,
+      });
+    } catch (err) {
+      return handle(reply, err);
+    }
+  });
+
+  // POST /api/app-lock/setup：首次设置 PIN/口令（已配置 → 409，改用 change）
+  app.post("/api/app-lock/setup", async (req, reply) => {
+    try {
+      const body = (typeof req.body === "object" && req.body !== null ? req.body : {}) as Record<string, unknown>;
+      const secret = secretOf(body, "secret");
+      const issued = appLock.setup(secret);
+      return reply.status(201).send({ ok: true, token: issued.token, expiresAt: issued.expiresAt });
+    } catch (err) {
+      return handle(reply, err);
+    }
+  });
+
+  // POST /api/app-lock/unlock：验证 PIN/口令 → 发短期解锁令牌（7 天）
+  app.post("/api/app-lock/unlock", async (req, reply) => {
+    try {
+      const body = (typeof req.body === "object" && req.body !== null ? req.body : {}) as Record<string, unknown>;
+      const secret = body.secret;
+      if (typeof secret !== "string" || secret === "") {
+        throw new HubError(ErrorCodes.INVALID_REQUEST, "缺少 secret");
+      }
+      const issued = appLock.unlock(secret);
+      return reply.send({ ok: true, token: issued.token, expiresAt: issued.expiresAt });
+    } catch (err) {
+      return handle(reply, err);
+    }
+  });
+
+  // POST /api/app-lock/change：改 PIN/口令（需验证旧 PIN；成功后令牌轮换）
+  app.post("/api/app-lock/change", async (req, reply) => {
+    try {
+      const body = (typeof req.body === "object" && req.body !== null ? req.body : {}) as Record<string, unknown>;
+      const oldSecret = body.oldSecret;
+      if (typeof oldSecret !== "string" || oldSecret === "") {
+        throw new HubError(ErrorCodes.INVALID_REQUEST, "缺少 oldSecret");
+      }
+      const newSecret = secretOf(body, "newSecret");
+      const issued = appLock.change(oldSecret, newSecret);
+      return reply.send({ ok: true, token: issued.token, expiresAt: issued.expiresAt });
+    } catch (err) {
+      return handle(reply, err);
+    }
+  });
+
+  // POST /api/app-lock/disable：关闭应用锁（需验证旧 PIN）
+  app.post("/api/app-lock/disable", async (req, reply) => {
+    try {
+      const body = (typeof req.body === "object" && req.body !== null ? req.body : {}) as Record<string, unknown>;
+      const oldSecret = body.oldSecret;
+      if (typeof oldSecret !== "string" || oldSecret === "") {
+        throw new HubError(ErrorCodes.INVALID_REQUEST, "缺少 oldSecret");
+      }
+      appLock.disable(oldSecret);
+      return reply.send({ ok: true, configured: false });
+    } catch (err) {
+      return handle(reply, err);
+    }
+  });
+
+  // POST /api/app-lock/webauthn/register/start：注册生物识别（需已解锁令牌）
+  app.post("/api/app-lock/webauthn/register/start", async (req, reply) => {
+    try {
+      requireUnlocked(req);
+      const rpId = rpIdOf(req);
+      const { challengeId, challenge } = appLock.createChallenge("create");
+      return reply.send({
+        challengeId,
+        options: {
+          publicKey: {
+            challenge,
+            rp: { id: rpId, name: "Agent Hub" },
+            user: { id: Buffer.from("agent-hub").toString("base64url"), name: "agent-hub", displayName: "Agent Hub" },
+            pubKeyCredParams: [
+              { type: "public-key", alg: -7 },
+              { type: "public-key", alg: -257 },
+            ],
+            authenticatorSelection: { authenticatorAttachment: "platform", userVerification: "required", residentKey: "preferred" },
+            attestation: "none",
+            timeout: 60_000,
+          },
+        },
+      });
+    } catch (err) {
+      return handle(reply, err);
+    }
+  });
+
+  // POST /api/app-lock/webauthn/register/finish：登记公钥（clientData 绑定挑战 + rpId）
+  app.post("/api/app-lock/webauthn/register/finish", async (req, reply) => {
+    try {
+      requireUnlocked(req);
+      const body = (typeof req.body === "object" && req.body !== null ? req.body : {}) as Record<string, unknown>;
+      const challengeId = typeof body.challengeId === "string" ? body.challengeId : "";
+      const challenge = appLock.consumeChallenge(challengeId, "create");
+      if (!challenge) {
+        throw new HubError(ErrorCodes.APP_LOCK_DENIED, "挑战不存在或已过期，请重试", 401);
+      }
+      const cred = (typeof body.credential === "object" && body.credential !== null ? body.credential : {}) as Record<string, unknown>;
+      appLock.registerWebAuthn({
+        credentialId: typeof cred.id === "string" ? cred.id : "",
+        publicKey: typeof cred.publicKey === "string" ? cred.publicKey : "",
+        clientDataJSON: typeof cred.clientDataJSON === "string" ? cred.clientDataJSON : "",
+        challenge,
+        rpId: rpIdOf(req),
+      });
+      return reply.send({ ok: true, webauthn: true });
+    } catch (err) {
+      return handle(reply, err);
+    }
+  });
+
+  // POST /api/app-lock/webauthn/login/start：生物识别解锁挑战（未启用 → 400）
+  app.post("/api/app-lock/webauthn/login/start", async (_req, reply) => {
+    try {
+      const status = appLock.status();
+      if (!status.configured || !status.webauthn) {
+        throw new HubError(ErrorCodes.APP_LOCK_NOT_CONFIGURED, "未启用生物识别解锁", 400);
+      }
+      const { challengeId, challenge } = appLock.createChallenge("get");
+      return reply.send({
+        challengeId,
+        options: {
+          publicKey: {
+            challenge,
+            rpId: rpIdOf(_req),
+            userVerification: "required",
+            timeout: 60_000,
+          },
+        },
+      });
+    } catch (err) {
+      return handle(reply, err);
+    }
+  });
+
+  // POST /api/app-lock/webauthn/login/finish：验签通过 → 发解锁令牌（同 PIN 解锁语义）
+  app.post("/api/app-lock/webauthn/login/finish", async (req, reply) => {
+    try {
+      const body = (typeof req.body === "object" && req.body !== null ? req.body : {}) as Record<string, unknown>;
+      const challengeId = typeof body.challengeId === "string" ? body.challengeId : "";
+      const challenge = appLock.consumeChallenge(challengeId, "get");
+      if (!challenge) {
+        throw new HubError(ErrorCodes.APP_LOCK_DENIED, "挑战不存在或已过期，请重试", 401);
+      }
+      const cred = (typeof body.credential === "object" && body.credential !== null ? body.credential : {}) as Record<string, unknown>;
+      const issued = appLock.loginWebAuthn({
+        credentialId: typeof cred.id === "string" ? cred.id : "",
+        clientDataJSON: typeof cred.clientDataJSON === "string" ? cred.clientDataJSON : "",
+        authenticatorData: typeof cred.authenticatorData === "string" ? cred.authenticatorData : "",
+        signature: typeof cred.signature === "string" ? cred.signature : "",
+        challenge,
+        rpId: rpIdOf(req),
+      });
+      return reply.send({ ok: true, token: issued.token, expiresAt: issued.expiresAt });
     } catch (err) {
       return handle(reply, err);
     }

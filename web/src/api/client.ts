@@ -57,6 +57,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
+export { request };
+
 export const api = {
   listSessions(): Promise<{ sessions: SessionSummary[] }> {
     return request("/api/sessions");
@@ -103,26 +105,31 @@ export const api = {
     });
   },
 
-  /** 发送消息（契约 §1）；images 为上传图片引用路径（pi 直接附图，契约 §11） */
-  sendPrompt(id: string, text: string, mode: PromptMode = "prompt", images?: string[]): Promise<PromptResult> {
+  /** 发送消息（契约 §1）；images 为上传图片引用路径（pi 直接附图，契约 §11）；signal 可选超时/中止 */
+  sendPrompt(id: string, text: string, mode: PromptMode = "prompt", images?: string[], signal?: AbortSignal): Promise<PromptResult> {
     return request(`/api/sessions/${encodeURIComponent(id)}/prompt`, {
       method: "POST",
       body: JSON.stringify(images && images.length > 0 ? { text, mode, images } : { text, mode }),
+      signal,
     });
   },
 
-  /** 上传文件（契约 §11）：base64 JSON，落盘会话 cwd/.agent-hub-uploads/ */
-  uploadFile(input: {
-    sessionId?: string;
-    cwd?: string;
-    name: string;
-    mimeType: string;
-    /** 纯 base64（不含 data: 前缀） */
-    data: string;
-  }): Promise<UploadResponse> {
+  /** 上传文件（契约 §11）：base64 JSON，落盘会话 cwd/.agent-hub-uploads/；signal 可选超时/中止 */
+  uploadFile(
+    input: {
+      sessionId?: string;
+      cwd?: string;
+      name: string;
+      mimeType: string;
+      /** 纯 base64（不含 data: 前缀） */
+      data: string;
+    },
+    signal?: AbortSignal,
+  ): Promise<UploadResponse> {
     return request("/api/uploads", {
       method: "POST",
       body: JSON.stringify(input),
+      signal,
     });
   },
 
@@ -157,10 +164,12 @@ export const api = {
     text: string,
     mode: "prompt" | "steer" | "followUp",
     clientMessageId?: string,
+    signal?: AbortSignal,
   ): Promise<AttachMessageResult> {
     return request(`/api/sessions/${encodeURIComponent(id)}/message`, {
       method: "POST",
       body: JSON.stringify(clientMessageId ? { text, mode, clientMessageId } : { text, mode }),
+      signal,
     });
   },
 

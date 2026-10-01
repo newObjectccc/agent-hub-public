@@ -11,6 +11,7 @@ import {
   type NotifySettings,
 } from "../utils/notify";
 import { applyTheme, loadTheme, saveTheme, type ThemeSetting } from "../utils/theme";
+import { AppLockSettings } from "./AppLockSettings";
 import { Button } from "./ui/button";
 
 const THEME_OPTIONS: Array<{ value: ThemeSetting; label: string }> = [
@@ -105,6 +106,8 @@ export function SettingsPanel() {
           onChange={(banner) => updateSettings({ ...settings, banner })}
         />
       </section>
+
+      <AppLockSettings />
 
       <section className="card settings-section" aria-label="关于">
         <div className="notif-panel-head">

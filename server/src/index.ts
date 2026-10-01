@@ -54,6 +54,7 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
     panelDriven: options.panelDriven,
     dashboard: options.dashboard,
     agents: options.agents,
+    appLock: options.appLock,
   });
   // 静态托管 web/dist（存在时），单进程即可服务 PWA
   const root = options.webRoot ?? null;

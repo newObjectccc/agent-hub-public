@@ -1,0 +1,307 @@
+/* 应用锁 + 离线消息队列（F1）：野兽派紧凑 UI，响应式 320-1024，深浅色，触控 ≥44px */
+
+/* ====================== 解锁屏 ====================== */
+.lock-screen {
+  min-height: 100dvh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: var(--color-background, #fff);
+  color: var(--color-foreground, #111);
+}
+
+.lock-card {
+  width: 100%;
+  max-width: 380px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 20px 16px;
+  border: 3px solid var(--color-foreground, #111);
+  background: var(--color-card, #fff);
+  box-shadow: 6px 6px 0 var(--color-foreground, #111);
+}
+
+.lock-title {
+  font-family: var(--font-head, sans-serif);
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+
+.lock-subtitle {
+  font-size: 13px;
+  color: var(--color-muted-foreground, #555);
+  line-height: 1.5;
+}
+
+.lock-dots {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  padding: 8px 0;
+}
+
+.lock-dot {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--color-foreground, #111);
+  background: transparent;
+}
+
+.lock-dot.filled {
+  background: var(--color-primary, #ffd800);
+}
+
+.lock-input {
+  width: 100%;
+  min-height: 48px;
+  padding: 8px 12px;
+  font-size: 20px;
+  letter-spacing: 0.3em;
+  text-align: center;
+  border: 3px solid var(--color-foreground, #111);
+  background: var(--color-background, #fff);
+  color: var(--color-foreground, #111);
+  border-radius: 0;
+}
+
+.lock-passphrase {
+  letter-spacing: normal;
+  text-align: left;
+  font-size: 16px;
+}
+
+.lock-keypad {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.lock-key {
+  min-height: 52px;
+  min-width: 52px;
+  font-family: var(--font-head, sans-serif);
+  font-size: 20px;
+  font-weight: 700;
+  border: 3px solid var(--color-foreground, #111);
+  background: var(--color-card, #fff);
+  color: var(--color-foreground, #111);
+  box-shadow: 3px 3px 0 var(--color-foreground, #111);
+  cursor: pointer;
+  border-radius: 0;
+  touch-action: manipulation;
+}
+
+.lock-key:active {
+  transform: translate(2px, 2px);
+  box-shadow: 1px 1px 0 var(--color-foreground, #111);
+}
+
+.lock-key:disabled {
+  opacity: 0.5;
+}
+
+.lock-key-clear,
+.lock-key-back {
+  font-size: 15px;
+}
+
+.lock-error {
+  padding: 8px 10px;
+  border: 2px solid var(--color-destructive, #d33);
+  background: var(--color-destructive, #d33);
+  color: var(--color-destructive-foreground, #fff);
+  font-size: 13px;
+}
+
+.lock-submit {
+  width: 100%;
+  min-height: 48px;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.lock-mode-toggle {
+  min-height: 44px;
+  border: 2px solid var(--color-border, #111);
+  background: transparent;
+  color: var(--color-foreground, #111);
+  font-size: 13px;
+  cursor: pointer;
+  border-radius: 0;
+}
+
+.lock-bio {
+  min-height: 48px;
+  border: 3px solid var(--color-foreground, #111);
+  background: var(--color-secondary, #eee);
+  color: var(--color-foreground, #111);
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 3px 3px 0 var(--color-foreground, #111);
+  border-radius: 0;
+  touch-action: manipulation;
+}
+
+.lock-bio:active {
+  transform: translate(2px, 2px);
+  box-shadow: 1px 1px 0 var(--color-foreground, #111);
+}
+
+/* ====================== 设置页：应用锁 ====================== */
+.settings-lock-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.settings-lock-input {
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 10px;
+  font-size: 15px;
+  border: 2px solid var(--color-foreground, #111);
+  background: var(--color-background, #fff);
+  color: var(--color-foreground, #111);
+  border-radius: 0;
+}
+
+.settings-lock-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.settings-lock-actions button {
+  min-height: 44px;
+}
+
+.settings-lock-feedback {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 2px solid var(--color-border, #111);
+  background: var(--color-muted, #f4f4f4);
+  font-size: 13px;
+}
+
+/* ====================== 离线队列（📶 等待发送） ====================== */
+.queue-badge-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.queue-badge {
+  min-height: 32px;
+  padding: 2px 10px;
+  font-size: 12px;
+  font-weight: 700;
+  border: 2px solid var(--color-foreground, #111);
+  background: var(--color-warn, #ffb300);
+  color: var(--color-foreground, #111);
+  cursor: pointer;
+  border-radius: 0;
+  white-space: nowrap;
+}
+
+.queue-badge::after {
+  /* 触控热区外扩（≥44px） */
+  content: "";
+  position: absolute;
+  inset: -8px;
+}
+
+.queue-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 30;
+  width: min(300px, 86vw);
+  max-height: 260px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 3px solid var(--color-foreground, #111);
+  background: var(--color-card, #fff);
+  box-shadow: 4px 4px 0 var(--color-foreground, #111);
+}
+
+.queue-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px;
+  border: 2px solid var(--color-border, #111);
+  background: var(--color-background, #fff);
+}
+
+.queue-item-text {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.queue-item-retry,
+.queue-item-drop,
+.queue-flush-all {
+  min-height: 32px;
+  padding: 2px 10px;
+  font-size: 12px;
+  font-weight: 700;
+  border: 2px solid var(--color-foreground, #111);
+  background: var(--color-secondary, #eee);
+  color: var(--color-foreground, #111);
+  cursor: pointer;
+  border-radius: 0;
+  touch-action: manipulation;
+}
+
+.queue-item-drop {
+  background: var(--color-destructive, #d33);
+  color: var(--color-destructive-foreground, #fff);
+}
+
+.queue-flush-all {
+  background: var(--color-primary, #ffd800);
+}
+
+.send-queued-tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  font-size: 11px;
+  font-weight: 700;
+  border: 2px solid var(--color-foreground, #111);
+  background: var(--color-warn, #ffb300);
+  color: var(--color-foreground, #111);
+}
+
+/* 动效合规：reduced-motion 时去除位移/过渡 */
+@media (prefers-reduced-motion: reduce) {
+  .lock-key,
+  .lock-bio {
+    transition: none;
+  }
+  .lock-key:active,
+  .lock-bio:active {
+    transform: none;
+  }
+}
+
+/* 响应式 320-1024：小屏收紧内距，大屏居中卡片 */
+@media (min-width: 640px) {
+  .lock-card {
+    max-width: 420px;
+    padding: 28px 24px;
+  }
+}

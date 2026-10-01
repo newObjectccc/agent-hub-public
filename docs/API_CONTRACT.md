@@ -722,3 +722,80 @@ text 仍为纯文本（claude 纯图消息 text 为 `[image]` 占位）；前端
 attach 生效期间同会话 parallel 发送（`POST /prompt` 与 WS `prompt`）一律 409 `ATTACH_ACTIVE`
 （防 server SDK 实例与终端 pi 双写同一会话文件）；`/compact` 同样拒绝。detach 后恢复。
 心跳超时（90s）attach 自动失效并广播 `attach_state {attached:false}`，web 自动回落 📱 平行模式。
+
+## 13. 应用锁（app lock，F1 新增）
+
+手机 PWA「打开面板先解锁」：PIN/口令只存 **SHA-256 加盐哈希**（`data/app-lock.json`，
+**绝不存明文**），解锁成功发短期令牌（7 天），前端存 localStorage，过期/失效显示解锁屏。
+
+**与 `auth.token` 的关系（两者完全独立）**：
+- `auth.token`（§6/§12）= **API 鉴权**（可选）：live-feed / 指令通道共享密钥，防局域网伪造调用。
+- 应用锁 = **UI 解锁**：防手机被他人拿到直接看会话；锁屏期间前端不挂载任何业务页面组件
+  （不拉会话/看板/通知数据）。
+- 解锁令牌只走 `X-App-Lock-Token` 请求头（**绝不进 URL/日志**），只用于应用锁自身端点的
+  "已解锁"证明（改密/注册生物识别）；不参与业务 API 鉴权，也不受 `auth.token` 影响。
+
+密钥规则：4-6 位数字 PIN，或 8-128 字符口令（passphrase）。哈希口径：`sha256(salt:secret)`，
+salt 随机 16 字节 hex 与记录同存；令牌为 32 字节随机 base64url，server 只存 `sha256(token)`。
+
+### GET /api/app-lock/status
+
+响应 200（**不含 hash/salt/token 等任何凭据字段**）：
+
+```json
+{ "configured": true, "webauthn": true, "unlocked": true, "expiresAt": 1770000000000 }
+```
+
+`unlocked` = 请求头 `X-App-Lock-Token` 命中未过期令牌；`expiresAt` 仅解锁时返回。
+
+### POST /api/app-lock/setup
+
+请求 `{ "secret": "1234" }` → 201 `{ "ok": true, "token": "…", "expiresAt": 0 }`。
+已配置 → 409 `APP_LOCK_EXISTS`；密钥非法 → 400 `INVALID_REQUEST`。
+
+### POST /api/app-lock/unlock
+
+请求 `{ "secret": "…" }` → 200 `{ "ok": true, "token": "…", "expiresAt": 0 }`；
+错误密钥 → 401 `APP_LOCK_DENIED`；未配置 → 400 `APP_LOCK_NOT_CONFIGURED`。
+
+### POST /api/app-lock/change
+
+请求 `{ "oldSecret": "…", "newSecret": "…" }` → 200 同 unlock（**令牌轮换，旧令牌作废**）。
+旧密钥错误 → 401 `APP_LOCK_DENIED`；新密钥非法 → 400。
+
+### POST /api/app-lock/disable
+
+请求 `{ "oldSecret": "…" }` → 200 `{ "ok": true, "configured": false }`（记录整体作废，
+不保留任何凭据/哈希）。旧密钥错误 → 401。
+
+### POST /api/app-lock/webauthn/register/start | finish（可选增强，需 `X-App-Lock-Token`）
+
+`start` → `{ "challengeId", "options": { "publicKey": { "challenge", "rp", "user", "pubKeyCredParams", … } } }`
+（challenge/user.id 为 base64url，前端转 ArrayBuffer 调 `navigator.credentials.create`）。
+`finish` 请求 `{ "challengeId", "credential": { "id", "publicKey", "clientDataJSON" } }`
+（`publicKey` = 浏览器 `response.getPublicKey()` 的 base64url SPKI DER）→ 200 `{ "ok": true, "webauthn": true }`。
+server 校验 clientData（type=`webauthn.create`、challenge、origin hostname=rpId）并登记公钥；
+未解锁 → 401。浏览器不支持 getPublicKey 时前端隐藏生物识别入口（全走 PIN）。
+
+### POST /api/app-lock/webauthn/login/start | finish
+
+`start` → `{ "challengeId", "options": { "publicKey": { "challenge", "rpId", … } } }`（未启用 → 400）。
+`finish` 请求 `{ "challengeId", "credential": { "id", "clientDataJSON", "authenticatorData", "signature" } }`
+→ server 验签（ECDSA-P256-SHA256 over `authenticatorData || sha256(clientDataJSON)`，另校验
+rpIdHash / userPresent / userVerified / signCount 防克隆）→ 200 发解锁令牌（同 unlock 语义）。
+
+### 错误码（本节新增）
+
+| code | HTTP | 含义 |
+|---|---|---|
+| `APP_LOCK_EXISTS` | 409 | 已配置（改用 change） |
+| `APP_LOCK_NOT_CONFIGURED` | 400 | 未配置 |
+| `APP_LOCK_DENIED` | 401 | 密钥错误 / 验签失败 / 挑战过期 |
+
+### 离线消息队列（F1，纯客户端，无新增端点）
+
+发送失败（网络错误/5xx）消息进入本地持久队列（localStorage `agent-hub.offlineQueue.v1`，
+刷新/杀 App 不丢）；`online` 事件 + WS 重连自动按序重发（复用既有 `POST /prompt` /
+`POST /message` 通道，attach 通道以 `clientMessageId=localId` 幂等）。业务拒绝（4xx）标
+手动重试不自动重发。附件/图片随消息入队：已上传存引用路径，未上传存 base64（联网后补
+`POST /api/uploads`），base64 持久化上限单图 1MB / 队列 3MB，超限提示并退化为本次页面内暂存。

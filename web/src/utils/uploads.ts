@@ -17,13 +17,17 @@ export interface Attachment {
   id: string;
   /** 清洗后的文件名 */
   name: string;
-  /** 可引用路径（相对会话 cwd 或绝对） */
+  /** 可引用路径（相对会话 cwd 或绝对）；离线暂存未上传时为 "" */
   path: string;
   mimeType: string;
   size: number;
   isImage: boolean;
   /** 图片预览 data URL（非图片为 null） */
   preview: string | null;
+  /** false = 上传失败但已本地暂存（离线），发送时随消息入离线队列 */
+  uploaded?: boolean;
+  /** 未上传时的纯 base64（离线暂存，联网后补上传） */
+  data?: string | null;
 }
 
 /** MIME 白名单（与 server ALLOWED_UPLOAD_MIME 同口径） */
@@ -140,11 +144,14 @@ export function stripUploadRef(text: string, path: string): string {
     .trim();
 }
 
-/** 发送文本兜底：正文为空但仍有附件时，用引用行作为消息（prompt 要求非空文本） */
+/** 发送文本兜底：正文为空但仍有附件时，用引用行作为消息（prompt 要求非空文本）；未上传的离线暂存附件无路径可引 */
 export function buildSendText(text: string, attachments: readonly Attachment[]): string {
   const trimmed = text.trim();
   if (trimmed !== "") return trimmed;
-  return attachments.map((a) => uploadRef(a.path)).join(" ");
+  return attachments
+    .filter((a) => a.uploaded !== false && a.path !== "")
+    .map((a) => uploadRef(a.path))
+    .join(" ");
 }
 
 /** 是否可发送（有正文或有附件，且不超上限） */
@@ -152,9 +159,9 @@ export function canSend(text: string, attachments: readonly Attachment[]): boole
   return (text.trim() !== "" || attachments.length > 0) && attachments.length <= MAX_ATTACHMENTS;
 }
 
-/** prompt `images` 参数（仅图片附件；server 转 pi ImageContent） */
+/** prompt `images` 参数（仅已上传的图片附件；server 转 pi ImageContent） */
 export function imageRefs(attachments: readonly Attachment[]): string[] {
-  return attachments.filter((a) => a.isImage).map((a) => a.path);
+  return attachments.filter((a) => a.isImage && a.uploaded !== false && a.path !== "").map((a) => a.path);
 }
 
 /**

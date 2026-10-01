@@ -1,5 +1,5 @@
 import { ChatSkeleton } from "../components/Skeletons";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type CSSProperties } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ClipboardEvent as ReactClipboardEvent, type CSSProperties } from "react";
 import { api, ApiError } from "../api/client";
 import {
   isAttachSending,
@@ -12,6 +12,8 @@ import {
   type ChannelEchoState,
 } from "../api/attach";
 import { sendPromptWithMode, type SendMode } from "../api/prompt";
+import { getOfflineQueue, appendLocalAttachmentHints, classifySendError, queuedImagesOf, type QueuedSend } from "../chat/offlineQueue";
+import { flushOfflineQueue } from "../chat/offlineFlush";
 import type { CommandItem, SessionMessage, SessionStatus, SessionSummary, SubAgentActivity, TerminalAttachInfo } from "../api/types";
 import { applyWsEvent, reconcileMessages, type WsEvent } from "../chat/messageStream";
 import { waitPhaseAfterEvent, type WaitPhase } from "../chat/waitPhase";
@@ -63,6 +65,7 @@ import {
   buildSendText,
   dataUrlToBase64,
   imageRefs,
+  isImageMime,
   MAX_ATTACHMENTS,
   readFileAsDataUrl,
   stripUploadRef,
@@ -138,10 +141,13 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
     waitRef.current = null;
     setWait(null);
   };
-  /** 发送失败待重试（localId → 原文与图片引用，重试发同样内容） */
-  const [failedSends, setFailedSends] = useState<ReadonlyMap<string, { text: string; images?: string[] }>>(new Map());
-  const failedSendsRef = useRef(failedSends);
-  failedSendsRef.current = failedSends;
+  /** 发送失败/待发送（F1 持久离线队列）：刷新/杀 App 不丢；failedSends 已升级为本队列 */
+  const queueStore = getOfflineQueue();
+  const queueItems = useSyncExternalStore(queueStore.subscribe, queueStore.list, queueStore.list);
+  const sessionQueue = useMemo(() => queueItems.filter((i) => i.sessionId === sessionId), [queueItems, sessionId]);
+  const queuedById = useMemo(() => new Map(sessionQueue.map((i) => [i.localId, i])), [sessionQueue]);
+  /** 待发送队列浮层（📶 徽章点击展开，逐条重试/删除） */
+  const [queueOpen, setQueueOpen] = useState(false);
   /** 会话最后驱动来源（心理预期管理）：面板驱动过 → panel */
   const [drivenBy, setDrivenBy] = useState<"panel" | "terminal">(() => {
     const storage = safeStorage();
@@ -385,7 +391,8 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
     rememberRef(path);
   };
 
-  /** 单文件上传：本地预检 → base64 → POST /api/uploads（契约 §11）→ 附件草稿 */
+  /** 单文件上传：本地预检 → base64 → POST /api/uploads（契约 §11）→ 附件草稿；
+   * 网络失败时降级为本地暂存附件（uploaded:false，随消息入离线队列，F1） */
   const uploadOne = async (file: File): Promise<Attachment | null> => {
     const problem = validateUploadFile(file);
     if (problem) {
@@ -393,21 +400,45 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
       return null;
     }
     const dataUrl = await readFileAsDataUrl(file);
-    const { upload } = await api.uploadFile({
-      sessionId,
-      name: file.name,
-      mimeType: file.type,
-      data: dataUrlToBase64(dataUrl),
-    });
-    return {
-      id: `att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      name: upload.name,
-      path: upload.path,
-      mimeType: upload.mimeType,
-      size: upload.size,
-      isImage: upload.isImage,
-      preview: upload.isImage ? dataUrl : null,
-    };
+    const base64 = dataUrlToBase64(dataUrl);
+    const id = `att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    try {
+      const { upload } = await api.uploadFile(
+        // 有 cwd 直接用（免 findSession 全量扫描）；无 cwd 退回 sessionId 归属校验
+        session?.cwd
+          ? { cwd: session.cwd, name: file.name, mimeType: file.type, data: base64 }
+          : { sessionId, name: file.name, mimeType: file.type, data: base64 },
+      );
+      return {
+        id,
+        name: upload.name,
+        path: upload.path,
+        mimeType: upload.mimeType,
+        size: upload.size,
+        isImage: upload.isImage,
+        preview: upload.isImage ? dataUrl : null,
+        uploaded: true,
+        data: null,
+      };
+    } catch (e) {
+      // 网络错误/5xx：本地暂存，随消息入离线队列（联网后补上传再发）
+      if (classifySendError(e) === "network") {
+        const isImage = isImageMime(file.type);
+        showToast(`📶 ${file.name}：网络不可用，已本地暂存（随消息进入离线队列）`);
+        return {
+          id,
+          name: file.name,
+          path: "",
+          mimeType: file.type,
+          size: file.size,
+          isImage,
+          preview: isImage ? dataUrl : null,
+          uploaded: false,
+          data: base64,
+        };
+      }
+      throw e;
+    }
   };
 
   /** 📎 选择 / 粘贴文件（逐个串行上传，成功即插入引用） */
@@ -426,7 +457,8 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
           const att = await uploadOne(file);
           if (!att) continue;
           setAttachments((prev) => [...prev, att]);
-          insertRefText(att.path);
+          // 离线暂存的附件无路径可引，发送时随消息入队后由 server 补引用
+          if (att.uploaded !== false && att.path !== "") insertRefText(att.path);
         } catch (e) {
           showToast(`${file.name}：上传失败（${e instanceof Error ? e.message : "未知错误"}）`);
         }
@@ -444,11 +476,11 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
     void handleFiles(files);
   };
 
-  /** 删除附件：同步清掉输入框里的 `@path` 引用 */
+  /** 删除附件：同步清掉输入框里的 `@path` 引用（离线暂存附件无引用可清） */
   const removeAttachment = (id: string) => {
     const target = attachments.find((a) => a.id === id);
     setAttachments((prev) => prev.filter((a) => a.id !== id));
-    if (target) updateInput(stripUploadRef(inputRef.current, target.path));
+    if (target && target.uploaded !== false && target.path !== "") updateInput(stripUploadRef(inputRef.current, target.path));
   };
 
   /** 选中命令：把 `/token` 替换为 `/cmd `（尾随空格便于连续输参数）；claude 内置命令给降级提示 */
@@ -861,17 +893,76 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
   useSessionSocket({
     sessionId,
     onEvent: handleEvent,
-    onReconnect: () => void loadSession(),
-    onStatusChange: setConnected,
+    onReconnect: () => {
+      void loadSession();
+      // WS 重连 = 网络恢复：离线队列自动按序补发（F1）
+      flushQueueNow(true);
+    },
+    onStatusChange: (connectedNow) => {
+      setConnected(connectedNow);
+      if (connectedNow) flushQueueNow(true);
+    },
   });
 
-  /** 发送主链路（首发/重试共用）：成功 → 思考中阶段 + 触觉反馈；失败 → 消息标记可重试 */
-  const performSend = async (localId: string, text: string, images: string[]) => {
+  /** 发送失败 → 进持久离线队列（F1）：刷新/杀 App 不丢；网络错误自动重试，业务拒绝手动重试 */
+  const enqueueFailedSend = (
+    localId: string,
+    text: string,
+    atts: Attachment[],
+    channel: "parallel" | "attach",
+    autoRetry: boolean,
+    error: string,
+  ) => {
+    const item: QueuedSend = {
+      localId,
+      sessionId,
+      cwd: session?.cwd ?? "",
+      text,
+      images: queuedImagesOf(atts),
+      sendMode,
+      attachMode: mapAttachSendMode(sendMode),
+      channel,
+      queuedAt: Date.now(),
+      attempts: 0,
+      autoRetry,
+      lastError: error,
+    };
+    const result = getOfflineQueue().add(item);
+    if (!result.ok) showToast(result.reason);
+  };
+
+  /** 发送主链路（首发）：成功 → 思考中阶段 + 触觉反馈；失败 → 入离线队列（持久，可重试） */
+  const performSend = async (localId: string, text: string, sent: Attachment[]) => {
     beginWait("sending");
+    let atts = sent;
+    const channel: "parallel" | "attach" = isAttachSending(attachModeRef.current, terminal) ? "attach" : "parallel";
     try {
-      if (isAttachSending(attachModeRef.current, terminal)) {
+      // 离线暂存附件补上传（正常路径选附件时已上传；这里只处理断网时本地暂存的）
+      if (atts.some((a) => a.uploaded === false)) {
+        const uploaded: Attachment[] = [];
+        for (const att of atts) {
+          if (att.uploaded !== false || !att.data) {
+            uploaded.push(att);
+            continue;
+          }
+          const { upload } = await api.uploadFile(
+            session?.cwd
+              ? { cwd: session.cwd, name: att.name, mimeType: att.mimeType, data: att.data }
+              : { sessionId, name: att.name, mimeType: att.mimeType, data: att.data },
+          );
+          uploaded.push({ ...att, path: upload.path, uploaded: true, data: null });
+        }
+        atts = uploaded;
+      }
+      const imagePaths = imageRefs(atts);
+      // 非图片附件补引用提示（与 server appendAttachmentHints 同口径，通道 a）
+      const hintedText = appendLocalAttachmentHints(
+        text,
+        atts.filter((a) => !a.isImage && a.path !== "").map((a) => a.path),
+      );
+      if (channel === "attach") {
         // attach（E3 双模式）：消息入终端指令队列（终端 pi 实时显示并执行；回执经 WS command_ack 回流）
-        const queued = await api.sendAttachMessage(sessionId, text, mapAttachSendMode(sendMode), localId);
+        const queued = await api.sendAttachMessage(sessionId, hintedText, mapAttachSendMode(sendMode), localId);
         // 时序保护：回执可能先于发送响应到达（长轮询秒级投递），已回执则直接展示终态
         const ack = ackedRef.current.get(queued.commandId);
         if (ack) {
@@ -892,16 +983,16 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
       // 图片附件随 prompt 上传（pi 直接附图，claude 走 @path 引用，契约 §1/§11）
       const outcome = await sendPromptWithMode(
         sessionId,
-        text,
+        hintedText,
         sendMode,
         {
           sendPrompt: api.sendPrompt,
           onNotice: setNotice,
         },
-        images.length > 0 ? images : undefined,
+        imagePaths.length > 0 ? imagePaths : undefined,
       );
       if (!outcome.result.accepted) {
-        setFailedSends((prev) => new Map(prev).set(localId, { text, images }));
+        enqueueFailedSend(localId, text, atts, channel, false, "消息未被接受，请稍后重试");
         endWait();
         setNotice("消息未被接受，请稍后重试");
       } else {
@@ -912,10 +1003,11 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
         vibrate(10);
       }
     } catch (e) {
-      // 网络错误 / 5xx：标记该条“发送失败”，可原样重发
-      setFailedSends((prev) => new Map(prev).set(localId, { text, images }));
+      // 网络错误 / 5xx → 自动重试；4xx 业务拒绝 → 手动重试（均持久化，刷新不丢）
+      const message = e instanceof Error ? e.message : "发送失败";
+      enqueueFailedSend(localId, text, atts, channel, classifySendError(e) === "network", message);
       endWait();
-      setNotice(e instanceof Error ? e.message : "发送失败");
+      setNotice(message);
     }
   };
 
@@ -929,7 +1021,6 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
     if (!text) return;
     sendingRef.current = true;
     const sent = attachments;
-    const images = imageRefs(sent);
     setSending(true);
     setNotice(null);
     const localId = `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -951,33 +1042,68 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
     setAttachments([]);
     setQuote(null);
     try {
-      await performSend(localId, text, images);
+      await performSend(localId, text, sent);
     } finally {
       sendingRef.current = false;
       setSending(false);
     }
   };
 
-  /** 发送失败重试：不新增占位，直接重发同样内容；成功后清除失败标记 */
+  /** 发送失败重试：从持久队列原样重发（不新增占位）；成功出队（F1） */
   const retrySend = async (localId: string) => {
     if (sendingRef.current) return;
-    const payload = failedSendsRef.current.get(localId);
-    if (!payload) return;
+    const item = queuedById.get(localId);
+    if (!item) return;
     sendingRef.current = true;
     setSending(true);
     setNotice(null);
-    setFailedSends((prev) => {
-      const next = new Map(prev);
-      next.delete(localId);
-      return next;
-    });
+    beginWait("sending");
     try {
-      await performSend(localId, payload.text, payload.images ?? []);
+      const result = await flushOfflineQueue({ only: [localId] });
+      const failure = result?.failed.find((f) => f.localId === localId);
+      if (!failure && result?.sent.includes(localId)) {
+        if (item.channel === "attach") {
+          setEcho({ channel: "attach", phase: "sent", commandId: localId });
+          endWait();
+        } else {
+          setStatus("running");
+          beginWait("thinking");
+          markPanelDriven();
+        }
+        vibrate(10);
+      } else {
+        endWait();
+        setNotice(failure?.error ?? "发送失败，仍在等待重试");
+      }
     } finally {
       sendingRef.current = false;
       setSending(false);
     }
   };
+
+  /** 丢弃待发送消息（业务拒绝的坏消息手动清掉） */
+  const discardQueued = (localId: string) => {
+    getOfflineQueue().remove(localId);
+    showToast("已删除待发送消息");
+  };
+
+  /** 待发送队列全部重发 */
+  const retryAll = async () => {
+    setNotice(null);
+    await flushOfflineQueue({ notify: true });
+  };
+
+  /** 网络恢复（online 事件）/ WS 重连：离线队列自动按序补发（F1） */
+  const flushQueueNow = useCallback((notify: boolean) => {
+    if (getOfflineQueue().list().length === 0) return;
+    void flushOfflineQueue({ notify });
+  }, []);
+
+  useEffect(() => {
+    const onOnline = () => flushQueueNow(true);
+    window.addEventListener("online", onOnline);
+    return () => window.removeEventListener("online", onOnline);
+  }, [flushQueueNow]);
 
   /** 切换会话驱动模式（E3）：attach 先与 server 握手（终端在线才能接管）；detach 恢复平行通道 */
   const changeAttachMode = async (mode: AttachMode) => {
@@ -1242,7 +1368,8 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
                   onOpenFile={setFileRef}
                   onQuote={handleQuote}
                   measureRef={rowMeasureRef}
-                  sendFailed={failedSends.has(item.message.id)}
+                  sendFailed={queuedById.has(item.message.id)}
+                  sendQueued={queuedById.get(item.message.id)?.autoRetry === true}
                   onRetry={() => void retrySend(item.message.id)}
                 />
               ),
@@ -1280,6 +1407,37 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
           {wait === null && !connected && (
             <div className="typing-indicator">
               <span>连接断开，重连中…（历史消息不会丢）</span>
+            </div>
+          )}
+          {/* 离线队列徽章（F1）：待发送消息数；点击展开逐条重试/删除 */}
+          {sessionQueue.length > 0 && (
+            <div className="queue-badge-wrap">
+              <button
+                type="button"
+                className="queue-badge"
+                onClick={() => setQueueOpen((v) => !v)}
+                aria-label={`待发送消息 ${sessionQueue.length} 条`}
+              >
+                📶 等待发送（{sessionQueue.length}）
+              </button>
+              {queueOpen && (
+                <div className="queue-popover" role="region" aria-label="待发送消息列表">
+                  {sessionQueue.map((item) => (
+                    <div key={item.localId} className="queue-item">
+                      <span className="queue-item-text">{item.text}</span>
+                      <button type="button" className="queue-item-retry" onClick={() => void retrySend(item.localId)}>
+                        重试
+                      </button>
+                      <button type="button" className="queue-item-drop" onClick={() => discardQueued(item.localId)}>
+                        删除
+                      </button>
+                    </div>
+                  ))}
+                  <button type="button" className="queue-flush-all" onClick={() => void retryAll()}>
+                    全部重发
+                  </button>
+                </div>
+              )}
             </div>
           )}
           <div className="modebar-right">

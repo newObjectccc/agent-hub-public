@@ -102,6 +102,7 @@ export const MessageBubble = memo(function MessageBubble({
   liveIndex,
   liveTotal,
   sendFailed,
+  sendQueued,
   onRetry,
   measureRef,
 }: {
@@ -115,6 +116,8 @@ export const MessageBubble = memo(function MessageBubble({
   liveTotal?: number;
   /** 发送失败标记（网络错误/5xx/未接受）：显示"⚠️ 发送失败" + 重试按钮 */
   sendFailed?: boolean;
+  /** 进阶：已入离线队列等网络恢复自动重发（在失败条上追加「📶 等待发送」标记） */
+  sendQueued?: boolean;
   /** 点击"重试"：重发同样内容 */
   onRetry?: () => void;
   /** 行高测量 ref（长会话窗口化；引用须稳定） */
@@ -241,6 +244,11 @@ export const MessageBubble = memo(function MessageBubble({
         {message.role === "user" && sendFailed && (
           <div className="send-failed" role="alert">
             <span className="send-failed-text">⚠️ 发送失败</span>
+            {sendQueued && (
+              <span className="send-queued-tag" title="已入离线队列，网络恢复后自动按序重发">
+                📶 等待发送
+              </span>
+            )}
             <button type="button" className="send-retry" onClick={onRetry} aria-label="重发这条消息">
               重试
             </button>
