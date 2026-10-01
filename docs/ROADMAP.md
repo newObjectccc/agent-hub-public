@@ -45,16 +45,16 @@
 
 ## 批次 3（当前批次）
 
-### T6 文档收口 + CI 工程化 🔨
+### T6 文档收口 + CI 工程化 ✅
 - ✅ ROADMAP/CHANGELOG/README 与实际能力对齐（WebAuthn、性能成果等补记）
 - ✅ GitHub Actions CI（Node 20/22 × Ubuntu/macOS，build+lint+test 全量守护）
 
-### T7 Token/费用用量统计（pi 源）🔨
+### T7 Token/费用用量统计（pi 源）✅
 - pi 会话 JSONL usage 解析聚合（tokens/input/output/cacheRead/reasoning/cost）
 - `GET /api/usage` 全局与单会话汇总；工作台今日概览 + 会话卡片展示
 - ⏸ claude 源 usage 明确延后（当前只需支持 pi）
 
-### T8 快捷指令面板（prompt 模板）🔨
+### T8 快捷指令面板（prompt 模板）✅
 - composer 一键插入常用 prompt 模板（内置 + 自定义，localStorage 持久化）
 - 模板管理（编辑/删除/恢复默认）、移动端体验过全局验收基线
 
