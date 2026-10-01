@@ -1285,24 +1285,27 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
           <TreeIcon />
           树
         </Button>
-        {/* 子代理来源标记：pi-subagents 派生会话在顶栏明示 */}
-        {session?.isSubAgent === true && (
-          <span className="badge subagent" title="pi-subagents 派生的子代理会话">
-            🤖 子代理
-          </span>
-        )}
-        <SessionActionsMenu onFork={() => void doFork()} forkBusy={forkBusy} />
-        {/* 驱动来源徽章（心理预期管理）：📱 面板驱动 / 🖥 终端驱动，与 ⚡旧标识语义统一 */}
-        <DrivenBadge drivenBy={drivenBy} />
-        <SourceBadge source={session?.source ?? null} />
-        <StatusBadge status={status} />
-        {/* 双模式切换（E3）：顶栏一个紧凑徽章，弹出小菜单二选一，零额外常驻占位 */}
-        <AttachModeMenu
-          mode={attachMode}
-          terminal={terminal}
-          busy={attachBusy}
-          onChange={(m) => void changeAttachMode(m)}
-        />
+        {/* 右侧状态徽章簇（独立分组：窄屏整组换行到第二行，绝不横向溢出） */}
+        <div className="chat-badges">
+          {/* 子代理来源标记：pi-subagents 派生会话在顶栏明示 */}
+          {session?.isSubAgent === true && (
+            <span className="badge subagent" title="pi-subagents 派生的子代理会话">
+              🤖 子代理
+            </span>
+          )}
+          <SessionActionsMenu onFork={() => void doFork()} forkBusy={forkBusy} />
+          {/* 驱动来源徽章（心理预期管理）：📱 面板驱动 / 🖥 终端驱动，与 ⚡旧标识语义统一 */}
+          <DrivenBadge drivenBy={drivenBy} />
+          <SourceBadge source={session?.source ?? null} />
+          <StatusBadge status={status} />
+          {/* 双模式切换（E3）：顶栏一个紧凑徽章，弹出小菜单二选一，零额外常驻占位 */}
+          <AttachModeMenu
+            mode={attachMode}
+            terminal={terminal}
+            busy={attachBusy}
+            onChange={(m) => void changeAttachMode(m)}
+          />
+        </div>
       </header>
 
       {notice && <div className="chat-notice">{notice}</div>}
