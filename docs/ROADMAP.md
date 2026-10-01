@@ -58,7 +58,19 @@
 - composer 一键插入常用 prompt 模板（内置 + 自定义，localStorage 持久化）
 - 模板管理（编辑/删除/恢复默认）、移动端体验过全局验收基线
 
-### 批次 3 之后的候选（⬜ 未排期）
+### 批次 4（✅ 完成）— 性能与体验收口（含二次 OOM 风险拆除）
+
+### T9 性能修复（审计驱动）✅
+- tail 增量解析、claude 清单缓存、scan per-file 快照、Insight 计数化、AgentSession 逐出、Map 淘汰、system/usage 缓存预热
+- 实测：live 风暴下 CPU 342%→0.4%、内存 2.5GB→382MB（前置修复 bb01753）；刷新 7.2ms→1.0ms、Insight 驻留 9KB→0.8KB/会话
+
+### T10 UI/UX 改进批 ✅
+- 草稿持久化、搜索深链回溯、锁状态机/错误文案、输入语义三件套、Markdown 块缓存、toast/焦点/刷新等杂项
+
+### T11 一键集成 ✅
+- Tailscale 检测假阳性修复、npm run remote、npm 发包就绪（npx 冒烟通过）、workspaceRoot 回落
+
+## 批次 3 之后的候选（⬜ 未排期）
 - ⬜ Web Push 锁屏通知（HTTPS 依赖解除后）
 - ⏸ claude 会话终端接管（双模式对称补全，用户明确延后）
 - ⬜ 树上 fork/clone 操作（T3 预留）

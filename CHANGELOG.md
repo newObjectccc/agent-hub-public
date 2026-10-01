@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+### 性能（二次 OOM 风险拆除）
+- 会话 tail 增量解析：字节偏移 + 完整行边界 + UTF-8 安全，活跃长会话不再每 2s 全量重解析（不丢不重有专项测试）
+- claude 适配层清单 TTL 缓存 + inflight 去重：单请求全语料扫描 2→0
+- scan per-file mtime+size 快照：二次扫描 0 读盘 0 parse；Insight 计数化（不再驻留全量 messages，9KB→0.8KB/会话）
+- AgentSession LRU 逐出（20 个 + 10min 空闲 TTL）；feed/statuses/clientSeen/血缘 pending 等 Map 统一淘汰
+- /api/system 30s 缓存（原每请求 200ms）、/api/usage 启动预热 + 300ms 限时（原冷启动 2.3s 同步等待）
+- 血缘扫描 TTL 快照（原每 10s/连接全目录 readdir）；coalesceDeltas 分片 join；usage spread 循环化
+
+### 体验（UI/UX 改进批）
+- 草稿持久化：按会话存 localStorage，刷新/切回自动恢复，30 天清理
+- 搜索深链回溯：命中未加载的早期消息时按 before 游标回溯（≤6 页），未命中给轻提示
+- 锁状态机修复：解锁失败严格停解锁页（不再误回落设置页）；错误文案友好化 + 重试入口；PIN 输入 readOnly 消除双键盘
+- 输入语义：语音 pointer capture（移出=取消不写半句）、Enter 发送启发式 + 组合输入冷却、发送模式粘性保留（复位带提示）
+- Markdown 块级缓存：流式回复渲染输出逐字符一致，长文 O(n²)→增量
+- toast 去重/上限 3/手动关闭；Sheet 焦点陷阱 + Esc + 焦点归还；PullToRefresh 判定双写；首页 dashboard 失败错误条；reduced-motion 尊重
+
+### 工程化（一键集成）
+- Tailscale 检测假阳性修复（崩溃输出不再当版本号，判不可用+修复建议）
+- `npm run remote` 一键远程：首次自动 setup + 构建 + start --tailscale（幂等）
+- npm 发包就绪（prepared, not published）：bin/files/依赖同步；npx/bin symlink 入口守卫修复（原静默退出）；npm pack 冒烟通过
+- workspaceRoot 平台回落（无 ~/Workspace 时回落 home + 提示）
+
 ### 新增
 - Token/费用用量统计（pi 源）：`GET /api/usage` 全局/单会话/时间窗汇总（tokens/input/output/cacheRead/reasoning/cost），工作台今日概览与会话列表展示；mtime+size 增量对账缓存，不全量重读
 - 快捷指令面板：composer ⚡ 一键插入 prompt 模板（10 个内置中英模板 + 自定义增删改，localStorage 持久化，删除/恢复默认两步确认）
