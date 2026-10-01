@@ -15,7 +15,7 @@
 - **🌿 Git 集成**：仓库状态、diff 查看器、工具调用文件联动（只读安全）
 - **⚡ 性能**：WS 批处理、消息 memo、长会话窗口化（流式渲染 12-15x、DOM 21x 瘦身）
 - **🔔 通知中心**：会话完结横幅/震动/声音、未读聚合、点击即读
-- **🔐 应用锁 + 离线队列**：PIN 解锁、断网消息排队自动重发
+- **🔐 应用锁 + 离线队列**：PIN / WebAuthn 通行密钥解锁、断网消息排队自动重发
 - **🖥 Web 终端**（ttyd 可选）：面板内直接开真终端
 
 ## 快速开始
@@ -60,7 +60,7 @@ node cli/start.js --tailscale    # 或 --lan 局域网
 
 ```bash
 pnpm install
-pnpm -r build && pnpm -r lint && pnpm -r test   # 全量验证（800+ 测试）
+pnpm -r build && pnpm -r lint && pnpm -r test   # 全量验证（900+ 测试，CI 守护）
 ```
 
 贡献流程见 [CONTRIBUTING.md](CONTRIBUTING.md)；版本记录见 [CHANGELOG.md](CHANGELOG.md)。

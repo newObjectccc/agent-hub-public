@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### 工程化
+- GitHub Actions CI：Node 20/22 × Ubuntu/macOS 矩阵，build + lint + test 全量守护
+- docs/ROADMAP.md 状态与实际能力对齐，补批次 3 规划
+
 ## v0.1.0（2026-09-30）首个版本
 
 手机 vibe coding 工作站完整能⼒首发。
@@ -26,8 +32,9 @@
 ### 性能
 - WS delta 40ms 批处理、消息 memo、长会话尾部锚定窗口化、图片懒加载
 - 流式渲染 12-15x、相邻更新 memo 200x、DOM 21x 瘦身；dashboard SWR + 重扫节流
+- dashboard git 扫描性能专项：周提交统计 15.79x 提速
 
 ### 其它
 - Git 只读集成（状态/diff/log/文件联动）、全局搜索、会话分支树、复制会话（fork）
-- 通知中心（聚合/已读/横幅/震动）、应用锁、离线消息队列、ttyd Web 终端入口
+- 通知中心（聚合/已读/横幅/震动）、应用锁（PIN + WebAuthn 通行密钥解锁）、离线消息队列、ttyd Web 终端入口
 - PWA 安装/离线壳、Tailscale 远程（TCP 转发）、响应式 320-1024 六档
