@@ -60,7 +60,8 @@ async function render(node: React.ReactElement): Promise<HTMLElement> {
 
 beforeEach(() => {
   vi.mocked(api.getSystem).mockClear();
-  vi.mocked(api.getSystem).mockResolvedValue(makeSystem());
+  // 默认模拟轮询失败（组件语义：失败保留上次值/prop），用例自行覆盖为成功态
+  vi.mocked(api.getSystem).mockRejectedValue(new Error("no poll"));
 });
 
 afterEach(async () => {
@@ -138,7 +139,8 @@ describe("SystemStatusBar 指标轮询（8s）", () => {
   it("每 8s 拉取 /api/system 并更新指标；失败保留上次值", async () => {
     vi.useFakeTimers();
     const el = await render(<SystemStatusBar system={makeSystem()} />);
-    expect(vi.mocked(api.getSystem)).not.toHaveBeenCalled();
+    // 挂载立即拉一次（修复系统页首屏空等 8s）
+    expect(vi.mocked(api.getSystem)).toHaveBeenCalledTimes(1);
 
     vi.mocked(api.getSystem).mockResolvedValue(
       makeSystem({ metrics: { ...metricsFixture, cpu: { usagePercent: 77, cores: 8 } } }),
@@ -146,7 +148,7 @@ describe("SystemStatusBar 指标轮询（8s）", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(8_000);
     });
-    expect(vi.mocked(api.getSystem)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(api.getSystem)).toHaveBeenCalledTimes(2);
     expect(el.textContent).toContain("77%");
 
     // 下一轮失败：保留 77% 不清空
@@ -154,7 +156,59 @@ describe("SystemStatusBar 指标轮询（8s）", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(8_000);
     });
+    expect(vi.mocked(api.getSystem)).toHaveBeenCalledTimes(3);
     expect(el.textContent).toContain("77%");
+  });
+});
+
+describe("终端入口快捷方式（F2）", () => {
+  it("ttyd 已安装：终端入口按钮可点 → 导航 /terminal；运行态显示在 ttyd chip", async () => {
+    const el = await render(
+      <SystemStatusBar
+        system={makeSystem({
+          ttyd: { available: true, version: "1.7.7" },
+          terminal: { supported: true, installed: true, running: true, version: "1.7.7", hint: null },
+        })}
+      />,
+    );
+    expect(el.textContent).toContain("运行中 v1.7.7");
+    const entry = el.querySelector<HTMLButtonElement>("button.terminal-entry");
+    expect(entry).not.toBeNull();
+    expect(entry!.getAttribute("aria-label")).toBe("打开终端");
+    await act(async () => {
+      entry!.click();
+    });
+    expect(window.location.pathname).toBe("/terminal");
+    // 复位（不污染其它用例）
+    window.history.pushState({}, "", "/");
+  });
+
+  it("ttyd 未安装：灰色说明（含安装指引），不可点", async () => {
+    const el = await render(
+      <SystemStatusBar
+        system={makeSystem({
+          ttyd: { available: false, version: null },
+          terminal: {
+            supported: true,
+            installed: false,
+            running: false,
+            version: null,
+            hint: "未安装（brew install ttyd）",
+          },
+        })}
+      />,
+    );
+    const entry = el.querySelector(".terminal-entry");
+    expect(entry).not.toBeNull();
+    expect(el.querySelector("button.terminal-entry")).toBeNull();
+    expect(entry!.textContent).toContain("未安装（brew install ttyd）");
+    expect(entry!.classList.contains("off")).toBe(true);
+  });
+
+  it("旧 server（terminal 字段缺省）：按 ttyd.available 推断，提示文案兑底", async () => {
+    const el = await render(<SystemStatusBar system={makeSystem()} />);
+    const entry = el.querySelector(".terminal-entry");
+    expect(entry!.textContent).toContain("未安装（brew install ttyd）");
   });
 });
 

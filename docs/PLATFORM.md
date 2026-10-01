@@ -35,6 +35,12 @@ node cli/setup.js --autostart      # 写入 ~/Library/LaunchAgents/com.agent-hub
 ```
 手动命令（注册失败时）：`launchctl load ~/Library/LaunchAgents/com.agent-hub.plist`
 
+**ttyd Web 终端（F2，可选增强）**：装了 ttyd（≥ 1.7）后，手机 PWA 侧栏出现「⌨ 终端」入口
+（系统页也有快捷入口）。语义：**按需拉起**——打开终端页点「▶ 打开真终端」时 server 才 spawn
+ttyd（随机高端口 + 仅 127.0.0.1 + 随机 Basic 凭证），浏览器只走 server 的同源反代
+`/terminal/*`（token 能力凭证），ttyd 从不对外暴露；server 关闭 / 空闲 30min 自动回收。
+未安装显示「未安装（brew install ttyd）」灰色指引；Windows 显示「不支持（WSL 内可用）」。
+
 Tailscale Serve（手机远程，`node cli/start.js --tailscale` 会自动引导）：
 ```bash
 /Applications/Tailscale.app/Contents/MacOS/Tailscale serve --bg --https=443 http://127.0.0.1:7700

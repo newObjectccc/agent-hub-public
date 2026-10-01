@@ -3,6 +3,7 @@
  *   "/"            工作台（首页：概览 + 本周统计 + 工作中/等你处理精华）
  *   "/sessions"    会话（会话列表 + tab + 新建/搜索）
  *   "/system"      系统（指标 + 环境）
+ *   "/terminal"    终端（ttyd Web 终端，F2；反代 /terminal/* 与本路由不冲突）
  *   "/settings"    设置（主题/提醒通道 + 关于）
  *   "/s/:id"       chat（可带 ?q=&m= 定位参数）
  *   "/s/:id/tree"  会话分支树
@@ -13,6 +14,7 @@ export type Route =
   | { name: "home" }
   | { name: "sessions" }
   | { name: "system" }
+  | { name: "terminal" }
   | { name: "settings" }
   | { name: "chat"; id: string }
   | { name: "tree"; id: string };
@@ -21,6 +23,7 @@ export type Route =
 export const HOME_PATH = "/";
 export const SESSIONS_PATH = "/sessions";
 export const SYSTEM_PATH = "/system";
+export const TERMINAL_PATH = "/terminal";
 export const SETTINGS_PATH = "/settings";
 
 export function parseRoute(pathname: string): Route {
@@ -31,6 +34,7 @@ export function parseRoute(pathname: string): Route {
   const normalized = pathname.replace(/\/+$/, "") || "/";
   if (normalized === SESSIONS_PATH) return { name: "sessions" };
   if (normalized === SYSTEM_PATH) return { name: "system" };
+  if (normalized === TERMINAL_PATH) return { name: "terminal" };
   if (normalized === SETTINGS_PATH) return { name: "settings" };
   return { name: "home" };
 }
@@ -42,6 +46,8 @@ export function listPathOf(route: Route): string {
       return SESSIONS_PATH;
     case "system":
       return SYSTEM_PATH;
+    case "terminal":
+      return TERMINAL_PATH;
     case "settings":
       return SETTINGS_PATH;
     case "home":

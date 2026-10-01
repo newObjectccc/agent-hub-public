@@ -29,7 +29,8 @@ export const ErrorCodes = {
   APP_LOCK_EXISTS: "APP_LOCK_EXISTS",
   APP_LOCK_NOT_CONFIGURED: "APP_LOCK_NOT_CONFIGURED",
   APP_LOCK_DENIED: "APP_LOCK_DENIED",
-} as const;
+  // ttyd Web 终端（契约 §13）
+  TERMINAL_UNAVAILABLE: "TERMINAL_UNAVAILABLE",} as const;
 
 export type ErrorCode = (typeof ErrorCodes)[keyof typeof ErrorCodes];
 

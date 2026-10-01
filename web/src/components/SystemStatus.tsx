@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
 import type { SystemMetrics, SystemStatus } from "../api/types";
+import { navigate, TERMINAL_PATH } from "../utils/router";
 import { Card } from "./ui/card";
 
 /** 指标轮询间隔（需求区间 5-10s 取 8s；页面隐藏时暂停） */
@@ -110,6 +111,8 @@ export function SystemStatusBar({ system }: { system: SystemStatus | null }) {
         // 轮询失败保留上次数据，不弹错
       }
     };
+    // 挂载立即拉一次（否则系统页（system=null）首屏要空等 8s）
+    void tick();
     const timer = setInterval(() => void tick(), METRICS_POLL_MS);
     return () => {
       alive = false;
@@ -165,7 +168,35 @@ export function SystemStatusBar({ system }: { system: SystemStatus | null }) {
           detail={live.claude?.version ? `v${live.claude.version}` : "已安装"}
         />
         <Chip label="tmux" available={live.tmux?.available === true} detail={live.tmux?.version} />
-        <Chip label="ttyd" available={live.ttyd?.available === true} detail={live.ttyd?.version} />
+        <Chip
+          label="ttyd"
+          available={live.ttyd?.available === true}
+          detail={
+            live.terminal?.running
+              ? `运行中${live.terminal.version ? ` v${live.terminal.version}` : ""}`
+              : live.ttyd?.version
+          }
+        />
+        {/* 终端入口快捷方式（F2）：已安装→一键进终端页；未安装/不支持→灰色降级说明 */}
+        {live.ttyd?.available === true && live.terminal?.supported !== false ? (
+          <button
+            type="button"
+            className="syschip terminal-entry"
+            onClick={() => navigate(TERMINAL_PATH)}
+            aria-label="打开终端"
+            title="ttyd Web 终端"
+          >
+            <span className="dot" />
+            <span className="label">⌨ 终端</span>
+            <span>{live.terminal?.running ? "运行中 →" : "进入 →"}</span>
+          </button>
+        ) : (
+          <span className="syschip off terminal-entry" aria-label="终端入口不可用">
+            <span className="dot" />
+            <span className="label">⌨ 终端</span>
+            <span>{live.terminal?.hint ?? "未安装（brew install ttyd）"}</span>
+          </span>
+        )}
         <Chip
           label="tailscale"
           available={live.tailscale?.available === true}

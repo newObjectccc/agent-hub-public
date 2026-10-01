@@ -18,6 +18,7 @@ import {
   SESSIONS_PATH,
   SETTINGS_PATH,
   SYSTEM_PATH,
+  TERMINAL_PATH,
   navigate,
   type Route,
 } from "../utils/router";
@@ -39,6 +40,7 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
   { path: HOME_PATH, icon: "🏠", label: "工作台", routeName: "home" },
   { path: SESSIONS_PATH, icon: "💬", label: "会话", routeName: "sessions" },
   { path: SYSTEM_PATH, icon: "🖥", label: "系统", routeName: "system" },
+  { path: TERMINAL_PATH, icon: "⌨️", label: "终端", routeName: "terminal" },
   { path: SETTINGS_PATH, icon: "⚙️", label: "设置", routeName: "settings" },
 ];
 
@@ -46,6 +48,7 @@ export const PAGE_TITLES: Record<Route["name"], string> = {
   home: "工作台",
   sessions: "会话",
   system: "系统",
+  terminal: "终端",
   settings: "设置",
   chat: "会话详情",
   tree: "会话分支",

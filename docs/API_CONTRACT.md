@@ -215,6 +215,13 @@ claude 会话：server 本地 spawn
   "tailscale": { "available": true, "loggedIn": true, "hostname": "my-mac" },
   "sessionDir": "/Users/me/.pi/agent/sessions",
   "workspaceRoot": "/Users/me/Workspace",
+  "terminal": {
+    "supported": true,
+    "installed": true,
+    "running": false,
+    "version": "1.7.7",
+    "hint": null
+  },
   "metrics": {
     "cpu": { "usagePercent": 42.5, "cores": 10 },
     "memory": { "usedBytes": 8589934592, "totalBytes": 17179869184, "usagePercent": 50 },
@@ -226,6 +233,10 @@ claude 会话：server 本地 spawn
 }
 ```
 `available:false` 不是错误——前端展示为"可选增强未安装"。`claude` 为 CLI 探测（可选增强）。
+
+`terminal` 为 F2 新增（ttyd Web 终端运行态，详见 §13；旧 server 可缺省，前端按未启用容错）：
+`supported`=平台支持（仅 POSIX）、`installed`=ttyd 已安装、`running`=按需拉起的 ttyd 在运行、
+`version` 同其它工具探测、`hint`=降级提示（未安装给安装命令 / Windows 给「不支持（WSL 内可用）」）。
 
 `metrics` 为 R3 新增契约字段（真实系统指标）：
 
@@ -799,3 +810,37 @@ rpIdHash / userPresent / userVerified / signCount 防克隆）→ 200 发解锁�
 `POST /message` 通道，attach 通道以 `clientMessageId=localId` 幂等）。业务拒绝（4xx）标
 手动重试不自动重发。附件/图片随消息入队：已上传存引用路径，未上传存 base64（联网后补
 `POST /api/uploads`），base64 持久化上限单图 1MB / 队列 3MB，超限提示并退化为本次页面内暂存。
+## 13. ttyd Web 终端（F2：同源反代 /terminal/*）
+
+可选增强：ttyd 已安装（POSIX）时，手机 PWA 提供「真终端」入口（iframe 内嵌同源反代页）。
+Windows 不支持（hint：「不支持（WSL 内可用）」）；未安装给安装指引（macOS `brew install ttyd`、
+Linux `sudo apt install ttyd`）。与 §12 的「终端接管」是两回事：这里是完整 Web 终端。
+
+### GET /api/terminal/status
+
+返回 §2 的 `terminal` 对象（`TerminalStatusDto`）。只探测不拉起进程。
+
+### POST /api/terminal/session
+
+按需拉起 ttyd 并签发访问 URL（201）：
+
+```json
+{ "url": "/terminal/?t=<token>", "expiresAt": "2026-02-18T20:00:00.000Z" }
+```
+
+- ttyd 未安装/启动失败 → 503 `TERMINAL_UNAVAILABLE`（message 带安装指引）。
+- 应用锁门禁（F1 预留 `terminalUnlocked`）返回 false → 401 `UNAUTHORIZED`。
+
+### POST /api/terminal/stop
+
+回收 ttyd（幂等，`{"stopped": true}`）；server 关闭 / 空闲 30min 也会自动回收。
+
+### 同源反代 /terminal/*（非 REST：HTML/资源/WS）
+
+- `GET/POST /terminal/*` → ttyd 端口（仅 127.0.0.1，随机高端口，随机 Basic 凭证由反代注入，
+  浏览器不弹原生认证）。HTML 响应注入 shim：WebSocket URL `/ws` → `/terminal/ws`（避开 hub 的
+  /ws 通道）并透传 token；绝对资源路径改写到 `/terminal/` 前缀。
+- `WS /terminal/ws`：upgrade 字节流管道到 ttyd `/ws`（同样 token 校验 + 凭证注入）。
+- 鉴权：token 能力凭证（`?t=` 查询串）或 `hub-terminal-token` HttpOnly Cookie（Path=/terminal）。
+  无效/过期 → 401 信封；ttyd 未运行 → 503。token 校验不过的 upgrade 直接断连。
+- 与 §6 的 SPA 路由 `/terminal`（无斜杠）不冲突：`/terminal` 回前端页面，`/terminal/*` 走反代。
