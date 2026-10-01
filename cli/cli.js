@@ -3,6 +3,7 @@
 // 纯 Node 跨平台（Windows CMD / PowerShell 原生可用），零 bash 依赖。
 import fs from 'node:fs';
 import { pathToFileURL } from 'node:url';
+import { isDirectRun as isDirectRunCheck } from './lib/entry.js';
 import { createColors } from './lib/color.js';
 import { parseCliArgs, rootHelpText } from './lib/args.js';
 import { defaultConfigPath, repoRoot } from './lib/paths.js';
@@ -50,7 +51,7 @@ export async function openPanel(argv = [], deps = {}) {
   if (!url) {
     const configPath = deps.configPath ?? defaultConfigPath(root);
     if (!fs.existsSync(configPath)) {
-      log(`${colors.fail} 配置不存在: ${configPath}，请先运行 node cli/setup.js，或显式传入 URL。`);
+      log(`${colors.fail} 配置不存在: ${configPath}，请先运行 agent-hub setup（源码运行：node cli/setup.js），或显式传入 URL。`);
       return 1;
     }
     try {
@@ -128,7 +129,7 @@ export async function main(argv = process.argv.slice(2)) {
 }
 
 // 直接执行入口
-const isDirectRun = Boolean(process.argv[1]) && import.meta.url === pathToFileURL(process.argv[1]).href;
+const isDirectRun = isDirectRunCheck(import.meta.url);
 if (isDirectRun) {
   main()
     .then((code) => process.exit(code))

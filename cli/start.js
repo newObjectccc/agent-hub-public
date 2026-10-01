@@ -4,6 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { isDirectRun as isDirectRunCheck } from './lib/entry.js';
 import { createColors } from './lib/color.js';
 import { parseCliArgs, startHelpText } from './lib/args.js';
 import { defaultConfigPath, repoRoot } from './lib/paths.js';
@@ -78,7 +79,7 @@ export async function main(argv = [], deps = {}) {
   // 1. 配置：--port / --lan 覆盖写入（server 读 config/hub.config.json）
   if (!fs.existsSync(configPath)) {
     log(`${colors.fail} 配置不存在: ${configPath}`);
-    log(`  请先运行 ${colors.bold('node cli/setup.js')} 生成配置。`);
+    log(`  请先运行 ${colors.bold('agent-hub setup')}（源码运行：node cli/setup.js）生成配置。`);
     return 1;
   }
   let config;
@@ -217,7 +218,7 @@ export async function main(argv = [], deps = {}) {
 }
 
 // 直接执行入口（被 cli.js 分发时不触发）
-const isDirectRun = Boolean(process.argv[1]) && import.meta.url === pathToFileURL(process.argv[1]).href;
+const isDirectRun = isDirectRunCheck(import.meta.url);
 if (isDirectRun) {
   main(process.argv.slice(2))
     .then((code) => process.exit(code))

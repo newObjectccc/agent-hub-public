@@ -8,12 +8,14 @@
     "agent-hub": "cli/cli.js"
   },
   "files": [
+    "LICENSE",
+    "README.md",
     "cli",
     "config/hub.config.example.json",
     "config/kpi-sources.json",
     "docs",
-    "README.md",
-    "LICENSE"
+    "server/dist",
+    "web/dist"
   ],
   "repository": {
     "type": "git",
@@ -32,7 +34,9 @@
     "self-hosted",
     "remote-control"
   ],
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "pnpm -r build",
     "test": "pnpm -r test",
@@ -41,9 +45,17 @@
     "start": "node cli/start.js",
     "remote": "node cli/remote.js",
     "doctor": "node cli/check.js",
-    "check": "node cli/check.js"
+    "check": "node cli/check.js",
+    "prepublishOnly": "pnpm -r build"
   },
   "devDependencies": {
     "typescript": "^5.7.0"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "^0.99.1",
+    "@fastify/cors": "^10.0.0",
+    "@fastify/static": "^8.0.0",
+    "fastify": "^5.2.0",
+    "ws": "^8.18.0"
   }
 }

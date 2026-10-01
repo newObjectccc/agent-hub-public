@@ -3,6 +3,7 @@
 // 幂等：已初始化时直接走 start 流程；纯 Node 跨平台，零 bash 依赖。
 import fs from 'node:fs';
 import { pathToFileURL } from 'node:url';
+import { isDirectRun as isDirectRunCheck } from './lib/entry.js';
 import { createColors } from './lib/color.js';
 import { parseCliArgs, remoteHelpText } from './lib/args.js';
 import { defaultConfigPath, repoRoot } from './lib/paths.js';
@@ -104,7 +105,7 @@ export async function main(argv = [], deps = {}) {
 }
 
 // 直接执行入口（被 cli.js 分发时不触发）
-const isDirectRun = Boolean(process.argv[1]) && import.meta.url === pathToFileURL(process.argv[1]).href;
+const isDirectRun = isDirectRunCheck(import.meta.url);
 if (isDirectRun) {
   main(process.argv.slice(2))
     .then((code) => process.exit(code))

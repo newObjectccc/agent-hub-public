@@ -2,6 +2,7 @@
 // agent-hub check — 只读环境检测报告（不写任何文件、不注册任何任务）。
 import fs from 'node:fs';
 import { pathToFileURL } from 'node:url';
+import { isDirectRun as isDirectRunCheck } from './lib/entry.js';
 import { createColors } from './lib/color.js';
 import { detectAll, installAdvice } from './lib/detect.js';
 import { parseCliArgs, checkHelpText } from './lib/args.js';
@@ -94,7 +95,7 @@ export async function main(argv = [], deps = {}) {
 }
 
 // 直接执行入口（被 cli.js 分发时不触发）
-const isDirectRun = Boolean(process.argv[1]) && import.meta.url === pathToFileURL(process.argv[1]).href;
+const isDirectRun = isDirectRunCheck(import.meta.url);
 if (isDirectRun) {
   main(process.argv.slice(2))
     .then((code) => process.exit(code))

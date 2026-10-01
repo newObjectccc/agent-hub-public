@@ -1,0 +1,4 @@
+# 发包排除清单。注意：本文件存在时 npm pack 不再回退 .gitignore，
+# 否则 .gitignore 的 `dist/` 规则会误伤 server/dist 构建产物（files 白名单失效）。
+# 实际收录以 package.json 的 files 白名单为准，这里只需不再排除 dist。
+node_modules

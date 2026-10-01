@@ -2,6 +2,7 @@
 // agent-hub setup — 一键准备：环境检测 → 安装依赖 → 生成 config → 可选安装 pi 扩展 → --autostart 平台适配。
 // pi 缺失只提示安装方式（不自动全局安装）；tmux/ttyd/tailscale 缺失=建议，不算错误。
 import { pathToFileURL } from 'node:url';
+import { isDirectRun as isDirectRunCheck } from './lib/entry.js';
 import { createColors } from './lib/color.js';
 import { detectAll, installAdvice } from './lib/detect.js';
 import { parseCliArgs, setupHelpText } from './lib/args.js';
@@ -169,7 +170,7 @@ export async function main(argv = [], deps = {}) {
 }
 
 // 直接执行入口（被 cli.js 分发时不触发）
-const isDirectRun = Boolean(process.argv[1]) && import.meta.url === pathToFileURL(process.argv[1]).href;
+const isDirectRun = isDirectRunCheck(import.meta.url);
 if (isDirectRun) {
   main(process.argv.slice(2))
     .then((code) => process.exit(code))
