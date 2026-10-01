@@ -30,12 +30,19 @@
   transition: transform 0.12s ease, box-shadow 0.12s ease;
 }
 
-/* 触控热区 ≥44px（视觉紧凑不缩水，命中区用伪元素扩展）；
-   inset 按 padding box 计算：按钮 34px + 边框 2×(9-2) = 48px 命中（REV-I1b 实测 -5px 仅得 40px） */
+/* 触控热区 ≥44px（视觉紧凑不缩水，命中区用伪元素扩展）：
+   显式 44×44 居中盒（纵横双达标——REV-I1c 实测 inset 法横向受按钮宽度基数限制仅 33.5px）；
+   z-index:-1 使热区位于按钮实心层之下，与相邻按钮重叠时让位（防误触） */
 .attach-trigger::after {
   content: "";
   position: absolute;
-  inset: -9px -6px;
+  width: 44px;
+  height: 44px;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  inset: auto;
+  z-index: -1;
 }
 
 .attach-trigger:active {
