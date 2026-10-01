@@ -145,3 +145,69 @@ describe("LockScreen 设置（setup）", () => {
     expect(onSetup).toHaveBeenCalledWith("open-sesame");
   });
 });
+
+describe("LockScreen 错误与输入通道（UX 审查 AC3）", () => {
+  it("解锁失败（PIN 错）后停留在解锁屏：标题/交互不回落到「设置应用锁」首屏", () => {
+    const onUnlock = vi.fn();
+    const el = render(
+      <LockScreen {...baseProps} mode="unlock" error="PIN 不正确，请重试" onUnlock={onUnlock} />,
+    );
+    expect(el.textContent).toContain("🔒 应用锁");
+    expect(el.textContent).not.toContain("设置应用锁");
+    // 错误可见且可直接重试（再次提交仍回调 onUnlock）
+    expect(el.querySelector(".lock-error")!.textContent).toContain("PIN 不正确");
+    for (const d of ["1", "2", "3", "4"]) key(el, d);
+    submit(el);
+    expect(onUnlock).toHaveBeenCalledWith("1234");
+  });
+
+  it("PIN 输入框 readOnly（自绘键盘唯一输入通道：不弹系统键盘/防肩窥），aria 保留", () => {
+    const el = render(<LockScreen {...baseProps} mode="unlock" />);
+    const input = el.querySelector<HTMLInputElement>(".lock-input")!;
+    expect(input.readOnly).toBe(true);
+    expect(input.type).toBe("password");
+    expect(input.getAttribute("aria-label")).toBe("输入 PIN");
+    expect(input.getAttribute("aria-readonly")).toBe("true");
+  });
+
+  it("readOnly 下物理键盘仍可输入（keydown 喂给自绘键盘逻辑）", () => {
+    const onUnlock = vi.fn();
+    const el = render(<LockScreen {...baseProps} mode="unlock" onUnlock={onUnlock} />);
+    const input = el.querySelector<HTMLInputElement>(".lock-input")!;
+    act(() => {
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "5", bubbles: true, cancelable: true }));
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "6", bubbles: true, cancelable: true }));
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "7", bubbles: true, cancelable: true }));
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "8", bubbles: true, cancelable: true }));
+    });
+    expect(el.querySelectorAll(".lock-dot.filled")).toHaveLength(4);
+    act(() => {
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Backspace", bubbles: true, cancelable: true }));
+    });
+    expect(el.querySelectorAll(".lock-dot.filled")).toHaveLength(3);
+  });
+
+  it("错误条带「重试」入口（onRetry）；无 onRetry 时不占位", () => {
+    const onRetry = vi.fn();
+    const withRetry = render(
+      <LockScreen {...baseProps} mode="unlock" error="无法连接服务端，暂时无法解锁" onRetry={onRetry} />,
+    );
+    const btn = withRetry.querySelector<HTMLButtonElement>(".lock-retry")!;
+    expect(btn).not.toBeNull();
+    expect(btn.textContent).toBe("重试");
+    click(btn);
+    expect(onRetry).toHaveBeenCalledTimes(1);
+    act(() => {
+      root?.unmount();
+    });
+    const without = render(<LockScreen {...baseProps} mode="unlock" error="错误" />);
+    expect(without.querySelector(".lock-retry")).toBeNull();
+  });
+
+  it("口令模式输入框仍可正常输入（readOnly 只上给 PIN 数字输入）", () => {
+    const el = render(<LockScreen {...baseProps} mode="unlock" />);
+    click(el.querySelector(".lock-mode-toggle"));
+    const input = el.querySelector<HTMLInputElement>(".lock-passphrase")!;
+    expect(input.readOnly).toBe(false);
+  });
+});

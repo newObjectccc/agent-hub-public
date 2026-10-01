@@ -117,4 +117,28 @@ describe("PullToRefresh 手势纪律（滚动体验）", () => {
     touch(ptr, "touchend", 320);
     expect(onRefresh).not.toHaveBeenCalled();
   });
+
+  it("touchend 判定读 ref 实时值：rAF 未 flush 的快速甩动也触发（过期闭包回归）", async () => {
+    const onRefresh = vi.fn();
+    const el = render(onRefresh);
+    const ptr = el.querySelector(".ptr")!;
+
+    touch(ptr, "touchstart", 100);
+    touch(ptr, "touchmove", 350); // dy=250 → 拖动量 125 ≥ 阈值 72
+    // 不等 rAF（渲染闭包里的 pull state 还是 0）直接松手
+    touch(ptr, "touchend", 350);
+    expect(onRefresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("rAF 未 flush 时不足阈值的快速松手不误触发", async () => {
+    const onRefresh = vi.fn();
+    const el = render(onRefresh);
+    const ptr = el.querySelector(".ptr")!;
+
+    touch(ptr, "touchstart", 100);
+    touch(ptr, "touchmove", 120); // dy=20 → 拖动量 10 < 72
+    touch(ptr, "touchend", 120);
+    await flushRaf();
+    expect(onRefresh).not.toHaveBeenCalled();
+  });
 });

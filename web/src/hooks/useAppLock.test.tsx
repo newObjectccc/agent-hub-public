@@ -9,6 +9,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LOCK_TOKEN_KEY } from "../utils/appLock";
+import { ApiError } from "../api/client";
 
 declare global {
   // eslint-disable-next-line no-var
@@ -40,6 +41,7 @@ type HookState = {
   unlock: (secret: string) => Promise<void>;
   setup: (secret: string) => Promise<void>;
   lockNow: () => void;
+  retry: () => Promise<void>;
 };
 
 let root: Root | null = null;
@@ -125,5 +127,85 @@ describe("useAppLock 状态机", () => {
     expect(latest!.phase).toBe("locked");
     expect(localStorage.getItem(LOCK_TOKEN_KEY)).toBeNull();
     expect(mocks.status).toHaveBeenCalledWith(null);
+  });
+});
+
+describe("useAppLock 错误路径（UX 审查 AC3：严格停在 locked，错误不裸露）", () => {
+  it("解锁失败（PIN 错）严格停在 locked 相位，可原地重试成功", async () => {
+    mocks.status.mockResolvedValue({ configured: true, webauthn: false, unlocked: false, expiresAt: null });
+    mocks.unlock
+      .mockRejectedValueOnce(new ApiError(401, "UNAUTHORIZED", "PIN 不正确"))
+      .mockResolvedValueOnce({ ok: true, token: "tok-retry", expiresAt: Date.now() + 1000 });
+    await mountHook();
+    expect(latest!.phase).toBe("locked");
+    await act(async () => {
+      await latest!.unlock("0000");
+    });
+    // 严格停在 locked（实测 bug：错误后回落 setup 首屏）；错误为服务端友好提示
+    expect(latest!.phase).toBe("locked");
+    expect(latest!.error).toBe("PIN 不正确");
+    expect(localStorage.getItem(LOCK_TOKEN_KEY)).toBeNull();
+    // 重试成功 → unlocked
+    await act(async () => {
+      await latest!.unlock("1234");
+    });
+    expect(latest!.phase).toBe("unlocked");
+    expect(localStorage.getItem(LOCK_TOKEN_KEY)).toContain("tok-retry");
+  });
+
+  it("服务端返回坏令牌体（ok:false 无 token）→ 视为失败停在 locked（不当解锁成功）", async () => {
+    mocks.status.mockResolvedValue({ configured: true, webauthn: false, unlocked: false, expiresAt: null });
+    mocks.unlock.mockResolvedValue({ ok: false });
+    await mountHook();
+    await act(async () => {
+      await latest!.unlock("1234");
+    });
+    expect(latest!.phase).toBe("locked");
+    expect(latest!.error).toBe("解锁失败，请重试");
+  });
+
+  it("status 坏响应体（null/缺字段）→ 停在 locked，绝不误落 setup", async () => {
+    mocks.status.mockResolvedValueOnce(null);
+    await mountHook();
+    expect(latest!.phase).toBe("locked");
+    expect(latest!.configured).toBe(true);
+    expect(latest!.error).toBe("无法连接服务端，暂时无法解锁");
+  });
+
+  it("原始 JS 异常（Cannot read properties…）不裸露：错误文案为友好 fallback", async () => {
+    mocks.status.mockResolvedValue({ configured: true, webauthn: false, unlocked: false, expiresAt: null });
+    mocks.unlock.mockRejectedValue(new TypeError("Cannot read properties of null (reading 'configured')"));
+    await mountHook();
+    await act(async () => {
+      await latest!.unlock("1234");
+    });
+    expect(latest!.phase).toBe("locked");
+    expect(latest!.error).toBe("解锁失败，请重试");
+    expect(latest!.error).not.toContain("Cannot read");
+  });
+
+  it("生物识别失败同样停在 locked（回落 PIN），错误可重试", async () => {
+    mocks.status.mockResolvedValue({ configured: true, webauthn: true, unlocked: false, expiresAt: null });
+    mocks.webauthnLoginStart.mockRejectedValue(new Error("not allowed"));
+    await mountHook();
+    await act(async () => {
+      await (latest as unknown as { biometricUnlock: () => Promise<void> }).biometricUnlock();
+    });
+    expect(latest!.phase).toBe("locked");
+    expect(latest!.error).toBe("生物识别失败，请改用 PIN");
+  });
+
+  it("retry：状态获取失败后重试成功 → 按 server 状态显示且错误清除", async () => {
+    mocks.status.mockRejectedValueOnce(new ApiError(503, "UNAVAILABLE", "服务暂不可用"));
+    await mountHook();
+    expect(latest!.phase).toBe("locked");
+    expect(latest!.error).toBe("服务暂不可用");
+    mocks.status.mockResolvedValue({ configured: true, webauthn: false, unlocked: false, expiresAt: null });
+    await act(async () => {
+      await latest!.retry();
+    });
+    expect(latest!.phase).toBe("locked");
+    expect(latest!.error).toBeNull();
+    expect(latest!.busy).toBe(false);
   });
 });

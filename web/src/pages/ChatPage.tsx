@@ -23,6 +23,8 @@ import { isSubAgentActivityUpdate, mergeSubAgentActivity } from "../chat/subAgen
 import { useGitStatus } from "../hooks/useGitStatus";
 import { useVisualViewportInset } from "../hooks/useVisualViewportInset";
 import { OLDER_PAGE_LIMIT, mergeOlderMessages, oldestMessageId, shouldLoadOlder, TAIL_MESSAGE_LIMIT } from "../chat/history";
+import { locateWithPaging } from "../chat/locate";
+import { resolveRoundEndMode } from "../chat/sendMode";
 import { useSessionSocket } from "../hooks/useSessionSocket";
 import type { FileRef } from "../utils/fileRefs";
 import { FileViewer } from "../components/FileViewer";
@@ -74,8 +76,10 @@ import {
   type Attachment,
 } from "../utils/uploads";
 import { showToast } from "../utils/toast";
-import { findMessageByText } from "../utils/search";
-import { chatPath, chatReturnPath, currentLocate, navigate, treePath } from "../utils/router";
+import { DRAFT_SAVE_DEBOUNCE_MS, clearDraft, loadDraft, saveDraft } from "../utils/drafts";
+import { COMPOSITION_COOLDOWN_MS, PhysicalKeyboardTracker, shouldSendOnEnter } from "../utils/keyboard";
+import { prefersReducedMotion, scrollBehaviorOf } from "../utils/motion";
+import { chatPath, chatReturnPath, currentLocate, navigate, onRouteChange, treePath, type ChatLocate } from "../utils/router";
 
 /**
  * 权威消息合并已并入 messageStream.applyWsEvent 的 message_end 分支：
@@ -114,7 +118,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
   const [hasMore, setHasMore] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const [input, setInput] = useState("");
+  const [input, setInput] = useState<string>(() => loadDraft(safeStorage(), sessionId) ?? "");
   const [sending, setSending] = useState(false);
   /** 同步防重入闸门（与 sending state 双保险）：快速连点只发一条 */
   const sendingRef = useRef(false);
@@ -178,6 +182,31 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
   /** message_end 后的待定收尾定时器（tail 丢 status / 事件丢失时的 UI 兜底） */
   const pendingIdleRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [sendMode, setSendMode] = useState<SendMode>("auto");
+  /** 发送模式镜像（WS 事件回调/回合收尾读最新值，避免闭包过期） */
+  const sendModeRef = useRef<SendMode>(sendMode);
+  sendModeRef.current = sendMode;
+  /** 回合结束的发送模式复位（UX 审查 AC4）：粘性选择（⚡ 自动/💬 新消息）保留不静默重置；
+   * 一次性模式（✋ 插话/⏭ 排队，仅对本轮生效）复位为自动并给一行轻提示 */
+  const resetSendModeAfterRound = () => {
+    const next = resolveRoundEndMode(sendModeRef.current);
+    if (next.mode !== sendModeRef.current) {
+      sendModeRef.current = next.mode;
+      setSendMode(next.mode);
+    }
+    if (next.notice) setNotice(next.notice);
+  };
+  /** 输入法组合结束后的 Enter 冷却截止（UX 审查 AC4：防中文输入法回车误发） */
+  const compositionCooldownUntilRef = useRef(0);
+  /** 物理键盘探测（触屏 + 外接键盘时允许 Enter 发送） */
+  const kbTrackerRef = useRef<PhysicalKeyboardTracker | null>(null);
+  if (kbTrackerRef.current === null) kbTrackerRef.current = new PhysicalKeyboardTracker();
+  useEffect(() => {
+    const tracker = kbTrackerRef.current;
+    if (!tracker) return;
+    const onKeydown = (e: KeyboardEvent) => tracker.handleKeydown(e);
+    window.addEventListener("keydown", onKeydown, true);
+    return () => window.removeEventListener("keydown", onKeydown, true);
+  }, []);
   // 双模式会话驱动（E3）：📱 parallel（现状）/ 🖥 attach（消息注入电脑终端 pi）
   const [attachMode, setAttachMode] = useState<AttachMode>(() => loadAttachMode(safeStorage(), sessionId));
   const attachModeRef = useRef<AttachMode>(attachMode);
@@ -221,10 +250,13 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
   const [gitOpen, setGitOpen] = useState(false);
   const [gitFile, setGitFile] = useState<string | null>(null);
   const [fileRef, setFileRef] = useState<FileRef | null>(null);
-  // 搜索定位参数（?q= 关键词 / ?m= 消息 id）：一次性消费，避免每帧抢滚动
-  const locate = useMemo(() => currentLocate(), []);
-  const locatedRef = useRef(false);
+  // 搜索定位参数（?q= 关键词 / ?m= 消息 id）：每次带参进入会话都定位（含浏览器前进/后退回同一会话）
+  const [locate, setLocate] = useState<ChatLocate>(() => currentLocate());
+  // 定位参数整组变化（同会话再次深链）→ 重新定位；每次进入会话（重挂）自然重新定位
+  const locateKey = `${locate.q ?? ""}\u0000${locate.messageId ?? ""}`;
   const [highlightId, setHighlightId] = useState<string | null>(null);
+  // 浏览器前进/后退带新定位参数回同一会话：跟随刷新定位目标（深链每次进入都能定位）
+  useEffect(() => onRouteChange(() => setLocate(currentLocate())), []);
 
   // git 状态（chat 顶栏状态条 + 文件弹层“看 diff”判定）
   const gitStatus = useGitStatus(session?.cwd);
@@ -236,7 +268,9 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
   /** 输入框容器（ui/textarea 不转发 ref，从容器内取真实 textarea） */
   const inputWrapRef = useRef<HTMLDivElement | null>(null);
   /** 输入框文本镜像（连续上传/插入时避免闭包旧值） */
-  const inputRef = useRef("");
+  const inputRef = useRef(input);
+  /** 草稿落盘防抖定时器（UX 审查 AC1）：逐键写 localStorage 太频，防抖后写 */
+  const draftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** slash / @ 面板键盘句柄（↓/↑/Tab 从输入框下探到面板） */
   const slashPanelRef = useRef<PanelKeyHandle | null>(null);
   const filePanelRef = useRef<PanelKeyHandle | null>(null);
@@ -370,10 +404,39 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
     });
   };
 
+  /** 草稿防抖落盘（UX 审查 AC1）：只存文本，附件不持久化 */
+  const scheduleDraftPersist = () => {
+    if (draftTimerRef.current !== null) clearTimeout(draftTimerRef.current);
+    draftTimerRef.current = setTimeout(() => {
+      draftTimerRef.current = null;
+      saveDraft(safeStorage(), sessionId, inputRef.current);
+    }, DRAFT_SAVE_DEBOUNCE_MS);
+  };
+  /** 立即清草稿（发送成功后调，防已发内容残留给下次恢复） */
+  const clearDraftNow = () => {
+    if (draftTimerRef.current !== null) {
+      clearTimeout(draftTimerRef.current);
+      draftTimerRef.current = null;
+    }
+    clearDraft(safeStorage(), sessionId);
+  };
+  // 卸载/切会话前冲刷未落盘的草稿（输入框内容仅组件 state，不存就丢）
+  useEffect(
+    () => () => {
+      if (draftTimerRef.current !== null) {
+        clearTimeout(draftTimerRef.current);
+        draftTimerRef.current = null;
+        saveDraft(safeStorage(), sessionId, inputRef.current);
+      }
+    },
+    [sessionId],
+  );
+
   /** 统一更新输入框（state + 镜像） */
   const updateInput = (text: string) => {
     inputRef.current = text;
     setInput(text);
+    scheduleDraftPersist();
   };
 
   /** 记录最近引用（@ 面板“最近引用”快捷区） */
@@ -530,21 +593,52 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
     for (const path of paths) rememberRef(path);
   };
 
-  // 消息到位后：有定位参数则高亮并滚动到命中消息（滚动到底交给下方 useLayoutEffect）
+  // 深链定位（UX 审查 AC2）：命中已加载范围 → 高亮 + 滚动；miss → 按 before 游标自动加载更早页
+  // （≤LOCATE_MAX_PAGES 页）直到命中，仍未命中给轻提示（不再静默失败）。
+  // 每次带参进入会话/定位参数变化都重新定位（不再一次性消费后永不回头）。
+  const loadLocatePage = useCallback(async (beforeId: string) => {
+    const page = await api.getSession(sessionId, { before: beforeId, limit: OLDER_PAGE_LIMIT });
+    return { messages: page.messages ?? [], hasMore: Boolean(page.hasMore) };
+  }, [sessionId]);
+
+  const hasMessages = messages.length > 0;
   useEffect(() => {
-    if (messages.length === 0 || locatedRef.current) return;
-    locatedRef.current = true;
-    const hitId = locate.messageId
-      ? messages.find((m) => m.id === locate.messageId)?.id ?? findMessageByText(messages, locate.q ?? "")
-      : findMessageByText(messages, locate.q ?? "");
-    if (hitId) {
-      setHighlightId(hitId);
-      // 等待高亮 class 落 DOM 后再滚动，确保元素存在
-      window.requestAnimationFrame(() => {
-        document.getElementById(`msg-${hitId}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+    if (!hasMessages || (locate.q == null && locate.messageId == null)) return;
+    let cancelled = false;
+    void (async () => {
+      const result = await locateWithPaging({
+        messages: messagesRef.current,
+        hasMore: hasMoreRef.current,
+        target: locate,
+        loadOlder: loadLocatePage,
+        onPageMerged: (merged, more) => {
+          if (cancelled) return;
+          // 前插更早消息：窗口下标整体位移 → 同步重置为全量（与 loadOlder 同口径）
+          winStateRef.current = { virtualized: false, start: 0, paddingTop: 0 };
+          setVirtualized(false);
+          setWindowStart(0);
+          setWindowPad(0);
+          messagesRef.current = merged;
+          setMessages(merged);
+          setHasMore(more);
+        },
       });
-    }
-  }, [messages, locate]);
+      if (cancelled) return;
+      if (result.hitId) {
+        const hitId = result.hitId;
+        setHighlightId(hitId);
+        // 等待高亮 class 落 DOM 后再滚动，确保元素存在；平滑滚动尊重 prefers-reduced-motion
+        window.requestAnimationFrame(() => {
+          document.getElementById(`msg-${hitId}`)?.scrollIntoView({ behavior: scrollBehaviorOf(window), block: "center" });
+        });
+      } else {
+        showToast("未在已加载范围找到该消息");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [locateKey, hasMessages, sessionId, loadLocatePage]);
   /** 上滑加载更早一页（before 游标 = 当前最早消息 id） */
   const loadOlder = useCallback(async () => {
     const anchor = oldestMessageId(messagesRef.current);
@@ -760,7 +854,10 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
     // 大跨度跳到底部用瞬时滚动：避免平滑动画穿过顶部误触发"加载更早"；
     // 单次布局读 + 直接滚底（等价 scrollIntoView(block:end)，省掉整页布局计算）
     const target = el.scrollHeight - el.clientHeight;
-    const behavior: ScrollBehavior = Math.abs(target - el.scrollTop) > el.clientHeight ? "auto" : "smooth";
+    // 大跨度跳到底部用瞬时滚动：避免平滑动画穿过顶部误触发"加载更早"；
+    // 平滑滚动一律尊重 prefers-reduced-motion（减少动态 → "auto"）
+    const behavior: ScrollBehavior =
+      prefersReducedMotion(window) || Math.abs(target - el.scrollTop) > el.clientHeight ? "auto" : "smooth";
     if (behavior === "smooth" && typeof el.scrollTo === "function") {
       el.scrollTo({ top: target, behavior: "smooth" });
     } else {
@@ -783,7 +880,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
       pendingIdleRef.current = null;
       setStatus((s) => (s === "running" ? "idle" : s));
       setSending(false);
-      setSendMode("auto");
+      resetSendModeAfterRound();
       endWait();
     }, REPLY_IDLE_FALLBACK_MS);
   };
@@ -842,7 +939,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
           setStatus(s);
           if (s !== "running") {
             setSending(false);
-            setSendMode("auto");
+            resetSendModeAfterRound();
             endWait();
           } else if (!waitRef.current) {
             beginWait("thinking");
@@ -854,7 +951,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
           clearPendingIdle();
           setStatus("idle");
           setSending(false);
-          setSendMode("auto");
+          resetSendModeAfterRound();
           endWait();
           break;
         case "subagent_activity": {
@@ -1053,6 +1150,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
       },
     ]);
     updateInput("");
+    clearDraftNow();
     setAttachments([]);
     setQuote(null);
     try {
@@ -1222,10 +1320,10 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
 
   const hasContent = input.trim() !== "" || attachments.length > 0;
 
-  /** ↓ 新消息浮标：回到底部（清零计数并恢复跟随） */
+  /** ↓ 新消息浮标：回到底部（清零计数并恢复跟随）；平滑滚动尊重 prefers-reduced-motion */
   const scrollToBottom = () => {
     setNewCount(0);
-    bottomRef.current?.scrollIntoView?.({ behavior: "smooth", block: "end" });
+    bottomRef.current?.scrollIntoView?.({ behavior: scrollBehaviorOf(window), block: "end" });
     // E2 起跟随判定为几何口径（贴底 <160px 自动跟随）：滚到底即恢复跟随，无需 ref
   };
 
@@ -1532,6 +1630,10 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
                 onKeyUp={(e) => syncTriggers(e.currentTarget)}
                 onSelect={(e) => syncTriggers(e.currentTarget)}
                 onPaste={handlePaste}
+                onCompositionEnd={() => {
+                  // 输入法候选确认后的短冷却窗内 Enter 不触发发送（中文输入法回车误发防护）
+                  compositionCooldownUntilRef.current = Date.now() + COMPOSITION_COOLDOWN_MS;
+                }}
                 onKeyDown={(e) => {
                   if (e.key === "Escape") {
                     if (fileOpen) {
@@ -1559,9 +1661,19 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
                     else openPanel.current?.focusFirst();
                     return;
                   }
-                  // 移动端（触屏）：软键盘回车 = 换行（用户有换行需求），发送走发送按钮；桌面 Enter 发送
+                  // Enter 发送（UX 审查 AC4）：中文输入法组合期/组合后短冷却不触发（防误发）；
+                  // 触屏默认回车=换行（习惯不推翻），检测到外接物理键盘或非触屏才 Enter 发送
                   const isTouchUI = typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)").matches === true;
-                  if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing && !isTouchUI) {
+                  const sendOnEnter = shouldSendOnEnter({
+                    key: e.key,
+                    shiftKey: e.shiftKey,
+                    isComposing: e.nativeEvent.isComposing === true,
+                    compositionCooldownUntil: compositionCooldownUntilRef.current,
+                    now: Date.now(),
+                    touchUI: isTouchUI,
+                    physicalKeyboard: kbTrackerRef.current?.detected === true,
+                  });
+                  if (sendOnEnter) {
                     e.preventDefault();
                     // 面板开着：Enter 选中过滤结果第一项（与点击一致）
                     if (slashOpen && slashSpan) {

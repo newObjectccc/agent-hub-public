@@ -45,8 +45,9 @@ export function PullToRefresh({
   const startY = useRef<number | null>(null);
   /** 手势是否已判定为"下拉"（超过位移阈值且在顶部） */
   const pullingRef = useRef(false);
-  /** 最新拖动量（rAF 节流用，避免 setState 风暴） */
-  const pendingPull = useRef(0);
+  /** 最新拖动量（ref 双写，UX 审查 AC6：touchend 判定必须读实时值，
+   * 渲染闭包里的 pull state 可能滞后一帧 → 过期判定丢触发/误触发） */
+  const pullRef = useRef(0);
   const rafRef = useRef<number | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
 
@@ -80,7 +81,7 @@ export function PullToRefresh({
     if (e.touches.length === 1 && isAtTop()) {
       startY.current = e.touches[0].clientY;
       pullingRef.current = false;
-      pendingPull.current = 0;
+      pullRef.current = 0;
     }
   };
 
@@ -97,13 +98,13 @@ export function PullToRefresh({
       }
     }
     const next = dy > 0 ? Math.min(dy * 0.5, thresholdPx * 1.4) : 0;
-    if (next === pendingPull.current) return;
-    pendingPull.current = next;
-    // rAF 节流：每帧最多一次 setState
+    if (next === pullRef.current) return;
+    // ref 同步双写（touchend 判定用实时值）；state 只按 rAF 节流刷新（渲染用）
+    pullRef.current = next;
     if (rafRef.current === null) {
       rafRef.current = requestAnimationFrame(() => {
         rafRef.current = null;
-        setPull(pendingPull.current);
+        setPull(pullRef.current);
       });
     }
   };
@@ -113,13 +114,13 @@ export function PullToRefresh({
       cancelAnimationFrame(rafRef.current);
       rafRef.current = null;
     }
-    // 触发判定用最新拖动量（state 可能滞后一帧）
-    if (startY.current != null && pullingRef.current && pendingPull.current >= thresholdPx) {
+    // 触发判定读 ref 实时值（非渲染闭包的 pull state，避免过期判定）
+    if (startY.current != null && pullingRef.current && pullRef.current >= thresholdPx) {
       void onRefresh();
     }
     startY.current = null;
     pullingRef.current = false;
-    pendingPull.current = 0;
+    pullRef.current = 0;
     setDragging(false);
     setPull(0);
   };

@@ -8,6 +8,7 @@ import { api } from "../api/client";
 import type { SearchResult } from "../api/types";
 import { CloseIcon, RoleIcon } from "./icons";
 import { Button } from "./ui/button";
+import { useFocusTrap } from "../hooks/useFocusTrap";
 import { snippetSegments, roleLabel } from "../utils/search";
 import { relativeTime } from "../utils/relativeTime";
 import { chatPath, navigate } from "../utils/router";
@@ -21,6 +22,9 @@ export function SearchPanel({ open, onClose }: { open: boolean; onClose: () => v
   const [error, setError] = useState<string | null>(null);
   const seqRef = useRef(0);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const overlayRef = useRef<HTMLDivElement | null>(null);
+  // 焦点管理（UX 审查 AC6）：Tab 面板内循环、Esc 关闭、关闭归还焦点到 🔍 按钮
+  useFocusTrap({ active: open, onClose, rootRef: overlayRef });
 
   // 打开时聚焦输入框（移动键盘立即弹出）
   useEffect(() => {
@@ -67,7 +71,7 @@ export function SearchPanel({ open, onClose }: { open: boolean; onClose: () => v
   };
 
   return (
-    <div className="search-overlay" role="dialog" aria-label="全局搜索">
+    <div className="search-overlay" role="dialog" aria-label="全局搜索" ref={overlayRef}>
       <header className="search-bar">
         <Button type="button" variant="outline" size="icon" className="min-h-[44px] min-w-[44px]" onClick={onClose} aria-label="关闭搜索">
           <CloseIcon />

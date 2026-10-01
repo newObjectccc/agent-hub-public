@@ -39,6 +39,27 @@ export function findMessageByText(messages: Array<{ id: string; text: string }>,
   return null;
 }
 
+/** 深链定位参数（?q= 关键词 / ?m= 消息 id） */
+export interface LocateTarget {
+  q?: string;
+  messageId?: string;
+}
+
+/**
+ * 在已加载消息里定位深链锚点（纯函数）：
+ * ?m= 精确 id 优先，未命中回落 ?q= 文本匹配；无参数返回 null。
+ */
+export function locateHitId(
+  messages: Array<{ id: string; text: string }>,
+  target: LocateTarget,
+): string | null {
+  if (target.messageId) {
+    const exact = messages.find((m) => m.id === target.messageId);
+    if (exact) return exact.id;
+  }
+  return findMessageByText(messages, target.q ?? "");
+}
+
 const ROLE_LABELS: Record<string, string> = {
   user: "用户",
   assistant: "助手",
