@@ -222,6 +222,16 @@ body {
   font-size: 15px;
   line-height: 1.45;
   -webkit-tap-highlight-color: transparent;
+  /* 任何页面任何状态无横向滚动（全局兑底）；内容溢出由各组件自行截断/可滚处理。
+   * overflow-x: clip 不创建滚动容器，sticky 定位不受影响（老浏览器回落 hidden） */
+  overflow-x: hidden;
+}
+
+@supports (overflow-x: clip) {
+  html,
+  body {
+    overflow-x: clip;
+  }
 }
 
 #root {
@@ -245,6 +255,13 @@ a {
 }
 
 /* ---------- 布局 ---------- */
+/* 顶部占位统一上提到 :root：.sessions-page 的高度 calc 依赖它。
+ * 历史坑：它曾只定义在 .app（现 AppShell 用 .app-shell，取不到 → calc 失效 →
+ * 列表高度约束失效 → 内部滚动退化成整页滚动，触摸拖动卡在卡片上滚不动） */
+:root {
+  --app-pad-top: calc(12px + var(--safe-top));
+}
+
 .app {
   position: relative; /* 弹层定位上下文：右对齐内容列（手机=贴屏幕右缘内侧） */
   --app-pad-top: calc(12px + var(--safe-top));
@@ -724,6 +741,7 @@ button.syschip.terminal-entry:hover {
 /* 虚拟滚动容器通用：窗口化渲染自行管理锚点 */
 .virtual-scroll {
   overflow-anchor: none;
+  touch-action: pan-y;
 }
 
 .session-list-scroll {
@@ -733,6 +751,9 @@ button.syschip.terminal-entry:hover {
   overflow-y: auto;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
+  /* 触摸纵向平移显式授权给浏览器：落在卡片（button）上也能拖动滚动，
+   * 不被按钮手势识别吞掉（真机反馈：只有屏幕边缘能滚） */
+  touch-action: pan-y;
 }
 
 /* ---------- 会话列表 ---------- */
@@ -773,6 +794,8 @@ button.syschip.terminal-entry:hover {
   /* Button 基类的 whitespace-nowrap 是继承属性，这里归位保证摘要可换行/截断 */
   white-space: normal;
   text-align: left;
+  /* 触点落在卡片任意位置都可纵向拖动列表（button 不吞平移手势） */
+  touch-action: pan-y;
   transition: transform 0.12s ease, box-shadow 0.12s ease;
 }
 
@@ -798,7 +821,8 @@ button.syschip.terminal-entry:hover {
   font-family: var(--nb-font-head);
   font-weight: 900;
   font-size: 14.5px;
-  flex: 1;
+  /* 名字优先：保底占行宽 ~55%，徽章放不下自动换行（不再把名字挤到只剩一个字） */
+  flex: 1 1 55%;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -894,6 +918,12 @@ button.syschip.terminal-entry:hover {
 /* ---------- 下拉刷新 ---------- */
 .ptr {
   position: relative;
+  /* 高度链传递：.sessions-page(flex) → .ptr → .ptr-content → 内部滚动容器，
+   * 列表才能在剩余高度内自己滚（否则退化成整页滚动，触摸拖动手感全无） */
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 .ptr-indicator {
@@ -934,11 +964,24 @@ button.syschip.terminal-entry:hover {
 .chat-header {
   display: flex;
   align-items: center;
-  gap: 8px;
+  /* 窄屏两行制：第一行 返回/标题/树/菜单，放不下时徽章簇整组换行——任何宽度不横向溢出 */
+  flex-wrap: wrap;
+  gap: 8px 6px;
   padding: 8px 10px;
   border-bottom: var(--bw) solid var(--border);
   background: var(--primary);
   color: var(--primary-foreground);
+}
+
+/* 右侧状态徽章簇：不可拆散、可整体换行 */
+.chat-badges {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  flex-shrink: 0;
+  max-width: 100%;
+  flex-wrap: wrap;
 }
 
 .chat-header .back {
@@ -962,7 +1005,7 @@ button.syschip.terminal-entry:hover {
 }
 
 .chat-title {
-  flex: 1;
+  flex: 1 1 90px;
   min-width: 0;
 }
 
@@ -999,6 +1042,8 @@ button.syschip.terminal-entry:hover {
   padding: 10px;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
+  /* 触摸纵向平移显式授权（与会话列表统一：滚动不被按钮/徽章吞掉） */
+  touch-action: pan-y;
   /* 前插历史自己做锚点恢复，关闭浏览器 scroll anchoring */
   overflow-anchor: none;
 }
@@ -1418,6 +1463,10 @@ button.syschip.terminal-entry:hover {
 
 /* 下拉刷新回弹：拖动跟手，松手弹性归位 */
 .ptr-content {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
   transition: transform 220ms cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
@@ -1966,6 +2015,23 @@ button.syschip.terminal-entry:hover {
   border-radius: var(--nb-radius);
   box-shadow: var(--shadow-sm);
   pointer-events: none;
+}
+
+/* 测量失配自愈（老病根兜底）：滑块隐藏，active tab 自带底色——
+ * 任何时刻 active 态都正确，绝不出现“滑块错位/宽度不对”的怪状态 */
+.tab-slider.misaligned {
+  opacity: 0;
+}
+
+.tab-slider.misaligned ~ .tab-btn.active {
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  box-shadow: var(--shadow-xs);
+}
+
+.tab-slider.misaligned ~ .tab-btn.active .tab-count {
+  background: var(--primary);
+  color: var(--primary-foreground);
 }
 
 /* 动画克制：首帧定位不播动画（.ready 才启用 transition），仅真实切换时滑动 */
@@ -2597,10 +2663,14 @@ button.git-bar:active {  transform: translate(2px, 2px);
   align-items: flex-end;
   justify-content: center;
   padding-top: var(--safe-top);
+  /* 弹层内容再宽也绝不撑宽视口（任何状态无横向滚动） */
+  overflow-x: hidden;
 }
 
 .sheet {
   width: min(760px, 100%);
+  min-width: 0;
+  max-width: 100%;
   max-height: 88dvh;
   display: flex;
   flex-direction: column;
@@ -2670,6 +2740,7 @@ button.git-bar:active {  transform: translate(2px, 2px);
 
 .sheet-body {
   overflow-y: auto;
+  overflow-x: hidden;
   overscroll-behavior: contain;
   padding: 9px;
 }
@@ -3075,11 +3146,16 @@ button.git-bar:active {  transform: translate(2px, 2px);
   outline: 2px solid var(--border);
 }
 
-/* 工具卡片里的文件路径链接 */
+/* 工具卡片里的文件路径链接（长路径截断，不撑破容器） */
 .file-ref {
   display: inline-flex;
   align-items: center;
   min-height: 30px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
   margin: 0 2px;
   padding: 1px 4px;
   border: 2px solid var(--border);
@@ -3091,7 +3167,6 @@ button.git-bar:active {  transform: translate(2px, 2px);
   cursor: pointer;
   text-decoration: underline;
   text-underline-offset: 2px;
-  vertical-align: middle;
 }
 
 .file-ref:active {
@@ -4586,11 +4661,19 @@ button.git-bar:active {  transform: translate(2px, 2px);
   display: block;
 }
 
-/* 会话页：flex 列布局——列表撑满屏幕剩余高度（用户反馈：不要 62vh 封顶） */
+/* 会话页：flex 列布局——列表撑满屏幕剩余高度（用户反馈：不要 62vh 封顶）。
+ * var() 带 fallback：即使 --app-pad-top 意外未定义，高度约束仍成立（内部滚动不退化） */
 .sessions-page {
   display: flex;
   flex-direction: column;
-  height: calc(100dvh - var(--app-pad-top) - 20px - var(--safe-bottom));
+  height: calc(100dvh - var(--app-pad-top, 12px) - 20px - var(--safe-bottom, 0px));
+  max-height: 100dvh;
+}
+
+/* 头部区域（工具栏/标题/tab 组）不参与压缩——只有列表区（.ptr）伸缩占余高。
+ * 不加这条时 tab 组会被 flex-shrink 压成一条缝 */
+.sessions-page > * {
+  flex-shrink: 0;
 }
 
 .system-page .syscard {
