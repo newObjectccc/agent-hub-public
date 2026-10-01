@@ -85,7 +85,7 @@ const entriesLines = [
       timestamp: 1733234701000,
     },
   }),
-  JSON.stringify({ type: "session_info", id: "e6", parentId: "e5", timestamp: "2026-02-18T10:06:00.000Z", name: "pi-seksun-KPI" }),
+  JSON.stringify({ type: "session_info", id: "e6", parentId: "e5", timestamp: "2026-02-18T10:06:00.000Z", name: "pi-report-KPI" }),
 ];
 
 describe("scan: JSONL 解析与列表项", () => {
@@ -141,7 +141,7 @@ describe("scan: JSONL 解析与列表项", () => {
   it("列表项字段：name/messageCount/lastUserMessage/lastAssistantMessage（120 截断）", async () => {
     const items = await scanSessions(root);
     const item = items[0];
-    assert.equal(item.name, "pi-seksun-KPI");
+    assert.equal(item.name, "pi-report-KPI");
     assert.equal(item.cwd, "/Users/me/Workspace/demo");
     assert.equal(item.messageCount, 5);
     // active branch 是 e1 → e4 → e5（leaf 为最后一条 entry e6，路径 e1→e4→e5→e6）
@@ -219,7 +219,7 @@ describe("scan: 子代理会话识别（isSubAgent）", () => {
     assert.equal(isSubAgentName("acceptance-reviewer#f81d33aa"), true);
     assert.equal(isSubAgentName("Acceptance-Reviewer#f81d33aa"), false); // 大写不命中
     assert.equal(isSubAgentName("developer#XYZ123"), false); // 后缀非 hex
-    assert.equal(isSubAgentName("pi-seksun-KPI"), false);
+    assert.equal(isSubAgentName("pi-report-KPI"), false);
     assert.equal(isSubAgentName("R3-sys"), false);
     assert.equal(isSubAgentName(null), false);
   });
@@ -246,7 +246,7 @@ describe("scan: 子代理会话识别（isSubAgent）", () => {
     const entries = [
       { type: "message", id: "m1", parentId: null, timestamp: "2026-02-18T10:00:01.000Z", message: { role: "user", content: "帮我看看构建" } },
     ];
-    assert.equal(isSubAgentSession("pi-seksun-KPI", entries), false);
+    assert.equal(isSubAgentSession("pi-report-KPI", entries), false);
     assert.equal(isSubAgentSession(null, entries), false);
   });
 
@@ -270,7 +270,7 @@ describe("scan: 子代理会话识别（isSubAgent）", () => {
       parseSessionJsonl(
         [
           JSON.stringify({ type: "session", version: 3, id: "main-1", timestamp: "2026-02-18T10:00:00.000Z", cwd: "/tmp/ws" }),
-          JSON.stringify({ type: "session_info", id: "n2", parentId: null, timestamp: "2026-02-18T10:00:01.000Z", name: "pi-seksun-KPI" }),
+          JSON.stringify({ type: "session_info", id: "n2", parentId: null, timestamp: "2026-02-18T10:00:01.000Z", name: "pi-report-KPI" }),
         ].join("\n"),
       ),
       Date.parse("2026-02-18T10:00:02.000Z"),
@@ -301,7 +301,7 @@ describe("AC4 零误检：主会话内容提及不算子代理", () => {
 
   it("命名规则 <type>#<hex> 仍判定为子代理", () => {
     assert.equal(isSubAgentName("developer#abc123"), true);
-    assert.equal(isSubAgentName("pi-seksun-KPI"), false);
+    assert.equal(isSubAgentName("pi-report-KPI"), false);
     assert.equal(hasSubAgentPreambleMarker("普通 preamble"), false);
     assert.equal(hasSubAgentPreambleMarker("x <active_agent name=\"a\"> y"), true);
 });

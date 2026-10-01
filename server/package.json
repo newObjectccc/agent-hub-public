@@ -3,6 +3,15 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "description": "agent-hub 后端：REST + WS、pi/claude 会话扫描与驱动、KPI 聚合、系统检测（Fastify）",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/newObjectccc/agent-hub.git",
+    "directory": "server"
+  },
+  "keywords": ["agent-hub", "server", "fastify", "websocket"],
+  "engines": { "node": ">=20" },
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc -p tsconfig.json",

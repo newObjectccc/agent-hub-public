@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// agent-hub — 子命令分发入口：setup | start | check | open
+// agent-hub — 子命令分发入口：setup | start | check | doctor | open
 // 纯 Node 跨平台（Windows CMD / PowerShell 原生可用），零 bash 依赖。
 import fs from 'node:fs';
 import { pathToFileURL } from 'node:url';
@@ -8,7 +8,7 @@ import { parseCliArgs, rootHelpText } from './lib/args.js';
 import { defaultConfigPath, repoRoot } from './lib/paths.js';
 import { isWindows, runCapture } from './lib/process.js';
 
-const COMMANDS = ['setup', 'start', 'check', 'open'];
+const COMMANDS = ['setup', 'start', 'check', 'doctor', 'open'];
 
 /** 读取 cli/package.json 版本号。 */
 function cliVersion() {
@@ -116,7 +116,7 @@ export async function main(argv = process.argv.slice(2)) {
     const { main: startMain } = await import('./start.js');
     return startMain(rest);
   }
-  if (first === 'check') {
+  if (first === 'check' || first === 'doctor') {
     const { main: checkMain } = await import('./check.js');
     return checkMain(rest);
   }

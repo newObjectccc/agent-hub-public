@@ -54,7 +54,7 @@ function reportConfig(configPath, colors, log) {
   log('');
   log(colors.bold('-- 配置 / Config --'));
   if (!fs.existsSync(configPath)) {
-    log(`${colors.warn} ${configPath} 不存在，运行 \`node cli/setup.js\` 生成`);
+    log(`${colors.warn} ${configPath} 不存在，运行 \`npm run setup\`（或 node cli/setup.js）生成`);
     return;
   }
   try {
@@ -82,7 +82,7 @@ export async function main(argv = [], deps = {}) {
   reportConfig(deps.configPath ?? defaultConfigPath(root), colors, console.log);
   console.log('');
   console.log(coreOk
-    ? `${colors.ok} 环境就绪。下一步：${colors.bold('node cli/start.js')}`
+    ? `${colors.ok} 环境就绪。下一步：${colors.bold('npm run start')}`
     : `${colors.fail} 核心依赖缺失，请先按上方提示安装。`);
   return coreOk ? 0 : 1;
 }

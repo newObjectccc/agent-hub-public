@@ -20,8 +20,8 @@ Base URL: `http://<host>:<port>/api`（默认端口 7700）
     {
       "id": "uuid-or-slug",
       "source": "pi | claude",
-      "name": "pi-seksun-KPI",
-      "cwd": "/Users/me/Workspace/im-production-copy",
+      "name": "pi-report-KPI",
+      "cwd": "/Users/me/Workspace/demo-project",
       "updatedAt": "2026-02-18T12:00:00.000Z",
       "messageCount": 42,
       "status": "idle | running | error",
@@ -160,7 +160,7 @@ claude 会话：server 本地 spawn
   "results": [
     {
       "sessionId": "uuid-or-slug",
-      "sessionName": "pi-seksun-KPI",
+      "sessionName": "pi-report-KPI",
       "messageId": "entry-id",
       "role": "user | assistant | toolResult | custom",
       "snippet": "…前文[[命中词]]后文…",
@@ -250,13 +250,13 @@ claude 会话：server 本地 spawn
 {
   "cards": [
     {
-      "id": "seksun-weekly",
-      "title": "Seksun 周报 KPI",
+      "id": "weekly-kpi",
+      "title": "周报 KPI",
       "value": "98.2%",
       "trend": "up | down | flat | unknown",
       "delta": "+0.4%",
       "updatedAt": "2026-02-18T12:00:00.000Z",
-      "link": "https://app.example.com/...",
+      "link": "https://example.com/dashboard",
       "error": null
     }
   ]
@@ -266,10 +266,10 @@ claude 会话：server 本地 spawn
 ```json
 {
   "sources": [
-    { "id": "seksun-weekly", "title": "Seksun 周报 KPI",
-      "type": "http-json", "url": "https://…/api_v2/traceability/seksun-kpi/weekly",
+    { "id": "weekly-kpi", "title": "周报 KPI",
+      "type": "http-json", "url": "https://example.com/api/metric",
       "headers": {}, "jsonPath": "$.data.completionRate", "unit": "%",
-      "link": "https://app.example.com/" }
+      "link": "https://example.com/dashboard" }
   ]
 }
 ```
@@ -297,7 +297,7 @@ claude 会话：server 本地 spawn
   "todayDoneSessions": ["uuid-1"],
   "workingSessions": [
     {
-      "id": "uuid-1", "name": "pi-seksun-KPI", "cwd": "/Users/me/Workspace/x",
+      "id": "uuid-1", "name": "pi-report-KPI", "cwd": "/Users/me/Workspace/x",
       "status": "running",
       "startedAt": "2026-02-18T11:30:00.000Z",
       "currentTool": "bash: pnpm test",
@@ -347,7 +347,7 @@ claude 会话：server 本地 spawn
     {
       "id": "uuid-1:settled:2026-02-18T11:05:00.000Z",
       "sessionId": "uuid-1",
-      "sessionName": "pi-seksun-KPI",
+      "sessionName": "pi-report-KPI",
       "kind": "settled",
       "text": "已完成…（截断 120 字符）",
       "timestamp": "2026-02-18T11:05:00.000Z",

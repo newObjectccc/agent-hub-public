@@ -84,11 +84,11 @@ export function rootHelpText() {
   node cli/start.js [options]      # 等价 agent-hub start
 
 命令 / Commands:
-  setup    环境检测、生成 config、可选自启注册
-           detect environment, write config, optional autostart
+  setup    环境检测、安装依赖、生成 config、安装 pi 扩展、可选自启注册
+           detect environment, install deps, write config, install pi extensions, optional autostart
   start    安装依赖、构建 web/server 并启动面板
            install deps, build web/server and start the panel
-  check    只读环境检测报告 / read-only environment report
+  check    只读环境检测报告（doctor 为同义别名）/ read-only environment report
   open     在浏览器打开面板 / open the panel in your browser
 
 通用选项 / Common options:
@@ -102,12 +102,13 @@ export function rootHelpText() {
   node cli/cli.js start --lan
   node cli/cli.js start --tailscale
   node cli/cli.js check
+  node cli/cli.js doctor
   node cli/cli.js open
 `;
 }
 
 export function setupHelpText() {
-  return `agent-hub setup — 环境检测 + 生成配置 + 可选自启 / detect env, write config, optional autostart
+  return `agent-hub setup — 一键准备 / one-shot bootstrap: detect env, install deps, write config, install pi extensions
 
 用法 / Usage:
   node cli/setup.js [options]
@@ -116,6 +117,10 @@ export function setupHelpText() {
   --port <n>               写入配置端口 / write hub port (1-65535)
   --session-dir <path>     会话目录（支持 ~）/ pi session dir (~ supported)
   --workspace-root <path>  工作区根目录（支持 ~）/ workspace root (~ supported)
+  --skip-deps              跳过依赖安装 / skip dependency installation
+  --extensions             强制安装 pi 扩展（默认检测到 pi 才装）
+                           force install pi extensions (default: only when pi found)
+  --no-extensions          跳过 pi 扩展安装 / skip pi extension installation
   --autostart              注册开机自启（macOS launchd / Linux systemd / Windows 任务计划）
                            register autostart, platform-adapted
   --dry-run                只打印将写入内容，不落盘 / print only, write nothing
@@ -124,6 +129,7 @@ export function setupHelpText() {
 
 说明 / Notes:
   - pi 缺失时只提示安装方式（npm i -g @earendil-works/pi-coding-agent 或 npx），不会自动全局安装。
+  - pi 扩展（live-feed / pi-command）拷贝到 ~/.pi/agent/extensions/，幂等可重跑。
   - tmux / ttyd / tailscale 为可选增强，缺失不算错误；
     原生 Windows 的 tmux 会给出 WSL 指引。
 `;
