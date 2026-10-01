@@ -2146,6 +2146,9 @@ button.syschip.terminal-entry:hover {
 .quick-insert {
   flex: 1;
   min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
   text-align: left;
   padding: 6px 8px;
   font-size: 13.5px;
@@ -2244,6 +2247,130 @@ button.syschip.terminal-entry:hover {
 }
 
 .quick-add-btn:active {  transform: translate(2px, 2px);
+  box-shadow: none;
+}
+
+/* 快捷指令面板扩展（重建）：管理模式 / 标签 / 空态 / 恢复默认（触控热区 ≥44px） */
+.quick-hint-inline {
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10.5px;
+  color: var(--muted-foreground);
+}
+
+.quick-manage {
+  position: relative;
+  flex-shrink: 0;
+  min-height: 32px;
+  padding: 4px 10px;
+  font-family: var(--nb-font-head);
+  font-weight: 900;
+  font-size: 12px;
+  background: var(--muted);
+  color: var(--foreground);
+  border: 2px solid var(--border);
+  border-radius: var(--nb-radius);
+  cursor: pointer;
+}
+
+.quick-manage[aria-pressed="true"] {
+  background: var(--primary);
+  color: var(--primary-foreground);
+}
+
+.quick-manage:active {
+  transform: translate(1px, 1px);
+}
+
+.quick-empty {
+  padding: 9px 8px;
+  font-size: 12.5px;
+  color: var(--muted-foreground);
+}
+
+.quick-tag {
+  flex-shrink: 0;
+  padding: 1px 4px;
+  font-size: 10.5px;
+  font-weight: 700;
+  background: var(--info);
+  color: var(--info-foreground);
+  border: 2px solid var(--border);
+}
+
+.quick-tag.custom {
+  background: var(--warn);
+  color: var(--primary-foreground);
+}
+
+.quick-text {
+  flex: 1;
+  min-width: 0;
+  white-space: normal;
+  word-break: break-word;
+}
+
+.quick-save,
+.quick-cancel {
+  position: relative;
+  flex-shrink: 0;
+  min-height: 32px;
+  padding: 4px 10px;
+  font-family: var(--nb-font-head);
+  font-weight: 900;
+  font-size: 12px;
+  border: 2px solid var(--border);
+  border-radius: var(--nb-radius);
+  box-shadow: var(--shadow-xs);
+  cursor: pointer;
+}
+
+.quick-save {
+  background: var(--primary);
+  color: var(--primary-foreground);
+}
+
+.quick-cancel {
+  background: var(--muted);
+  color: var(--foreground);
+}
+
+.quick-save:active,
+.quick-cancel:active {
+  transform: translate(1px, 1px);
+  box-shadow: none;
+}
+
+/* 删除/恢复：待确认态高亮（两步确认防误触） */
+.quick-delete.confirming {
+  background: var(--warn);
+  color: var(--primary-foreground);
+}
+
+.quick-restore {
+  width: 100%;
+  min-height: 44px;
+  margin-top: 10px;
+  font-family: var(--nb-font-head);
+  font-weight: 900;
+  font-size: 12.5px;
+  background: var(--warn);
+  color: var(--primary-foreground);
+  border: 2px solid var(--border);
+  box-shadow: var(--shadow-sm);
+  cursor: pointer;
+}
+
+.quick-restore.confirming {
+  background: var(--destructive);
+  color: var(--destructive-foreground);
+}
+
+.quick-restore:active {
+  transform: translate(2px, 2px);
   box-shadow: none;
 }
 
@@ -4606,6 +4733,10 @@ button.git-bar:active {  transform: translate(2px, 2px);
 .quote-cancel,
 .slash-close,
 .ft-close,
+.quick-close,
+.quick-manage,
+.quick-save,
+.quick-cancel,
 .tree-node,
 .tree-toggle {
   position: relative;
@@ -4621,6 +4752,10 @@ button.git-bar:active {  transform: translate(2px, 2px);
 .quote-cancel::after,
 .slash-close::after,
 .ft-close::after,
+.quick-close::after,
+.quick-manage::after,
+.quick-save::after,
+.quick-cancel::after,
 .tree-node::after,
 .tree-toggle::after {
   content: "";
@@ -4659,6 +4794,10 @@ button.git-bar:active {  transform: translate(2px, 2px);
   .quote-cancel,
   .slash-close,
   .ft-close,
+  .quick-close,
+  .quick-manage,
+  .quick-save,
+  .quick-cancel,
   .tree-toggle {
     min-height: 0;
   }
