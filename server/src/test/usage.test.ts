@@ -9,7 +9,7 @@ import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/pro
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
-import { daysAgoStart, parseDaysParam, parseUsageSamples, sumUsage, usageFromRaw, usageRange, usageSamplesFromEntries, usageWindows, UsageService } from "../usage.js";
+import { collectAllSamples, daysAgoStart, emptyTotals, parseDaysParam, parseUsageSamples, sumUsage, usageFromRaw, usageRange, usageSamplesFromEntries, usageWindows, UsageService, type UsageSample } from "../usage.js";
 import { startOfDay } from "../dashboard.js";
 import type { RawEntry } from "../sessions/scan.js";
 import { ErrorCodes, HubError } from "../errors.js";
@@ -264,5 +264,77 @@ describe("usage: UsageService（临时会话目录 + 增量缓存）", () => {
     assert.equal(detail.windows.all.totalTokens, 15);
     assert.equal(detail.range?.usage.totalTokens, 15);
     assert.equal(await service.session("nope", NOW), null);
+  });
+
+  it("AC10：请求侧限时——冷启动超时先回空窗，后台完成后最终一致（无反复跳变）", async () => {
+    const slow = new UsageService({
+      sessionDir: dir,
+      ttlMs: 60_000,
+      minRescanMs: 0,
+      refreshWaitMs: 100,
+      readFile: async (file) => {
+        await new Promise((r) => setTimeout(r, 400)); // 模拟冷启动慢扫描
+        return readFile(file, "utf8");
+      },
+    });
+    const t0 = Date.now();
+    const out = await slow.overview(NOW);
+    const elapsed = Date.now() - t0;
+    assert.ok(elapsed < 350, `请求侧限时 100ms，不同步等全量扫描（实测 ${elapsed}ms）`);
+    assert.equal(out.sessions.length, 0, "超时先回空窗（UI 走无数据占位降级）");
+    // 后台扫描继续 → 下一次查询即拿到全量（最终一致）
+    let settled = await slow.overview(NOW);
+    for (let i = 0; i < 20 && settled.sessions.length === 0; i += 1) {
+      await new Promise((r) => setTimeout(r, 100));
+      settled = await slow.overview(NOW);
+    }
+    assert.equal(settled.sessions.length, 2, "后台扫描完成后最终一致");
+    assert.ok(settled.windows.all.totalTokens > 0);
+  });
+
+  it("AC10：冷启动 session 查询不误报 404（限时后等扫完返回数据）", async () => {
+    const slow = new UsageService({
+      sessionDir: dir,
+      ttlMs: 60_000,
+      minRescanMs: 0,
+      refreshWaitMs: 50,
+      readFile: async (file) => {
+        await new Promise((r) => setTimeout(r, 300));
+        return readFile(file, "utf8");
+      },
+    });
+    const detail = await slow.session("sess-usage-1", NOW);
+    assert.ok(detail, "冷启动空窗不误报 404：等后台扫完返回数据");
+    assert.equal(detail.sessionId, "sess-usage-1");
+  });
+
+  it("AC10：warmup 启动预热 fire-and-forget（不阻塞、预扫先行）", async () => {
+    const preReads: string[] = [];
+    const pre = new UsageService({
+      sessionDir: dir,
+      ttlMs: 60_000,
+      minRescanMs: 0,
+      readFile: async (file) => {
+        preReads.push(file);
+        return readFile(file, "utf8");
+      },
+    });
+    pre.warmup(); // 不 await：fire-and-forget
+    await new Promise((r) => setTimeout(r, 100));
+    assert.ok(preReads.length >= 1, "预热已开始预扫");
+    const out = await pre.overview(NOW);
+    assert.equal(out.sessions.length, 2, "预热完成后 overview 直接命中缓存");
+  });
+});
+
+describe("usage: 大数组汇总（OOM 审计 AC7）", () => {
+  it("collectAllSamples：单会话 >6 万采样循环追加不栈溢出（禁 spread）", () => {
+    const sample: UsageSample = { timestampMs: 1, ...emptyTotals() };
+    const entries = [
+      { samples: Array.from({ length: 200_000 }, () => sample) },
+      { samples: Array.from({ length: 200_000 }, () => sample) },
+    ];
+    const out = collectAllSamples(entries);
+    assert.equal(out.length, 400_000, "40 万采样全部汇总（spread 实现会 RangeError）");
   });
 });

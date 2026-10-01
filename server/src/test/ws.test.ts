@@ -11,6 +11,7 @@ import { DEFAULT_CONFIG } from "../config.js";
 import type { DashboardServiceLike } from "../dashboard.js";
 import { createApp } from "../index.js";
 import type { SessionHub } from "../sessions/hub.js";
+import type { SessionTailManager } from "../sessions/tail.js";
 import type { SessionHubLike } from "../routes.js";
 import type { MessageDto, SearchResultDto, SessionListItem, SessionTreeDto, SystemInfo } from "../types.js";
 import { WsHub } from "../ws.js";
@@ -160,6 +161,75 @@ describe("ws: 关闭不挂起（SIGINT 场景）", () => {
       assert.ok(elapsed < 2000, `关闭耗时 ${elapsed}ms，超过 2000ms 上限`);
     } finally {
       ws.terminate();
+    }
+  });
+});
+
+describe("ws: 子代理 childTails acquire/release 严格配对（AC8 回归）", () => {
+  it("子会话消失 release 一次；连接关闭不二次 release（不误减其它连接同 id tail 的 ref）", async () => {
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    const childA: SessionListItem = { ...sessionFixture, id: "child-a", sessionFile: "/tmp/child-a.jsonl" };
+    const childB: SessionListItem = { ...sessionFixture, id: "child-b", sessionFile: "/tmp/child-b.jsonl" };
+    let children: SessionListItem[] = [childA];
+    const acquires = new Map<string, number>();
+    const releases = new Map<string, number>();
+    const count = (m: Map<string, number>, id: string): void => {
+      m.set(id, (m.get(id) ?? 0) + 1);
+    };
+    const fakeTails = {
+      acquire: (id: string) => count(acquires, id),
+      release: (id: string) => count(releases, id),
+      detach: () => undefined,
+      stopAll: () => undefined,
+    };
+    const hub = {
+      ...makeFakeHub([]),
+      isLive: () => false,
+      listChildren: async () => children,
+    };
+    const app = await createApp({
+      hub: hub as unknown as SessionHubLike,
+      kpi: { getCards: () => [] },
+      dashboard: makeFakeDashboard(),
+      config: { ...DEFAULT_CONFIG },
+      systemInfo: async () => systemFixture,
+      webRoot: null,
+      logger: false,
+    });
+    const wshub = new WsHub();
+    wshub.childScanMs = 50; // 测试注入短扫描间隔
+    wshub.attach(app.server, hub as unknown as SessionHub, fakeTails as unknown as SessionTailManager);
+    await app.listen({ port: 0, host: "127.0.0.1" });
+    const { port } = app.server.address() as AddressInfo;
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws/sessions/sess-1`);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        ws.on("open", () => resolve());
+        ws.on("error", reject);
+      });
+      await sleep(250); // 首轮 syncChildren：发现 child-a
+      assert.equal(acquires.get("child-a"), 1, "发现子会话即 acquire");
+
+      children = []; // 子会话消失 → release 一次（同步移除追踪）
+      await sleep(250);
+      assert.equal(releases.get("child-a") ?? 0, 1, "消失时 release 恰一次");
+
+      children = [childB]; // 新子会话 → 重新 acquire
+      await sleep(250);
+      assert.equal(acquires.get("child-b"), 1);
+
+      ws.terminate(); // 连接关闭：cleanup 只 release 仍在追踪的
+      await sleep(250);
+      assert.equal(releases.get("child-a"), 1, "child-a 消失时已 release，cleanup 不得二次 release（误减其它连接的 ref）");
+      assert.equal(releases.get("child-b"), 1, "仍在追踪的 child-b 由 cleanup 释放");
+      assert.equal(releases.get("sess-1"), 1, "父会话 tail 释放");
+      for (const id of ["child-a", "child-b", "sess-1"]) {
+        assert.equal(acquires.get(id), releases.get(id), `${id} acquire/release 严格配对`);
+      }
+    } finally {
+      ws.terminate();
+      wshub.closeAll();
+      await app.close();
     }
   });
 });

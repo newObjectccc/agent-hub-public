@@ -312,3 +312,73 @@ describe("E3 阻断缺陷回归（REV-E3）", () => {
     assert.equal(second.id, first.id, "重复提交应幂等返回既有指令");
   });
 });
+
+describe("OOM 审计 AC4：首波缓存明确语义 + 追踪表上界", () => {
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const out = (text: string): ServerEvent =>
+    ({ type: "message_end", message: { id: `m-${text}`, role: "assistant", timestamp: 1, text, toolCalls: [] } }) as never;
+  const outputs = (drained: Array<{ event: ServerEvent }>): string[] =>
+    drained.map((r) => (r.event as unknown as { activity: { lastOutput: string | null } }).activity.lastOutput ?? "");
+
+  it("解析失败：pending 保留（首条输出不丢），retryAfter 到期重试成功按序 flush", async () => {
+    const drained: Array<{ event: ServerEvent }> = [];
+    let attempts = 0;
+    const router = new SubAgentRouter(
+      async (id) => {
+        attempts += 1;
+        if (attempts <= 2) throw new Error("scan failed");
+        return child({ id, name: "explore#deadbeef" });
+      },
+      (routed) => drained.push(routed),
+    );
+    assert.equal(router.route("sub-x", out("首条输出")), null);
+    assert.equal(router.route("sub-x", out("第二条")), null);
+    await sleep(30);
+    assert.deepEqual(outputs(drained), [], "解析失败期间不 flush（但缓存保留）");
+    // retryAfter 到期 → 新事件触发重试（仍失败）：缓存继续保留
+    router.sweep(Date.now() + SubAgentRouter.RETRY_AFTER_MS + 1);
+    assert.equal(router.route("sub-x", out("第三条")), null);
+    await sleep(30);
+    assert.deepEqual(outputs(drained), []);
+    // 再次到期 → 重试成功：全部按序 flush（含首条输出，不丢）
+    router.sweep(Date.now() + (SubAgentRouter.RETRY_AFTER_MS + 1) * 2);
+    router.route("sub-x", out("第四条"));
+    await sleep(30);
+    assert.deepEqual(
+      outputs(drained),
+      ["首条输出", "第二条", "第三条", "第四条"],
+      "retryAfter 到期重试成功应按序 flush（子代理首条输出不丢）",
+    );
+  });
+
+  it("pending 超 TTL 过期丢弃（不永久驻留），后续事件照常 flush", async () => {
+    const drained: Array<{ event: ServerEvent }> = [];
+    let attempts = 0;
+    const router = new SubAgentRouter(
+      async (id) => {
+        attempts += 1;
+        if (attempts <= 1) throw new Error("scan failed");
+        return child({ id });
+      },
+      (routed) => drained.push(routed),
+    );
+    assert.equal(router.route("sub-y", out("TTL 前的首条")), null);
+    await sleep(30); // 首次解析失败：pending 保留
+    // 超 TTL：明确语义 = 丢弃（含全文事件不永久驻留内存）
+    router.sweep(Date.now() + SubAgentRouter.PENDING_TTL_MS + 1);
+    router.route("sub-y", out("TTL 后的新事件"));
+    await sleep(30); // 重试成功 → 只 flush 未过期事件
+    assert.deepEqual(outputs(drained), ["TTL 后的新事件"], "超 TTL 的旧缓存按语义丢弃，新事件照常 flush");
+  });
+
+  it("parents/names/retryAfter/pending 有上界（MAX_TRACKED，LRU 淘汰最旧）", () => {
+    const router = new SubAgentRouter(async () => null);
+    const total = SubAgentRouter.MAX_TRACKED + 5;
+    for (let i = 0; i < total; i += 1) router.remember(`cap-${i}`, `p-${i}`);
+    // 最新会话血缘仍在 → 正常路由
+    const routed = router.route(`cap-${total - 1}`, { type: "agent_settled" });
+    assert.equal(routed?.parentSessionId, `p-${total - 1}`);
+    // 最旧会话已被 LRU 淘汰 → 重新走异步解析路径（返回 null，不抛错、不无界增长）
+    assert.equal(router.route("cap-0", { type: "agent_settled" }), null);
+  });
+});

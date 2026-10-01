@@ -121,7 +121,7 @@ function parseMode(raw: unknown): CommandMode {
 }
 
 /** clientMessageId 幂等缓存 TTL（覆盖"完成后重复提交"窗口） */
-const CLIENT_IDEMPOTENT_TTL_MS = 10 * 60_000;
+export const CLIENT_IDEMPOTENT_TTL_MS = 10 * 60_000;
 
 export class AgentCommandHub implements AgentLinkLike {
   private readonly agents = new Map<string, AgentInfo>();
@@ -366,7 +366,7 @@ export class AgentCommandHub implements AgentLinkLike {
     return result;
   }
 
-  /** 周期清扫：离线 attach 失效 + 过期队列丢弃（带原因回执） */
+  /** 周期清扫：离线 attach 失效 + 过期队列丢弃（带原因回执）+ clientSeen 过期清理 */
   sweep(now = Date.now()): void {
     for (const [sessionId, state] of [...this.attached]) {
       if (!this.isOnline(sessionId, now)) {
@@ -377,6 +377,10 @@ export class AgentCommandHub implements AgentLinkLike {
     }
     for (const [staleId, info] of [...this.agents]) {
       if (now - info.lastSeen > HEARTBEAT_TTL_MS * 4) this.agents.delete(staleId);
+    }
+    // clientMessageId 幂等缓存过期清理（OOM 审计 AC5）：TTL 内保留防重复注入，过期即删
+    for (const [clientKey, seen] of [...this.clientSeen]) {
+      if (now - seen.at >= CLIENT_IDEMPOTENT_TTL_MS) this.clientSeen.delete(clientKey);
     }
   }
 

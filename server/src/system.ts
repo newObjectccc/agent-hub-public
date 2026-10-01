@@ -146,21 +146,48 @@ export async function probeSystem(options: ProbeOptions): Promise<SystemInfo> {
 }
 
 export interface SystemInfoProviderOptions extends ProbeOptions {
-  /** 工具探测结果缓存时长（工具安装状态不会秒级变化；指标每次新采） */
+  /** 工具探测结果缓存时长（工具安装状态不会秒级变化；指标按 metricsTtlMs 缓存） */
   toolsTtlMs?: number;
+  /** 指标缓存时长（默认 30s，OOM 审计 AC9）：sampleCpuUsage 双快照 sleep 200ms，PWA 系统页 30s 新鲜度可接受 */
+  metricsTtlMs?: number;
 }
 
 /**
  * 带缓存的 /api/system 数据源：工具探测（一堆子进程）按 toolsTtlMs 缓存，
- * 真实指标每次重新采集（前端 5-10s 轮询看到的是新鲜数据）。
+ * 真实指标按 metricsTtlMs 缓存（首采照常双快照，窗口内复用 + 在途去重，不再每请求 200ms）。
  */
 export function createSystemInfoProvider(options: SystemInfoProviderOptions): () => Promise<SystemInfo> {
   const toolsTtlMs = options.toolsTtlMs ?? 30_000;
+  const metricsTtlMs = options.metricsTtlMs ?? 30_000;
   let toolsPromise: Promise<Omit<SystemInfo, "metrics"> | null> | null = null;
   let toolsAt = 0;
+  let metricsPromise: Promise<SystemMetrics | null> | null = null;
+  let metricsAt = 0;
   const probeTools = async (): Promise<Omit<SystemInfo, "metrics">> => {
     const { metrics: _metrics, ...tools } = await probeSystem({ ...options, collectMetrics: async () => null });
     return tools;
+  };
+  const collectMetricsCached = (): Promise<SystemMetrics | null> => {
+    const now = Date.now();
+    if (metricsPromise !== null && now - metricsAt < metricsTtlMs) return metricsPromise;
+    metricsAt = now;
+    const task = (async (): Promise<SystemMetrics | null> => {
+      const collectMetrics =
+        options.collectMetrics ??
+        ((): Promise<SystemMetrics | null> =>
+          collectSystemMetrics({
+            workspaceRoot: options.workspaceRoot,
+            execFileFn: options.execFileFn ?? execFile,
+            timeoutMs: 3_000,
+          }));
+      try {
+        return await collectMetrics();
+      } catch {
+        return null;
+      }
+    })();
+    metricsPromise = task;
+    return task;
   };
   return async () => {
     const now = Date.now();
@@ -170,20 +197,6 @@ export function createSystemInfoProvider(options: SystemInfoProviderOptions): ()
     }
     const tools = await toolsPromise;
     if (tools === null) throw new Error("system probe failed");
-    const collectMetrics =
-      options.collectMetrics ??
-      ((): Promise<SystemMetrics | null> =>
-        collectSystemMetrics({
-          workspaceRoot: options.workspaceRoot,
-          execFileFn: options.execFileFn ?? execFile,
-          timeoutMs: 3_000,
-        }));
-    let metrics: SystemMetrics | null = null;
-    try {
-      metrics = await collectMetrics();
-    } catch {
-      metrics = null;
-    }
-    return { ...tools, metrics };
+    return { ...tools, metrics: await collectMetricsCached() };
   };
 }
