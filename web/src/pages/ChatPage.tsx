@@ -41,13 +41,14 @@ import { UploadButton } from "../components/UploadButton";
 import { SendModeMenu } from "../components/SendModeMenu";
 import { SessionActionsMenu } from "../components/SessionActionsMenu";
 import { SlashCommandPanel } from "../components/SlashCommandPanel";import { SourceBadge } from "../components/SourceBadge";
+import { QuickCommandPanel } from "../components/QuickCommandPanel";
 import { StatusBadge } from "../components/StatusBadge";
 import { VoiceInputButton } from "../components/VoiceInputButton";
 import { BackIcon, TreeIcon } from "../components/icons";
 import { PullToRefresh } from "../components/PullToRefresh";
 import { Button } from "../components/ui/button";
 import { Textarea } from "../components/ui/textarea";
-import { insertSnippet } from "../utils/insert";
+import { insertSnippet, insertSnippetAtCursor } from "../utils/insert";
 import { withDateDividers } from "../utils/dateDivider";
 import { vibrate } from "../utils/haptics";
 import type { PanelKeyHandle } from "../utils/panelNav";
@@ -207,6 +208,8 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
   // slash 命令面板：输入 `/` 触发（光标前 token），继续输入即过滤
   const [slashSpan, setSlashSpan] = useState<TokenSpan | null>(null);
   const [slashOpen, setSlashOpen] = useState(false);
+  /** 快捷指令面板（⚡ 模板一键插入） */
+  const [quickOpen, setQuickOpen] = useState(false);
   const [commands, setCommands] = useState<CommandItem[]>([]);
   const [commandsLoading, setCommandsLoading] = useState(false);
   const [commandsError, setCommandsError] = useState<string | null>(null);
@@ -236,7 +239,9 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
   const inputRef = useRef("");
   /** slash / @ 面板键盘句柄（↓/↑/Tab 从输入框下探到面板） */
   const slashPanelRef = useRef<PanelKeyHandle | null>(null);
-  const filePanelRef = useRef<PanelKeyHandle | null>(null);  /** 面板关闭后不因持续输入同一 token 反复重开（token 消失后复位） */
+  const filePanelRef = useRef<PanelKeyHandle | null>(null);
+  /** 快捷指令触发按钮（面板锚点，点它不误关面板） */
+  const quickTriggerRef = useRef<HTMLButtonElement | null>(null);  /** 面板关闭后不因持续输入同一 token 反复重开（token 消失后复位） */
   const slashDismissedRef = useRef(false);
   const atDismissedRef = useRef(false);
   const slashActiveRef = useRef(false);
@@ -389,6 +394,15 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
     updateInput(result.text);
     focusAt(result.cursor);
     rememberRef(path);
+  };
+
+  /** 快捷指令：模板插入到输入框光标处（保留光标后内容，换行衔接，可编辑后发送） */
+  const insertQuickCommand = (text: string) => {
+    const el = inputWrapRef.current?.querySelector("textarea");
+    const cursor = el?.selectionStart ?? inputRef.current.length;
+    const result = insertSnippetAtCursor(inputRef.current, cursor, text);
+    updateInput(result.text);
+    focusAt(result.cursor);
   };
 
   /** 单文件上传：本地预检 → base64 → POST /api/uploads（契约 §11）→ 附件草稿；
@@ -1476,6 +1490,13 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
             onClose={() => setSlashOpen(false)}
             anchorRef={inputWrapRef}
           />
+          <QuickCommandPanel
+            open={quickOpen}
+            disabled={sending}
+            onInsert={insertQuickCommand}
+            onClose={() => setQuickOpen(false)}
+            anchorRef={quickTriggerRef}
+          />
           {fileOpen && session && (
             <FileTreePanel
               ref={filePanelRef}
@@ -1521,6 +1542,11 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
                       slashDismissedRef.current = true;
                       e.preventDefault();                      return;
                     }
+                    if (quickOpen) {
+                      setQuickOpen(false);
+                      e.preventDefault();
+                      return;
+                    }
                   }
                   // 面板键盘下探：↓/↑/Tab 把焦点交给面板（方向键循环、Tab 逐项、Enter 插入）
                   const openPanel = slashSpan !== null ? slashPanelRef : atSpan !== null ? filePanelRef : null;
@@ -1549,6 +1575,19 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
               />
             </div>
             <div className="composer-actions">
+              <button
+                type="button"
+                ref={quickTriggerRef}
+                className={`composer-btn quick-trigger${quickOpen ? " open" : ""}`}
+                aria-label="快捷指令（常用 prompt 模板）"
+                aria-haspopup="dialog"
+                aria-expanded={quickOpen}
+                title="快捷指令（常用 prompt 模板）"
+                disabled={sending}
+                onClick={() => setQuickOpen((v) => !v)}
+              >
+                ⚡
+              </button>
               <UploadButton onFiles={(files) => void handleFiles(files)} busy={uploading} />
               <VoiceInputButton
                 onTranscript={(text) => updateInput(insertSnippet(inputRef.current, text))}
