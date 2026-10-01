@@ -2,9 +2,16 @@ node_modules/
 dist/
 *.log
 .DS_Store
-config/hub.config.local.json
 .env
 data/
+
+# 真实运行配置（本机路径/可选 token）：由 `npm run setup` 从示例生成，不入库
+config/hub.config.json
+config/hub.config.local.json
+
+# 过程产物：验收截图 / 取证日志（不入库，历史可从 git 记录恢复）
+evidence/
+web/evidence/
 
 # agent-hub 上传暂存（server 端运行时文件，不入库）
 .agent-hub-uploads/

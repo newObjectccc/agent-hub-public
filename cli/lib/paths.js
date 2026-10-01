@@ -56,3 +56,11 @@ export function repoRoot() {
 export function defaultConfigPath(root = repoRoot()) {
   return path.join(root, 'config', 'hub.config.json');
 }
+
+/**
+ * 配置模板（示例）位置：config/hub.config.example.json（入库，供参考/生成）。
+ * 真实 config/hub.config.json 不入库（含本机路径/可选 token），由 setup 从模板生成。
+ */
+export function defaultConfigTemplatePath(root = repoRoot()) {
+  return path.join(root, 'config', 'hub.config.example.json');
+}

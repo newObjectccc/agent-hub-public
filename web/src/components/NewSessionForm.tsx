@@ -170,7 +170,7 @@ export function NewSessionForm({ open, onClose, onCreated, recentCwds = [] }: Ne
 
       <div className="field">
         <div className="field-label">会话名称（可选）</div>
-        <Input placeholder="如：seksun KPI 周报" value={name} onChange={(e) => setName(e.target.value)} aria-label="会话名称" />
+        <Input placeholder="如：KPI 周报" value={name} onChange={(e) => setName(e.target.value)} aria-label="会话名称" />
       </div>
 
       {error && <div className="error-text" role="alert">{error}</div>}

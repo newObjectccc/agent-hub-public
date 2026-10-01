@@ -3,6 +3,15 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "description": "agent-hub 移动优先 PWA：会话面板、双模式 chat、子代理/实时旁观、Git/Diff、通知中心",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/newObjectccc/agent-hub.git",
+    "directory": "web"
+  },
+  "keywords": ["agent-hub", "pwa", "react", "vite"],
+  "engines": { "node": ">=20" },
   "scripts": {
     "build": "node scripts/generate-icons.mjs && tsc -b && vite build",
     "dev": "vite",

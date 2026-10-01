@@ -4,7 +4,7 @@
  * ── 调研结论（2026-09-29，基于本机 claude 2.1.267 真实数据）──────────────────
  * 1. 目录布局：`~/.claude/projects/<encoded-cwd>/<session-uuid>.jsonl`。
  *    encoded-cwd 把 cwd 的 `/`、`.`、`&` 等非字母数字字符统一换成 `-`（有损，不能可靠反解），
- *    如 `/Users/<user>/Workspace/imid` → `-Users-<user>-Workspace-imid`。
+ *    如 `/Users/me/Workspace/demo` → `-Users-me-Workspace-demo`。
  *    同目录还混有非会话文件（`skill-injections.jsonl`、`memory/`、`<uuid>/` 子目录等），
  *    必须排除：只认 `<uuid>.jsonl` 文件名 + 至少一条 user/assistant 行。
  * 2. 一行一个 JSON 对象。观测到的顶层 type：

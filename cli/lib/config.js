@@ -1,11 +1,12 @@
 // hub.config.json 读取、生成（模板复制）与合并（--port / --session-dir / --workspace-root 覆盖）。
+// 模板为入库的 config/hub.config.example.json；真实 config/hub.config.json 不入库（本机路径/可选 token）。
 import fs from 'node:fs';
 import path from 'node:path';
 import { assertPort } from './process.js';
 
 export const CONFIG_KEYS = ['port', 'host', 'sessionDir', 'workspaceRoot', 'kpiRefreshMinutes', 'auth'];
 
-/** 模板缺失时的内置默认（与 config/hub.config.json 一致）。 */
+/** 模板缺失时的内置默认（与 config/hub.config.example.json 一致）。 */
 export const DEFAULT_CONFIG = {
   port: 7700,
   host: '127.0.0.1',
@@ -51,7 +52,7 @@ export function loadConfig(configPath) {
 
 /**
  * 确保 config 存在并应用覆盖：
- * - 不存在：从 config/hub.config.json 模板复制（模板缺失用内置默认）+ 应用覆盖后写入
+ * - 不存在：从 config/hub.config.example.json 模板复制（模板缺失用内置默认）+ 应用覆盖后写入
  * - 已存在：读取并合并覆盖（保留未知字段），有覆盖项才回写
  * @returns {{created: boolean, wrote: boolean, path: string, config: object}}
  */
