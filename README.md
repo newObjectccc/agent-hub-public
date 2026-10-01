@@ -21,17 +21,30 @@
 
 ## 快速开始
 
+方式一：npm 包（npx / 全局安装）——或直接 git clone（见方式二），两种路径任选：
+
+```bash
+npx agent-hub remote        # 一键远程：首次自动 setup → 构建 → 启动 + Tailscale
+# 或安装后使用完整子命令（setup / start / remote / check / open）
+npm install -g agent-hub
+agent-hub setup             # 检测环境、生成 config
+agent-hub remote            # = start --tailscale，已初始化时直接走 start（幂等）
+```
+
+方式二：直接 git clone（仓库开发 / 自托管源码）：
+
 ```bash
 git clone https://github.com/newObjectccc/agent-hub.git
 cd agent-hub
 npm run setup        # 检测环境、生成 config（pi 缺失只提示安装方式）
 npm run start        # 装依赖 → 构建 → 启动，默认 http://127.0.0.1:7700
+npm run remote       # 一键远程：首次自动 setup + 构建 + start --tailscale（幂等）
 ```
 
 手机远程访问（推荐 Tailscale）：
 
 ```bash
-node cli/start.js --tailscale    # 或 --lan 局域网
+node cli/start.js --tailscale    # 或 --lan 局域网；或 npm run remote 一键搞定
 ```
 
 详见 [docs/PLATFORM.md](docs/PLATFORM.md)（三平台安装细则）。

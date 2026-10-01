@@ -83,10 +83,14 @@ export async function main(argv = [], deps = {}) {
       templatePath: deps.templatePath ?? defaultConfigTemplatePath(root),
       overrides,
       dryRun,
+      home: deps.home,
     });
     const action = res.created ? '已创建' : (res.wrote ? '已更新' : '已存在，无需改动');
     log(`${colors.ok} ${action}: ${res.path}${dryRun ? colors.dim(' [dry-run 未写盘]') : ''}`);
     log(colors.dim(`     port=${res.config.port} host=${res.config.host} sessionDir=${res.config.sessionDir} workspaceRoot=${res.config.workspaceRoot}`));
+    if (res.workspaceRootFallback) {
+      log(`${colors.info} workspaceRoot 目录不存在，已回落为 home 目录（${res.config.workspaceRoot}）；可按需修改 config/hub.config.json`);
+    }
   } catch (e) {
     log(`${colors.fail} 配置处理失败（不崩溃，可修复后重跑）：${e.message}`);
   }
@@ -160,7 +164,7 @@ export async function main(argv = [], deps = {}) {
     log(colors.info(' 原生 Windows：tmux 请走 WSL（wsl --install）或跳过。'));
   }
   log('');
-  log(`下一步 / Next: ${colors.bold('npm run start')}（或 node cli/start.js；--lan 局域网 / --tailscale 远程）`);
+  log(`下一步 / Next: ${colors.bold('npm run start')}（一键远程 ${colors.bold('npm run remote')}；或 node cli/start.js；--lan 局域网 / --tailscale 远程）`);
   return coreOk ? 0 : 1;
 }
 

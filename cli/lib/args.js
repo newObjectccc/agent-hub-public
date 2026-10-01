@@ -88,6 +88,8 @@ export function rootHelpText() {
            detect environment, install deps, write config, install pi extensions, optional autostart
   start    安装依赖、构建 web/server 并启动面板
            install deps, build web/server and start the panel
+  remote   一键远程入口：首次自动 setup + 构建 + start --tailscale（幂等）
+           one-command remote entry: auto-setup on first run, build + start --tailscale
   check    只读环境检测报告（doctor 为同义别名）/ read-only environment report
   open     在浏览器打开面板 / open the panel in your browser
 
@@ -101,6 +103,7 @@ export function rootHelpText() {
   node cli/cli.js setup --autostart
   node cli/cli.js start --lan
   node cli/cli.js start --tailscale
+  node cli/cli.js remote          # 等价 npm run remote：一键远程
   node cli/cli.js check
   node cli/cli.js doctor
   node cli/cli.js open
@@ -172,5 +175,25 @@ export function checkHelpText() {
   -h, --help   显示帮助 / show help
 
 退出码 / Exit code: 核心依赖（node ≥ 20 / pi）齐备为 0，否则为 1。
+`;
+}
+
+export function remoteHelpText() {
+  return `agent-hub remote — 一键远程入口 / one-command remote entry
+
+用法 / Usage:
+  node cli/remote.js [options]     # 等价 npm run remote / agent-hub remote
+
+流程 / Pipeline（幂等，可重复执行）:
+  1. 初始化检查：缺 config / 依赖时自动跑 setup（已初始化则跳过）
+  2. 构建 web/server 并以 --tailscale 启动（含 tailscale serve 引导）
+
+选项 / Options:
+  --port <n>       覆盖配置端口 / override config port
+  --skip-setup     即使未初始化也不跑 setup / never run setup
+  --skip-build     跳过 vite build / tsc / skip build steps
+  --dry-run        只打印将执行的步骤，不执行 / print steps only, execute nothing
+  --no-color       禁用彩色 / disable colors
+  -h, --help       显示帮助 / show help
 `;
 }

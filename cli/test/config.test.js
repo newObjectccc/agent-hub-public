@@ -99,3 +99,57 @@ test('ensureConfig: dry-run 不落盘', (t) => {
   assert.equal(res.config.port, 9000);
   assert.equal(fs.existsSync(configPath), false);
 });
+
+test('ensureConfig: 新建时 workspaceRoot 目录不存在 → 回落 home 并标记 fallback', (t) => {
+  const dir = tmpDir(t);
+  const home = path.join(dir, 'home');
+  fs.mkdirSync(home);
+  const configPath = path.join(dir, 'hub.config.json');
+  // 模板缺失 → 用内置默认（workspaceRoot: ~/Workspace，home 下不存在）
+  const res = ensureConfig({ configPath, templatePath: path.join(dir, 'nope.json'), overrides: {}, home });
+  assert.equal(res.created, true);
+  assert.equal(res.workspaceRootFallback, true);
+  assert.equal(res.config.workspaceRoot, '~');
+  assert.equal(loadConfig(configPath).workspaceRoot, '~');
+});
+
+test('ensureConfig: 新建时 workspaceRoot 目录存在 → 保留模板默认', (t) => {
+  const dir = tmpDir(t);
+  const home = path.join(dir, 'home');
+  fs.mkdirSync(path.join(home, 'Workspace'), { recursive: true });
+  const configPath = path.join(dir, 'hub.config.json');
+  const res = ensureConfig({ configPath, templatePath: path.join(dir, 'nope.json'), overrides: {}, home });
+  assert.equal(res.workspaceRootFallback, false);
+  assert.equal(res.config.workspaceRoot, '~/Workspace');
+});
+
+test('ensureConfig: 显式 --workspace-root 不回落（即使目录不存在）', (t) => {
+  const dir = tmpDir(t);
+  const home = path.join(dir, 'home');
+  fs.mkdirSync(home);
+  const configPath = path.join(dir, 'hub.config.json');
+  const res = ensureConfig({
+    configPath,
+    templatePath: path.join(dir, 'nope.json'),
+    overrides: { workspaceRoot: '~/Explicit' },
+    home,
+  });
+  assert.equal(res.workspaceRootFallback, false);
+  assert.equal(res.config.workspaceRoot, '~/Explicit');
+});
+
+test('ensureConfig: 已有 config 不动（幂等），即使 workspaceRoot 目录不存在', (t) => {
+  const dir = tmpDir(t);
+  const home = path.join(dir, 'home');
+  fs.mkdirSync(home);
+  const configPath = path.join(dir, 'hub.config.json');
+  const original = JSON.stringify({ port: 7700, workspaceRoot: '~/Missing' }, null, 2);
+  fs.writeFileSync(configPath, original, 'utf8');
+
+  const res = ensureConfig({ configPath, templatePath: configPath, overrides: {}, home });
+  assert.equal(res.created, false);
+  assert.equal(res.wrote, false);
+  assert.equal(res.workspaceRootFallback, false);
+  assert.equal(res.config.workspaceRoot, '~/Missing');
+  assert.equal(fs.readFileSync(configPath, 'utf8'), original);
+});

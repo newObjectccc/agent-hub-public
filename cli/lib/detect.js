@@ -60,10 +60,18 @@ export const TOOLS = {
   },
 };
 
-/** 解析命令版本输出（纯函数，供测试）：取首个 x.y[.z] 与首个非空行。 */
+/** 崩溃/异常输出特征：Fatal error / fatal / panic / error / exception / traceback / 段错误等。 */
+export const CRASH_PATTERN = /(fatal\s*error|\bfatal\b|\bpanic(?:ked)?\b|\berror\b|exception|traceback|segmentation fault|stack overflow|assertion failed)/i;
+
+/**
+ * 解析命令版本输出（纯函数，供测试）：严格模式。
+ * - 输出含崩溃特征（error / fatal / panic …）或提取不到 x.y 版本 → version=null（视为不可用，防假阳性）
+ * - 否则取首个 x.y[.z] 与首个非空行
+ */
 export function parseVersionOutput(text) {
   const s = String(text ?? '');
   const firstLine = s.split(/\r?\n/).map((l) => l.trim()).find((l) => l.length > 0) ?? '';
+  if (CRASH_PATTERN.test(s)) return { version: null, firstLine };
   const m = s.match(/(\d+)\.(\d+)(?:\.(\d+))?/);
   return { version: m ? m[0] : null, firstLine };
 }
@@ -85,8 +93,23 @@ export function hintFor(tool, platform = process.platform) {
 }
 
 /**
- * 检测单个工具：查命令 → 跑版本 → 解析。检测失败不算错误，只标记 found=false。
- * @returns {{name, label, required, found, path, version, raw, hint, ok}}
+ * 「检测到二进制但不可用」（broken）的修复建议：
+ * tailscale 先试 `tailscale up`，其余工具给重装指引。
+ */
+export function repairAdvice(toolOrName, platform = process.platform) {
+  const name = typeof toolOrName === 'string' ? toolOrName : toolOrName?.name;
+  const tool = TOOLS[name] ?? toolOrName;
+  const install = hintFor(tool, platform);
+  if (tool?.name === 'tailscale') {
+    return `检测到 tailscale 二进制但无法获取版本（输出异常/崩溃）。可先执行 \`tailscale up\` 排查；仍异常请重装 Tailscale：${install}`;
+  }
+  return `检测到 ${tool?.label ?? name} 二进制但无法获取版本（输出异常/崩溃），请重装：${install}`;
+}
+
+/**
+ * 检测单个工具：查命令 → 跑版本 → 严格解析。检测失败不算错误，只标记 found=false。
+ * status: 'ok' 正常 | 'outdated' 版本过低 | 'broken' 检测到二进制但不可用（崩溃/无输出） | 'missing' 未安装。
+ * @returns {{name, label, required, found, status, broken, path, version, raw, hint, ok}}
  */
 export function detectTool(toolName, deps = {}) {
   const {
@@ -105,6 +128,8 @@ export function detectTool(toolName, deps = {}) {
       label: tool.label,
       required: tool.required,
       found: false,
+      status: 'missing',
+      broken: false,
       path: null,
       version: null,
       raw: '',
@@ -115,12 +140,32 @@ export function detectTool(toolName, deps = {}) {
 
   const res = run(tool.name, tool.versionArgs, { env, shell: isWindows(platform) });
   const { version, firstLine } = parseVersionOutput(res.ok ? res.stdout || res.stderr : res.stderr || res.stdout);
+
+  // 严格模式：提取不到版本（含崩溃特征 / 无输出）→「检测到二进制但不可用」，绝不能报 [OK]
+  if (version === null) {
+    return {
+      name: tool.name,
+      label: tool.label,
+      required: tool.required,
+      found: true,
+      status: 'broken',
+      broken: true,
+      path: located.path,
+      version: null,
+      raw: firstLine,
+      hint: repairAdvice(tool, platform),
+      ok: false,
+    };
+  }
+
   const meetsMin = tool.minVersion ? versionAtLeast(version, tool.minVersion) : true;
   return {
     name: tool.name,
     label: tool.label,
     required: tool.required,
     found: true,
+    status: meetsMin ? 'ok' : 'outdated',
+    broken: false,
     path: located.path,
     version,
     raw: firstLine,

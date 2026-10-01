@@ -22,7 +22,10 @@ export function printReport(report, colors, { platform = process.platform, log =
     if (t.found && t.ok) {
       log(`${colors.ok} ${t.label}: ${t.version ?? t.raw ?? 'unknown'} ${colors.dim(`(${t.path})`)}`);
     } else if (t.found && !t.ok) {
-      log(`${colors.fail} ${t.label}: ${t.raw || t.version || ''}`);
+      const detail = t.broken
+        ? `检测到二进制但不可用${t.raw ? `（${t.raw}）` : ''}`
+        : (t.raw || t.version || '');
+      log(`${colors.fail} ${t.label}: ${detail}`);
       log(`     ${colors.yellow(t.hint ?? '')}`);
     } else {
       log(`${colors.fail} ${t.label}: 未检测到 / not found`);
@@ -35,6 +38,9 @@ export function printReport(report, colors, { platform = process.platform, log =
   for (const t of report.optional) {
     if (t.found && t.ok) {
       log(`${colors.ok} ${t.label}: ${t.version ?? t.raw ?? 'unknown'} ${colors.dim(`(${t.path})`)}`);
+    } else if (t.found && t.broken) {
+      log(`${colors.warn} ${t.label}: 检测到二进制但不可用${t.raw ? `（${t.raw}）` : ''} ${colors.dim(`(${t.path})`)}`);
+      for (const line of String(t.hint ?? '').split('\n')) log(`     ${colors.yellow(line)}`);
     } else {
       log(`${colors.warn} ${t.label}: 未安装（可跳过，核心功能不受影响）`);
       const advice = installAdvice(t, platform);

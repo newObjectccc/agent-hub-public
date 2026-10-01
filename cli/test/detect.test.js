@@ -7,11 +7,17 @@ import {
   detectTool,
   detectAll,
   installAdvice,
+  repairAdvice,
   TOOLS,
 } from '../lib/detect.js';
+import { printReport } from '../check.js';
+import { createColors } from '../lib/color.js';
 
 const ok = (stdout) => ({ ok: true, status: 0, stdout, stderr: '', error: null });
 const fail = (stderr) => ({ ok: false, status: 1, stdout: '', stderr, error: null });
+
+/** 真实踩过的 tailscale 崩溃输出（曾经被误报为 [OK] 版本） */
+const TAILSCALE_CRASH = 'Tailscale/BundleIdentifiers.swift:47: Fatal error: Index out of range';
 
 /** 构造 mock deps：find 命中固定路径，run 按命令返回输出 */
 function mockDeps({ found = true, outputs = {}, platform = 'linux' } = {}) {
@@ -36,6 +42,17 @@ test('parseVersionOutput: 提取版本号与首行', () => {
   });
   assert.deepEqual(parseVersionOutput(''), { version: null, firstLine: '' });
   assert.deepEqual(parseVersionOutput('no numbers here'), { version: null, firstLine: 'no numbers here' });
+});
+
+test('parseVersionOutput: 崩溃输出严格不提取版本（防假阳性）', () => {
+  // 真实崩溃文本：含 Fatal error，即使带 x.y 形数字也不提取
+  assert.deepEqual(parseVersionOutput(TAILSCALE_CRASH), {
+    version: null,
+    firstLine: TAILSCALE_CRASH,
+  });
+  assert.equal(parseVersionOutput('panic: runtime error: invalid (1.2.3)').version, null);
+  assert.equal(parseVersionOutput('v1.2.3\nSegmentation fault').version, null);
+  assert.equal(parseVersionOutput('Error: something 9.9.9').version, null);
 });
 
 test('versionAtLeast: 语义化版本比较', () => {
@@ -81,6 +98,78 @@ test('detectTool: tailscale 用 `tailscale version` 检测', () => {
   const t = detectTool('tailscale', deps);
   assert.equal(t.found, true);
   assert.equal(t.version, '1.66.0');
+  assert.equal(t.broken, false);
+  assert.equal(t.status, 'ok');
+  assert.equal(t.ok, true);
+});
+
+test('detectTool: tailscale 崩溃输出 → broken（检测到二进制但不可用），绝不能报 OK', () => {
+  const t = detectTool('tailscale', mockDeps({ outputs: { 'tailscale version': ok(TAILSCALE_CRASH) } }));
+  assert.equal(t.found, true);
+  assert.equal(t.broken, true);
+  assert.equal(t.status, 'broken');
+  assert.equal(t.version, null);
+  assert.equal(t.ok, false);
+  // 修复建议：先 tailscale up，仍异常重装
+  assert.match(t.hint, /tailscale up/);
+  assert.match(t.hint, /重装/);
+});
+
+test('detectTool: 命令存在但无输出 → broken（无法提取版本）', () => {
+  const t = detectTool('tailscale', mockDeps({ outputs: { 'tailscale version': ok('') } }));
+  assert.equal(t.found, true);
+  assert.equal(t.broken, true);
+  assert.equal(t.status, 'broken');
+  assert.equal(t.ok, false);
+  assert.match(t.hint, /重装/);
+});
+
+test('detectTool: 非零退出且 stderr 崩溃 → broken（不影响 tmux -V 走 stderr 的正常路径）', () => {
+  const crashed = detectTool('tailscale', {
+    platform: 'linux',
+    env: {},
+    find: () => ({ found: true, path: '/mock/bin/tailscale' }),
+    run: () => fail(TAILSCALE_CRASH),
+  });
+  assert.equal(crashed.broken, true);
+  assert.equal(crashed.ok, false);
+
+  const tmux = detectTool('tmux', {
+    platform: 'linux',
+    env: {},
+    find: () => ({ found: true, path: '/mock/bin/tmux' }),
+    run: () => fail('tmux 3.4'),
+  });
+  assert.equal(tmux.broken, false);
+  assert.equal(tmux.version, '3.4');
+});
+
+test('repairAdvice: tailscale 给 tailscale up + 重装，其余给重装', () => {
+  assert.match(repairAdvice('tailscale', 'linux'), /tailscale up/);
+  assert.match(repairAdvice('tailscale', 'linux'), /重装/);
+  assert.match(repairAdvice(TOOLS.ttyd, 'linux'), /重装/);
+  assert.match(repairAdvice(TOOLS.ttyd, 'linux'), /apt install ttyd/);
+});
+
+test('printReport: broken 的可选工具显示 ⚠ 与修复建议（不显示 [OK]）', () => {
+  const report = detectAll(mockDeps({
+    outputs: {
+      'node --version': ok('v20.11.0'),
+      'pi --version': ok('pi version 0.87.1'),
+      'tailscale version': ok(TAILSCALE_CRASH),
+    },
+  }));
+  const lines = [];
+  const colors = createColors({ enabled: false });
+  printReport(report, colors, { platform: 'linux', log: (l) => lines.push(String(l)) });
+  const tsLines = lines.filter((l) => l.includes('Tailscale'));
+  assert.ok(tsLines.length >= 1);
+  const block = lines.join('\n');
+  assert.match(block, /检测到二进制但不可用/);
+  assert.match(block, /tailscale up/);
+  assert.ok(!tsLines.some((l) => l.includes('[OK]')), '崩溃输出不得显示 [OK]');
+  // 正常工具不受影响
+  assert.ok(lines.some((l) => l.includes('Node.js') && l.includes('[OK]')));
 });
 
 test('detectTool: 命令输出在 stderr 也可解析（如 tmux -V）', () => {

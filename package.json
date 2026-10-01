@@ -1,10 +1,20 @@
 {
   "name": "agent-hub",
-  "private": true,
   "version": "0.1.0",
   "description": "Cross-platform pi/claude agent session hub: mobile PWA panel + chat + KPI, with Node server, pi extensions and CLI",
   "license": "MIT",
   "author": "newObjectccc",
+  "bin": {
+    "agent-hub": "cli/cli.js"
+  },
+  "files": [
+    "cli",
+    "config/hub.config.example.json",
+    "config/kpi-sources.json",
+    "docs",
+    "README.md",
+    "LICENSE"
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/newObjectccc/agent-hub.git"
@@ -29,6 +39,7 @@
     "lint": "pnpm -r lint",
     "setup": "node cli/setup.js",
     "start": "node cli/start.js",
+    "remote": "node cli/remote.js",
     "doctor": "node cli/check.js",
     "check": "node cli/check.js"
   },

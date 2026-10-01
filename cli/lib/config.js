@@ -1,8 +1,10 @@
 // hub.config.json 读取、生成（模板复制）与合并（--port / --session-dir / --workspace-root 覆盖）。
 // 模板为入库的 config/hub.config.example.json；真实 config/hub.config.json 不入库（本机路径/可选 token）。
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { assertPort } from './process.js';
+import { expandHome } from './paths.js';
 
 export const CONFIG_KEYS = ['port', 'host', 'sessionDir', 'workspaceRoot', 'kpiRefreshMinutes', 'auth'];
 
@@ -53,10 +55,18 @@ export function loadConfig(configPath) {
 /**
  * 确保 config 存在并应用覆盖：
  * - 不存在：从 config/hub.config.example.json 模板复制（模板缺失用内置默认）+ 应用覆盖后写入
- * - 已存在：读取并合并覆盖（保留未知字段），有覆盖项才回写
- * @returns {{created: boolean, wrote: boolean, path: string, config: object}}
+ *   · 新建时探测 workspaceRoot 目录是否存在（如 Linux 常无 ~/Workspace），不存在则回落 home 目录（'~'）
+ * - 已存在：读取并合并覆盖（保留未知字段），有覆盖项才回写（不动 workspaceRoot，幂等）
+ * @returns {{created: boolean, wrote: boolean, path: string, config: object, workspaceRootFallback: boolean}}
  */
-export function ensureConfig({ configPath, templatePath, overrides = {}, dryRun = false }) {
+export function ensureConfig({
+  configPath,
+  templatePath,
+  overrides = {},
+  dryRun = false,
+  home = os.homedir(),
+  exists = fs.existsSync,
+} = {}) {
   const hasOverrides = Object.values(overrides).some((v) => v !== undefined && v !== null && v !== '');
   let created = false;
   let base;
@@ -69,10 +79,24 @@ export function ensureConfig({ configPath, templatePath, overrides = {}, dryRun 
   }
 
   const config = applyOverrides(base, overrides);
+
+  // 新建时探测 workspaceRoot（显式 --workspace-root 不回落）：目录不存在 → 回落 home 目录
+  const explicitWorkspaceRoot = overrides.workspaceRoot !== undefined
+    && overrides.workspaceRoot !== null
+    && overrides.workspaceRoot !== '';
+  let workspaceRootFallback = false;
+  if (created && !explicitWorkspaceRoot && typeof config.workspaceRoot === 'string' && config.workspaceRoot) {
+    const resolved = expandHome(config.workspaceRoot, home);
+    if (!exists(resolved)) {
+      config.workspaceRoot = '~';
+      workspaceRootFallback = true;
+    }
+  }
+
   const wrote = created || hasOverrides;
   if (wrote && !dryRun) {
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
     fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
   }
-  return { created, wrote, path: configPath, config };
+  return { created, wrote, path: configPath, config, workspaceRootFallback };
 }
