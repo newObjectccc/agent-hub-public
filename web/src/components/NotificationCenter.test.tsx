@@ -120,8 +120,8 @@ describe("NotificationCenter 子代理聚合", () => {
       />,
     );
     openBell(el);
-    // 主会话行在前，聚合行在最后
-    const rows = Array.from(el.querySelectorAll(".notif-list > li"));
+    // 主会话行在前，聚合行在最后（小节头不算通知行）
+    const rows = Array.from(el.querySelectorAll(".notif-list > li:not(.notif-section-head)"));
     expect(rows).toHaveLength(2);
     expect(rows[0].querySelector(".notif-item")).not.toBeNull();
     const groupTitle = el.querySelector(".notif-group-title")?.textContent ?? "";
@@ -208,5 +208,52 @@ describe("NotificationCenter 与设置菜单互斥（弹层 bug 回归）", () =
       document.body.dispatchEvent(new Event("touchend", { bubbles: true }));
     });
     expect(el.querySelector(".notif-panel")).toBeNull();
+  });
+});
+
+describe("NotificationCenter 已读/未读区分（分组小节头 + 视觉标记）", () => {
+  const noop = () => {};
+
+  it("未读/已读分组渲染：小节头计数、行分别带 unread / read 标记", () => {
+    const el = render(
+      <NotificationCenter
+        notifications={[
+          item({ id: "u1" }),
+          item({ id: "r1", read: true }),
+          item({ id: "u2", kind: "error" }),
+        ]}
+        unreadCount={2}
+        onReload={noop}
+        onMarkAllRead={noop}
+        onMarkRead={noop}
+        onOpenSession={noop}
+      />,
+    );
+    openBell(el);
+    const heads = [...el.querySelectorAll(".notif-section-head")].map((h) => h.textContent ?? "");
+    expect(heads[0]).toContain("未读（2）");
+    expect(heads[1]).toContain("已读");
+    expect(el.querySelectorAll(".notif-item.unread")).toHaveLength(2);
+    expect(el.querySelectorAll(".notif-item.read")).toHaveLength(1);
+    // 未读组在前：第一条是未读项
+    const first = el.querySelector(".notif-list li:nth-child(2) .notif-item");
+    expect(first?.classList.contains("unread")).toBe(true);
+  });
+
+  it("全部已读时不渲染小节头（列表保持简洁），行均为 read", () => {
+    const el = render(
+      <NotificationCenter
+        notifications={[item({ id: "r1", read: true }), item({ id: "r2", read: true })]}
+        unreadCount={0}
+        onReload={noop}
+        onMarkAllRead={noop}
+        onMarkRead={noop}
+        onOpenSession={noop}
+      />,
+    );
+    openBell(el);
+    expect(el.querySelectorAll(".notif-section-head")).toHaveLength(0);
+    expect(el.querySelectorAll(".notif-item.read")).toHaveLength(2);
+    expect(el.querySelectorAll(".notif-item.unread")).toHaveLength(0);
   });
 });

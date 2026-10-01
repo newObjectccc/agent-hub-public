@@ -12,7 +12,7 @@ import { useRef, useState } from "react";
 import type { NotificationItem } from "../api/types";
 import { useDismissable } from "../hooks/useDismissable";
 import { relativeTime } from "../utils/relativeTime";
-import { aggregateNotifications, countsAsUnread, type NotificationRow } from "../utils/notifications";
+import { aggregateNotifications, countsAsUnread, splitRowsByRead, type NotificationRow } from "../utils/notifications";
 import { BellIcon } from "./icons";
 import { Button } from "./ui/button";
 
@@ -46,7 +46,7 @@ function NotificationRowItem({
   return (
     <button
       type="button"
-      className={`notif-item${sub ? " notif-sub-item" : ""}${countsAsUnread(item) ? " unread" : ""}`}
+      className={`notif-item${sub ? " notif-sub-item" : ""}${countsAsUnread(item) ? " unread" : " read"}`}
       onClick={() => onOpen(item)}
     >
       <div className="notif-item-head">
@@ -111,6 +111,7 @@ export function NotificationCenter({
   useDismissable({ open, onDismiss: () => setOpen(false), rootRef: panelRef });
 
   const rows = aggregateNotifications(notifications);
+  const { unread: unreadRows, read: readRows } = splitRowsByRead(rows);
   const openItem = (item: NotificationItem): void => {
     onMarkRead(item.id);
     onOpenSession(item.sessionId);
@@ -160,13 +161,34 @@ export function NotificationCenter({
           )}
           {!loading && notifications.length === 0 && <div className="empty">暂无通知</div>}
           <ul className="notif-list">
-            {rows.map((row) =>
+            {unreadRows.length > 0 && (
+              <li className="notif-section-head" role="presentation">
+                未读（{unreadRows.reduce((n, r) => (r.type === "item" ? n + (countsAsUnread(r.item) ? 1 : 0) : n + r.unread), 0)}）
+              </li>
+            )}
+            {unreadRows.map((row) =>
               row.type === "item" ? (
                 <li key={row.item.id}>
                   <NotificationRowItem item={row.item} onOpen={openItem} />
                 </li>
               ) : (
-                <li key="sub-agents">
+                <li key="sub-agents-unread">
+                  <SubAgentGroupRow row={row} onOpen={openItem} />
+                </li>
+              ),
+            )}
+            {readRows.length > 0 && unreadRows.length > 0 && (
+              <li className="notif-section-head read" role="presentation">
+                已读
+              </li>
+            )}
+            {readRows.map((row) =>
+              row.type === "item" ? (
+                <li key={row.item.id}>
+                  <NotificationRowItem item={row.item} onOpen={openItem} />
+                </li>
+              ) : (
+                <li key="sub-agents-read">
                   <SubAgentGroupRow row={row} onOpen={openItem} />
                 </li>
               ),

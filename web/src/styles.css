@@ -1718,6 +1718,35 @@ button.syschip.terminal-entry:hover {
 .notif-item.unread {
   background: var(--accent);
   box-shadow: var(--shadow-xs);
+  /* 未读双重区分：左侧粗色条 + 内容加粗（不只靠背景色） */
+  border-left: 4px solid currentColor;
+  font-weight: 700;
+}
+
+/* 已读降噪：正文弱化但仍可读（双主题均用 muted-foreground） */
+.notif-item.read {
+  color: var(--muted-foreground);
+}
+
+.notif-item.read .notif-text {
+  color: var(--muted-foreground);
+}
+
+/* 未读/已读小节头 */
+.notif-section-head {
+  padding: 8px 8px 2px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--muted-foreground);
+  list-style: none;
+}
+
+.notif-section-head.read {
+  border-top: 1px dashed var(--muted-foreground);
+  margin-top: 4px;
+  padding-top: 6px;
+  opacity: 0.8;
 }
 
 .notif-item:active {  transform: translate(2px, 2px);

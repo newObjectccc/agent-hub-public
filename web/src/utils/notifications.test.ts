@@ -3,7 +3,7 @@
  */
 import { describe, expect, it } from "vitest";
 import type { NotificationItem } from "../api/types";
-import { aggregateNotifications, countsAsUnread, unreadCountOf } from "./notifications";
+import { aggregateNotifications, countsAsUnread, splitRowsByRead, unreadCountOf } from "./notifications";
 
 function item(over: Partial<NotificationItem>): NotificationItem {
   return {
@@ -43,6 +43,43 @@ describe("countsAsUnread / unreadCountOf（角标数 = 列表未读数 = 点击�
     // 模拟点击条目 d 标记已读 → 角标 2→1
     const after = items.map((n) => (n.id === "d" ? { ...n, read: true } : n));
     expect(unreadCountOf(after)).toBe(1);
+  });
+});
+
+describe("splitRowsByRead（未读组在前 / 已读组在后，小节头计数口径一致）", () => {
+  it("未读/已读行分组；组内顺序保持（各自仍是时间倒序）", () => {
+    const rows = aggregateNotifications([
+      item({ id: "a", read: true, timestamp: "2026-02-18T10:00:00.000Z" }),
+      item({ id: "b", timestamp: "2026-02-18T12:00:00.000Z" }), // 未读（最新）
+      item({ id: "c", read: true, timestamp: "2026-02-18T11:00:00.000Z" }),
+      item({ id: "d", timestamp: "2026-02-18T11:30:00.000Z" }), // 未读
+    ]);
+    const { unread, read } = splitRowsByRead(rows);
+    expect(unread.map((r) => (r.type === "item" ? r.item.id : "g"))).toEqual(["b", "d"]);
+    expect(read.map((r) => (r.type === "item" ? r.item.id : "g"))).toEqual(["c", "a"]);
+  });
+
+  it("kind=done 不算未读，即使 read=false 也归已读组（噪声回执语义全链路一致）", () => {
+    const rows = aggregateNotifications([item({ id: "x", kind: "done" })]);
+    const { unread, read } = splitRowsByRead(rows);
+    expect(unread).toHaveLength(0);
+    expect(read).toHaveLength(1);
+  });
+
+  it("子代理聚合行按组内有未读整体归未读组（行上有未读徽章计数）", () => {
+    const rows = aggregateNotifications([
+      item({ id: "s1", isSubAgent: true }),
+      item({ id: "s2", isSubAgent: true, read: true }),
+    ]);
+    const { unread, read } = splitRowsByRead(rows);
+    expect(unread).toHaveLength(1);
+    expect(unread[0].type).toBe("subAgents");
+    expect(read).toHaveLength(0);
+    // 全组已读时归已读组
+    const allRead = aggregateNotifications([
+      item({ id: "s3", isSubAgent: true, read: true }),
+    ]);
+    expect(splitRowsByRead(allRead).unread).toHaveLength(0);
   });
 });
 

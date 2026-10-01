@@ -27,6 +27,20 @@ export interface SubAgentRow {
 
 export type NotificationRow = { type: "item"; item: NotificationItem } | SubAgentRow;
 
+/**
+ * 未读/已读分组（纯函数）：未读组在前，已读组在后（各带小节头）。
+ * 聚合行按「组内有未读」整体归入未读组（行上另有未读徽章计数）。
+ */
+export function splitRowsByRead(rows: NotificationRow[]): { unread: NotificationRow[]; read: NotificationRow[] } {
+  const unread: NotificationRow[] = [];
+  const read: NotificationRow[] = [];
+  for (const row of rows) {
+    const isUnread = row.type === "item" ? countsAsUnread(row.item) : row.unread > 0;
+    (isUnread ? unread : read).push(row);
+  }
+  return { unread, read };
+}
+
 const byTimeDesc = (a: NotificationItem, b: NotificationItem): number =>
   Date.parse(b.timestamp) - Date.parse(a.timestamp);
 
