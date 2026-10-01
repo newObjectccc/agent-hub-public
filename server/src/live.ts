@@ -158,28 +158,33 @@ export function normalizeLiveEvents(raw: unknown, nowMs = Date.now()): ServerEve
 /** delta 事件（可合并） */
 type DeltaEvent = { type: "text_delta" | "thinking_delta"; messageId: string; delta: string };
 
+/** 合并中的 delta 组：分片数组收集，最后一次 join（避免反复字符串拷贝 O(k²)） */
+type DeltaGroup = { type: "text_delta" | "thinking_delta"; messageId: string; parts: string[] };
+
 function isDeltaEvent(event: ServerEvent): event is ServerEvent & DeltaEvent {
   return event.type === "text_delta" || event.type === "thinking_delta";
 }
 
-/** 合并相邻同 (type, messageId) 的 delta 事件，减少广播帧数 */
+/** 合并相邻同 (type, messageId) 的 delta 事件，减少广播帧数（分片收集 + 一次性 join） */
 export function coalesceDeltas(events: ServerEvent[]): ServerEvent[] {
-  const out: ServerEvent[] = [];
+  const out: Array<ServerEvent | DeltaGroup> = [];
   for (const event of events) {
     const last = out[out.length - 1];
-    if (
-      last &&
-      isDeltaEvent(event) &&
-      isDeltaEvent(last) &&
-      last.type === event.type &&
-      last.messageId === event.messageId
-    ) {
-      out[out.length - 1] = { type: event.type, messageId: event.messageId, delta: last.delta + event.delta };
+    if (last && isDeltaEvent(event) && "parts" in last && last.type === event.type && last.messageId === event.messageId) {
+      last.parts.push(event.delta); // O(1) 追加，不反复拷贝已合并字符串
+      continue;
+    }
+    if (isDeltaEvent(event)) {
+      out.push({ type: event.type, messageId: event.messageId, parts: [event.delta] });
       continue;
     }
     out.push(event);
   }
-  return out;
+  return out.map((item) =>
+    "parts" in item
+      ? { type: item.type, messageId: item.messageId, delta: item.parts.join("") }
+      : item,
+  );
 }
 
 export interface LiveIngestDeps {

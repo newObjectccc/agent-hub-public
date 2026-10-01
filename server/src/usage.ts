@@ -99,6 +99,18 @@ export function usageSamplesFromEntries(entries: RawEntry[]): UsageSample[] {
   return out;
 }
 
+/**
+ * 全部会话采样汇总：循环逐条追加（OOM 审计 AC7）。
+ * 禁止 `push(...samples)` 大数组 spread——单会话采样 >6 万时会撑爆调用栈（RangeError）。
+ */
+export function collectAllSamples(entries: Iterable<{ samples: UsageSample[] }>): UsageSample[] {
+  const out: UsageSample[] = [];
+  for (const entry of entries) {
+    for (const sample of entry.samples) out.push(sample);
+  }
+  return out;
+}
+
 /** JSONL 文本 → 采样列表（坏行跳过；单测直接喂 fixture 文本） */
 export function parseUsageSamples(content: string): UsageSample[] {
   return usageSamplesFromEntries(parseSessionJsonl(content).entries);
@@ -191,6 +203,8 @@ export interface UsageServiceOptions {
   ttlMs?: number;
   /** 最小重扫间隔（默认 5s，防 presence 高频 invalidate 风暴式全量扫描） */
   minRescanMs?: number;
+  /** 请求侧限时（默认 300ms）：冷启动/刷新中最多等这么久，超时先回当前缓存，后台继续 */
+  refreshWaitMs?: number;
 }
 
 interface FileUsageEntry {
@@ -205,6 +219,8 @@ interface FileUsageEntry {
 
 const USAGE_CACHE_TTL_MS = 30_000;
 const USAGE_MIN_RESCAN_MS = 5_000;
+/** 请求侧限时默认值（OOM 审计 AC10）：冷启动最多同步等 300ms，超时回降级空窗 */
+const USAGE_REFRESH_WAIT_MS = 300;
 const SCAN_CONCURRENCY = 4;
 
 export class UsageService implements UsageServiceLike {
@@ -227,25 +243,50 @@ export class UsageService implements UsageServiceLike {
     this.dirty = true;
   }
 
+  /** 启动预热（fire-and-forget）：预扫全部会话 JSONL，消除 /api/usage 冷启动 2.3s 同步等待 */
+  warmup(): void {
+    void this.ensureFresh().catch(() => undefined);
+  }
+
   private now(): number {
     return Date.now();
   }
 
-  /** TTL 内直接用缓存；过期则对账一次（增量：只重读变更文件） */
-  private async ensureFresh(): Promise<void> {
+  /** TTL 内直接用缓存；过期则对账一次（增量：只重读变更文件）。boundMs 限时等待，超时回当前缓存（后台继续） */
+  private async ensureFresh(boundMs?: number): Promise<void> {
     const ttlMs = this.options.ttlMs ?? USAGE_CACHE_TTL_MS;
     const now = this.now();
     if (!this.dirty && this.lastScanAt > 0 && now - this.lastScanAt < ttlMs) return;
-    if (this.refreshing !== null) return this.refreshing;
+    if (this.refreshing !== null) return this.boundedWait(this.refreshing, boundMs);
     // 最小重扫间隔：invalidate 高频触发时拒绝风暴式对账
     if (this.lastScanAt > 0 && now - this.lastScanAt < (this.options.minRescanMs ?? USAGE_MIN_RESCAN_MS)) return;
     this.dirty = false;
     const task = this.refresh(now);
     this.refreshing = task;
-    try {
+    // 清理挂在任务本身而非等待方：限时返回后后台刷新仍持续，结束后才释放 refreshing
+    void task
+      .catch(() => undefined)
+      .finally(() => {
+        if (this.refreshing === task) this.refreshing = null;
+      });
+    return this.boundedWait(task, boundMs);
+  }
+
+  /** 限时等待刷新：boundMs 缺省等完；超时先返回（不取消后台刷新，最终一致） */
+  private async boundedWait(task: Promise<void>, boundMs?: number): Promise<void> {
+    if (boundMs === undefined) {
       await task;
+      return;
+    }
+    let timer: NodeJS.Timeout | null = null;
+    const timeout = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, boundMs);
+      timer.unref?.();
+    });
+    try {
+      await Promise.race([task.catch(() => undefined), timeout]);
     } finally {
-      this.refreshing = null;
+      if (timer !== null) clearTimeout(timer);
     }
   }
 
@@ -313,12 +354,11 @@ export class UsageService implements UsageServiceLike {
   }
 
   async overview(now: number, opts: { days?: number } = {}): Promise<UsageOverviewDto> {
-    await this.ensureFresh();
+    await this.ensureFresh(this.options.refreshWaitMs ?? USAGE_REFRESH_WAIT_MS);
     const snapshots = this.snapshots();
-    const allSamples: UsageSample[] = [];
+    const allSamples = collectAllSamples(snapshots);
     const sessions: SessionUsageDto[] = [];
     for (const entry of snapshots) {
-      allSamples.push(...entry.samples);
       if (entry.samples.length > 0) sessions.push(this.toDto(entry));
     }
     const dto: UsageOverviewDto = { windows: usageWindows(allSamples, now), sessions };
@@ -327,8 +367,13 @@ export class UsageService implements UsageServiceLike {
   }
 
   async session(id: string, now: number, opts: { days?: number } = {}): Promise<UsageSessionDto | null> {
-    await this.ensureFresh();
-    const entry = this.snapshots().find((e) => e.sessionId === id);
+    await this.ensureFresh(this.options.refreshWaitMs ?? USAGE_REFRESH_WAIT_MS);
+    let entry = this.snapshots().find((e) => e.sessionId === id);
+    if (entry === undefined && this.refreshing !== null) {
+      // 冷启动空窗不误报 404：会话存在但后台还没扫完 → 等扫完重查（warmup 后此路径基本不触发）
+      await this.refreshing.catch(() => undefined);
+      entry = this.snapshots().find((e) => e.sessionId === id);
+    }
     if (entry === undefined) return null;
     const summary = this.toDto(entry);
     const dto: UsageSessionDto = {

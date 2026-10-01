@@ -7,7 +7,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import type { ServerEvent } from "../types.js";
-import { inferExternalStatus, SessionTailManager } from "../sessions/tail.js";
+import { loadSessionMessages } from "../sessions/scan.js";
+import { inferExternalStatus, piMessageLoader, SessionTailManager, type MessageLoader } from "../sessions/tail.js";
 
 const ts = () => new Date().toISOString();
 
@@ -199,6 +200,163 @@ describe("tail: 回复落盘后的短静默 → agent_settled（中止按钮及�
       assert.equal(settled, 2, `两轮回复各自 settle，实际 ${JSON.stringify(types)}`);
       const lastRunning = types.lastIndexOf("status");
       assert.ok(lastRunning > types.indexOf("agent_settled"), "第二轮应重新推 running");
+    } finally {
+      manager.stopAll();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------- OOM 审计 AC1：字节偏移增量解析 ----------
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** 链式 entry（parentId 串链，active branch 才能覆盖全部消息，贴近真实 pi session 格式） */
+function centry(id: string, parentId: string | null, role: string, text: string): string {
+  return JSON.stringify({
+    type: "message",
+    id,
+    parentId,
+    timestamp: ts(),
+    message: { role, content: text },
+  });
+}
+
+const endedIds = (events: Array<{ sessionId: string; event: ServerEvent }>): string[] =>
+  events
+    .filter((e) => e.event.type === "message_end")
+    .map((e) => (e.event as unknown as { message: { id: string } }).message.id);
+
+describe("tail: 字节偏移增量解析（AC1：不丢不重不错序）", () => {
+  it("多轮追加 + 半行延后：每条恰好推送一次且保序，增量生效（全量 loader 零调用）", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agent-hub-tail-inc-"));
+    const file = join(dir, "s.jsonl");
+    await writeFile(
+      file,
+      [
+        JSON.stringify({ type: "session", version: 3, id: "inc-1", timestamp: ts(), cwd: "/tmp/demo" }),
+        centry("m1", null, "user", "初始消息"),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    // 计数 loader：全量解析调用计数 + 增量行计数（证明走字节偏移增量而非每轮全量重解析）
+    let fullLoads = 0;
+    let incrementalLines = 0;
+    const loader: MessageLoader = Object.assign(
+      async (f: string) => {
+        fullLoads += 1;
+        return loadSessionMessages(f);
+      },
+      {
+        createIncremental: () => {
+          const parser = piMessageLoader.createIncremental!();
+          return {
+            pushLine: (line: string) => {
+              incrementalLines += 1;
+              parser.pushLine(line);
+            },
+            messages: () => parser.messages(),
+          };
+        },
+      },
+    );
+    const got: Array<{ sessionId: string; event: ServerEvent }> = [];
+    const manager = new SessionTailManager((sessionId, event) => got.push({ sessionId, event }), {
+      pollMs: 100,
+      idleAfterMs: 60_000,
+      idleAfterReplyMs: 60_000,
+    });
+    try {
+      manager.acquire("inc-1", file, loader);
+      await sleep(300); // 初始快照
+      assert.deepEqual(endedIds(got), [], "初始快照不推送");
+
+      // 第一批：两条（appendFile 无尾换行的常见写盘形态）
+      await appendFile(file, `\n${centry("m2", "m1", "user", "第二批-a")}\n${centry("m3", "m2", "assistant", "第二批-b")}`, "utf8");
+      await sleep(400);
+      assert.deepEqual(endedIds(got), ["m2", "m3"], "第一批不丢不重不错序");
+
+      // 第二批：半行（写到一半）→ 留到下轮，不解析不推送
+      const line4 = centry("m4", "m3", "user", "半行消息");
+      await appendFile(file, `\n${line4.slice(0, 24)}`, "utf8");
+      await sleep(400);
+      assert.deepEqual(endedIds(got), ["m2", "m3"], "半行不解析不推送（留到下轮）");
+
+      // 完成半行 + 再新增一条：恰好各推一次
+      await appendFile(file, `${line4.slice(24)}\n${centry("m5", "m4", "assistant", "收尾")}`, "utf8");
+      await sleep(400);
+      assert.deepEqual(endedIds(got), ["m2", "m3", "m4", "m5"], "跨轮半行补齐后不丢不重不错序");
+
+      assert.equal(fullLoads, 0, "增量路径不得触发全量解析（只解析新增字节行）");
+      assert.ok(incrementalLines >= 4, `应只解析新增字节行，实际喂入 ${incrementalLines} 行`);
+    } finally {
+      manager.stopAll();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("截断/原地重写 → 全量对账：历史消息不重推，新消息不丢", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agent-hub-tail-rewrite-"));
+    const file = join(dir, "s.jsonl");
+    const header = JSON.stringify({ type: "session", version: 3, id: "inc-2", timestamp: ts(), cwd: "/tmp/demo" });
+    await writeFile(
+      file,
+      [
+        header,
+        centry("r1", null, "user", "旧消息-初始内容足够长AAAA"),
+        centry("r2", "r1", "assistant", "旧回复-初始内容足够长BBBB"),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    const got: Array<{ sessionId: string; event: ServerEvent }> = [];
+    const manager = new SessionTailManager((sessionId, event) => got.push({ sessionId, event }), {
+      pollMs: 100,
+      idleAfterMs: 60_000,
+      idleAfterReplyMs: 60_000,
+    });
+    try {
+      manager.acquire("inc-2", file);
+      await sleep(300);
+      // 重写为更短内容（截断 + 新 id）：应回退全量对账
+      await writeFile(file, [header, centry("r1", null, "user", "旧消息-初始内容足够长AAAA"), centry("r9", "r1", "user", "新")].join("\n") + "\n", "utf8");
+      await sleep(400);
+      assert.deepEqual(endedIds(got), ["r9"], "重写后只推新消息：历史 r1 不重推（knownIds 兜底）");
+    } finally {
+      manager.stopAll();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("无增量能力的注入 loader（claude 场景）安全回退全量解析，事件仍不丢不重", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agent-hub-tail-fallback-"));
+    const file = join(dir, "s.jsonl");
+    await writeFile(
+      file,
+      [
+        JSON.stringify({ type: "session", version: 3, id: "inc-3", timestamp: ts(), cwd: "/tmp/demo" }),
+        centry("c1", null, "user", "claude 场景"),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    let loads = 0;
+    const loader: MessageLoader = async (f: string) => {
+      loads += 1;
+      return loadSessionMessages(f);
+    };
+    const got: Array<{ sessionId: string; event: ServerEvent }> = [];
+    const manager = new SessionTailManager((sessionId, event) => got.push({ sessionId, event }), {
+      pollMs: 100,
+      idleAfterMs: 60_000,
+      idleAfterReplyMs: 60_000,
+    });
+    try {
+      manager.acquire("inc-3", file, loader);
+      await sleep(300);
+      assert.equal(loads, 1, "初始快照全量解析一次");
+      await appendFile(file, `\n${centry("c2", "c1", "assistant", "回退也增量正确")}`, "utf8");
+      await sleep(400);
+      assert.deepEqual(endedIds(got), ["c2"], "回退全量解析下事件仍不丢不重");
+      assert.ok(loads >= 2, "无增量能力时按变更回退全量解析（行为与旧实现一致）");
     } finally {
       manager.stopAll();
       await rm(dir, { recursive: true, force: true });

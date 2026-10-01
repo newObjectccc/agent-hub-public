@@ -6,6 +6,7 @@ import { strict as assert } from "node:assert";
 import { describe, it } from "node:test";
 import {
   AgentCommandHub,
+  CLIENT_IDEMPOTENT_TTL_MS,
   HEARTBEAT_TTL_MS,
   MAX_ATTEMPTS,
   MAX_QUEUE,
@@ -191,5 +192,31 @@ describe("AgentCommandHub: 超时重投与过期保护", () => {
     assert.equal(drop?.ok, false);
     assert.match(drop?.error ?? "", /超时未投递/);
     assert.equal(hub.isAttached("s1", 1200), true);
+  });
+});
+
+describe("AgentCommandHub: clientSeen 幂等缓存清扫（OOM 审计 AC5）", () => {
+  it("TTL 内幂等保留；sweep 清理过期条目（不再永久驻留）", async () => {
+    const { hub } = makeHub();
+    const now = Date.now();
+    hub.heartbeat({ sessionId: "sess-cs" }, now);
+    hub.attach("sess-cs", now);
+    const first = hub.enqueue("sess-cs", { text: "hi", mode: "prompt", clientMessageId: "cm-sweep" }, now);
+    // 投递 + 回执：指令完成（移出 inflight）
+    const batch = await hub.poll("sess-cs", 0, now);
+    assert.equal(batch.length, 1);
+    assert.equal(hub.ack("sess-cs", batch[0].id, true, undefined, now)?.ok, true);
+    // TTL 内重复提交：clientSeen 幂等命中，不生成新指令
+    const dup = hub.enqueue("sess-cs", { text: "hi", mode: "prompt", clientMessageId: "cm-sweep" }, now) as unknown as {
+      id?: string;
+      commandId?: string;
+    };
+    assert.equal(dup.commandId ?? dup.id, first.id, "TTL 内幂等保留");
+    // 时间过 TTL + sweep → 过期条目删除：同 clientMessageId 重新入队新指令
+    const later = now + CLIENT_IDEMPOTENT_TTL_MS + 1_000;
+    hub.heartbeat({ sessionId: "sess-cs" }, later);
+    hub.sweep(later);
+    const fresh = hub.enqueue("sess-cs", { text: "hi", mode: "prompt", clientMessageId: "cm-sweep" }, later);
+    assert.notEqual(fresh.id, first.id, "过期条目已由 sweep 清理（不再永久驻留）");
   });
 });

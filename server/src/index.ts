@@ -175,6 +175,11 @@ export async function startHub(): Promise<StartedHub> {
 
   await app.listen({ port: config.port, host: config.host });
   agents.startSweep();
+  // live map LRU/TTL 逐出 + feedSessions/statuses 过期清扫（30s，unref；OOM 审计 AC2/AC3）
+  piHub.startSweep();
+  // usage 启动预热（fire-and-forget）：预扫全部会话 JSONL，/api/usage 冷启动不再同步等 2.3s（
+  // 请求侧另有 ≤300ms 限时兑底，超时先回当前缓存/空窗，UI 走无数据占位降级，最终一致）
+  usage.warmup();
   const tails = new SessionTailManager((sessionId, event) => emit(sessionId, event));
   // 会话一旦由本进程接管（live），停掉文件 tail，避免双推送源产生重复气泡
   hub.onLive = (sid) => tails.detach(sid);

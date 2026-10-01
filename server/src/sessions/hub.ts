@@ -41,6 +41,8 @@ export type EmitFn = (sessionId: string, event: ServerEvent) => void;
 interface LiveSession {
   session: AgentSession;
   unsubscribe: () => void;
+  /** 最近一次活动时间（LRU/TTL 逐出依据） */
+  lastUsedMs: number;
   /** 当前流式 assistant 消息的流内 id（message_start 分配） */
   currentMessageId: string | null;
   /** 最近一条 message_start 的消息 id（工具执行发生在 assistant message_end 之后，归属它） */
@@ -85,7 +87,7 @@ export class SessionHub {
   private readonly sessionDir: string;
   private readonly emit: EmitFn;
   private readonly live = new Map<string, LiveSession>();
-  private readonly statuses = new Map<string, SessionStatus>();
+  private readonly statuses = new Map<string, { status: SessionStatus; at: number }>();
   /** 会话清单 TTL 缓存（listSessions/findSession 共享一次扫描） */
   private listCache: SessionListItem[] | null = null;
   private listCacheAt = 0;
@@ -93,7 +95,9 @@ export class SessionHub {
   private readonly searchService: SearchService;
   private readonly createSessionFn: typeof createAgentSession;
   /** 扩展 live-feed 推送过的会话：id → 最后事件时间（10 分钟内视为 live，防文件 tail 双推送） */
-  private readonly feedSessions = new Map<string, number>();  private disposed = false;
+  private readonly feedSessions = new Map<string, number>();
+  private disposed = false;
+  private sweepTimer: ReturnType<typeof setInterval> | null = null;
   /** 会话转 live 时回调（用于停掉文件 tail，保持单一推送源，防重复气泡） */
   onLive?: (id: string) => void;
   /** 会话运行活动回调（steering=插话/排队、done=手动中止，供通知聚合） */
@@ -103,6 +107,12 @@ export class SessionHub {
   static readonly FEED_TTL_MS = 10 * 60_000;
   /** 会话清单缓存 TTL：外部新会话最多晚 5s 可见；写路径 invalidate 立即可见 */
   static readonly LIST_TTL_MS = 5_000;
+  /** live map LRU 上限（OOM 审计 AC2）：超出后逐出最久未用的空闲实例，运行中的不动 */
+  static readonly LIVE_MAX = 20;
+  /** live 空闲 TTL：空闲（isIdle && 已收尾）超过此时长逐出释放，ensureLive 可重建 */
+  static readonly LIVE_IDLE_TTL_MS = 10 * 60_000;
+  /** statuses 过期 TTL：非 idle 状态超过此时长视为过期条目清扫（idle 条目随时清） */
+  static readonly STATE_TTL_MS = 30 * 60_000;
 
   constructor(sessionDir: string, emit: EmitFn, options: SessionHubOptions = {}) {
     this.sessionDir = sessionDir;
@@ -112,7 +122,12 @@ export class SessionHub {
   }
 
   getStatus(id: string): SessionStatus {
-    return this.statuses.get(id) ?? "idle";
+    return this.statuses.get(id)?.status ?? "idle";
+  }
+
+  /** 刷新 live 实例活动时间（LRU 依据） */
+  private touch(live: LiveSession, nowMs = Date.now()): void {
+    live.lastUsedMs = nowMs;
   }
 
   /** 是否有任一 live 推送源（本进程 SDK 或扩展 live-feed，有则无需文件 tail） */
@@ -141,7 +156,7 @@ export class SessionHub {
 
   /** 本进程运行态优先，否则按文件活动推断外部 running */
   private statusWithInference(id: string, updatedMs: number): SessionStatus {
-    const own = this.statuses.get(id);
+    const own = this.statuses.get(id)?.status;
     if (own && own !== "idle") return own;
     return inferExternalStatus(updatedMs);
   }
@@ -153,8 +168,64 @@ export class SessionHub {
 
   private setStatus(id: string, status: SessionStatus): void {
     if (this.getStatus(id) === status) return;
-    this.statuses.set(id, status);
+    this.statuses.set(id, { status, at: Date.now() });
     this.emit(id, { type: "status", status });
+  }
+
+  /**
+   * 周期清扫（OOM 审计 AC2/AC3）：live LRU/TTL 逐出 + feedSessions/statuses 过期清理。
+   * 只逐出空闲实例（isIdle && 已收尾），运行中的会话绝不打断（事件流语义不变）。
+   */
+  sweep(now = Date.now()): void {
+    for (const [id, live] of [...this.live]) {
+      if (this.isEvictable(live) && now - live.lastUsedMs > SessionHub.LIVE_IDLE_TTL_MS) {
+        this.disposeLive(id, live);
+      }
+    }
+    if (this.live.size > SessionHub.LIVE_MAX) {
+      // LRU：最久未用的空闲实例先逐出，直到回到上限（全部运行中则容忍暂时超限）
+      const idle = [...this.live.entries()]
+        .filter(([, live]) => this.isEvictable(live))
+        .sort((a, b) => a[1].lastUsedMs - b[1].lastUsedMs);
+      for (const [id, live] of idle) {
+        if (this.live.size <= SessionHub.LIVE_MAX) break;
+        this.disposeLive(id, live);
+      }
+    }
+    for (const [id, at] of [...this.feedSessions]) {
+      if (now - at > SessionHub.FEED_TTL_MS) this.feedSessions.delete(id);
+    }
+    for (const [id, entry] of [...this.statuses]) {
+      if (entry.status === "idle" || now - entry.at > SessionHub.STATE_TTL_MS) this.statuses.delete(id);
+    }
+  }
+
+  /** 启动周期清扫（30s，unref）；测试可直接调 sweep */
+  startSweep(intervalMs = 30_000): void {
+    if (this.sweepTimer !== null) return;
+    this.sweepTimer = setInterval(() => this.sweep(), intervalMs);
+    this.sweepTimer.unref?.();
+  }
+
+  /** 可逐出 = 空闲（无进行中 run 且 SDK 空闲）：运行中的实例绝不逐出，避免打断事件流 */
+  private isEvictable(live: LiveSession): boolean {
+    return live.runSettled && live.session.isIdle === true;
+  }
+
+  /** 逐出前安全释放：unsubscribe（事件订阅）+ dispose（SDK 实例）；ensureLive 可重建 */
+  private disposeLive(id: string, live: LiveSession): void {
+    if (this.live.get(id) !== live) return;
+    this.live.delete(id);
+    try {
+      live.unsubscribe();
+    } catch {
+      // 忽略
+    }
+    try {
+      live.session.dispose();
+    } catch {
+      // 忽略
+    }
   }
 
   /** 扫描列表（运行态注入：本进程优先 + 外部活动推断）。
@@ -323,7 +394,10 @@ export class SessionHub {
   /** 取得（或创建）该会话的 AgentSession 实例 */
   async ensureLive(id: string): Promise<AgentSession> {
     const existing = this.live.get(id);
-    if (existing) return existing.session;
+    if (existing) {
+      this.touch(existing);
+      return existing.session;
+    }
     if (this.disposed) {
       throw new HubError(ErrorCodes.INTERNAL, "server 正在关闭", 503);
     }
@@ -347,10 +421,13 @@ export class SessionHub {
       toolResults: new Map(),
       seq: 0,
       runSettled: true,
+      lastUsedMs: Date.now(),
       unsubscribe: () => undefined,
     };
     liveSession.unsubscribe = session.subscribe((event) => this.handleSdkEvent(id, liveSession, event));
     this.live.set(id, liveSession);
+    // 插入后顺带清扫（惰性触发）：LRU 超限时逐出最久未用的空闲实例，新实例不会被逐出
+    this.sweep();
     this.onLive?.(id);
     return session;
   }
@@ -370,6 +447,7 @@ export class SessionHub {
     if (live === undefined) {
       throw new HubError(ErrorCodes.INVALID_REQUEST, "会话未初始化");
     }
+    this.touch(live);
     const decision = decidePromptAction(!session.isIdle, mode);
     if (decision.kind === "busy") {
       return { accepted: false, mode: mode ?? "prompt", busy: true };
@@ -429,6 +507,7 @@ export class SessionHub {
   async abort(id: string): Promise<void> {
     const live = this.live.get(id);
     if (!live) return;
+    this.touch(live);
     // abort 自己已收尾（status idle + done 活动）：抑制 run finally 的 agent_settled 兑底，
     // 避免中止后又冒出一条“干完了”通知
     live.runSettled = true;
@@ -446,6 +525,10 @@ export class SessionHub {
   /** 进程退出：dispose 所有 AgentSession 实例 */
   disposeAll(): void {
     this.disposed = true;
+    if (this.sweepTimer !== null) {
+      clearInterval(this.sweepTimer);
+      this.sweepTimer = null;
+    }
     for (const live of this.live.values()) {
       try {
         live.unsubscribe();
@@ -464,6 +547,7 @@ export class SessionHub {
   // ---- SDK 事件 → 契约 WS 事件 ----
 
   private handleSdkEvent(id: string, live: LiveSession, event: AgentSessionEvent): void {
+    this.touch(live);
     switch (event.type) {
       case "agent_start": {
         this.setStatus(id, "running");

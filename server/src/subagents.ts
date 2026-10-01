@@ -131,6 +131,13 @@ export interface RoutedSubAgentEvent {
 
 type SessionLookup = (id: string) => Promise<SessionListItem | null>;
 
+/** 首波事件缓存队列（含全文事件，有界 + TTL，不永久驻留） */
+interface PendingQueue {
+  /** 队列创建时间（TTL 起点） */
+  queuedAt: number;
+  items: Array<{ sessionId: string; event: ServerEvent }>;
+}
+
 /**
  * 子会话事件 → 父会话通道路由器：
  * 血缘（sessionId → parentSessionId）缓存解析；miss 时异步补缓存（当次事件跳过，
@@ -143,11 +150,18 @@ export class SubAgentRouter {
   /** 解析失败负缓存：到点前的事件不重试 lookup（避免每事件触发全量扫描） */
   private readonly retryAfter = new Map<string, number>();
   static readonly RETRY_AFTER_MS = 30_000;
+  /** 追踪会话数上限（OOM 审计 AC4）：parents/names/retryAfter/pending 均有上界，插入序 LRU 淘汰 */
+  static readonly MAX_TRACKED = 1024;
+  /** 首波缓存 TTL：血缘解析长期失败时到期丢弃（明确语义：不永久驻留）；正常路径 <1s 即 flush，首条输出不丢 */
+  static readonly PENDING_TTL_MS = 5 * 60_000;
+  /** 清扫节流：route 热路径上最多每 60s 全量清一次 */
+  static readonly SWEEP_INTERVAL_MS = 60_000;
   private readonly resolving = new Set<string>();
+  private lastSweepAt = 0;
   private readonly lookup: SessionLookup;
 
   /** 血缘未解析期间的首波事件缓存（resolve 后 flush，≤8 条/会话） */
-  private readonly pending = new Map<string, Array<{ sessionId: string; event: ServerEvent }>>();
+  private readonly pending = new Map<string, PendingQueue>();
 
   constructor(
     lookup: SessionLookup,
@@ -159,18 +173,48 @@ export class SubAgentRouter {
 
   /** 外部预热血缘（如会话扫描后），减少首帧 miss */
   remember(sessionId: string, parentSessionId: string, name?: string): void {
-    this.parents.set(sessionId, parentSessionId);
-    if (name !== undefined) this.names.set(sessionId, name);
+    SubAgentRouter.setBounded(this.parents, sessionId, parentSessionId);
+    if (name !== undefined) SubAgentRouter.setBounded(this.names, sessionId, name);
+  }
+
+  /** 有界 Map 写入（插入序 LRU）：淘汰最旧条目，防无上界增长 */
+  private static setBounded<V>(map: Map<string, V>, key: string, value: V): void {
+    if (map.has(key)) map.delete(key); // 刷新插入序（近用后出）
+    map.set(key, value);
+    if (map.size > SubAgentRouter.MAX_TRACKED) {
+      const oldest = map.keys().next();
+      if (!oldest.done) map.delete(oldest.value);
+    }
+  }
+
+  /**
+   * 周期清扫（OOM 审计 AC4）：
+   * - pending 超 TTL 丢弃（明确语义：血缘长期解析失败时首波缓存不永久驻留；成功路径仍 flush，首条输出不丢）
+   * - retryAfter 到期条目清理（删除 ≡ 已过期，下次事件可重试）
+   */
+  sweep(now = Date.now()): void {
+    this.lastSweepAt = now;
+    for (const [sessionId, queue] of [...this.pending]) {
+      if (now - queue.queuedAt > SubAgentRouter.PENDING_TTL_MS) this.pending.delete(sessionId);
+    }
+    for (const [sessionId, at] of [...this.retryAfter]) {
+      if (now >= at) this.retryAfter.delete(sessionId);
+    }
   }
 
   route(sessionId: string, event: ServerEvent): RoutedSubAgentEvent | null {
+    const nowMs = Date.now();
+    if (nowMs - this.lastSweepAt > SubAgentRouter.SWEEP_INTERVAL_MS) this.sweep(nowMs);
     const parentId = this.parents.get(sessionId);
     if (parentId === undefined) {
       // 首波事件缓存（血缘解析是异步全量扫描，直接丢会漏掉第一条输出/完成态）
-      const q = this.pending.get(sessionId) ?? [];
-      if (q.length < 8) q.push({ sessionId, event });
-      this.pending.set(sessionId, q);
-      if ((this.retryAfter.get(sessionId) ?? 0) <= Date.now()) this.resolveAsync(sessionId);
+      let queue = this.pending.get(sessionId);
+      if (queue === undefined) {
+        queue = { queuedAt: nowMs, items: [] };
+        SubAgentRouter.setBounded(this.pending, sessionId, queue);
+      }
+      if (queue.items.length < 8) queue.items.push({ sessionId, event });
+      if ((this.retryAfter.get(sessionId) ?? 0) <= nowMs) this.resolveAsync(sessionId);
       return null;
     }
     // 空串哨兵 = 已解析为非子代理（无父），不再路由
@@ -188,32 +232,34 @@ export class SubAgentRouter {
 
   private resolveAsync(sessionId: string): void {
     if (this.resolving.has(sessionId) || this.parents.has(sessionId)) return;
+    if (this.resolving.size >= SubAgentRouter.MAX_TRACKED) return; // 解析风暴保护：在途 lookup 也有上界
     this.resolving.add(sessionId);
     void this.lookup(sessionId)
       .then((session) => {
         const parentId = session?.parentSessionId;
         if (session?.isSubAgent === true && typeof parentId === "string" && parentId !== "") {
-          this.parents.set(sessionId, parentId);
+          SubAgentRouter.setBounded(this.parents, sessionId, parentId);
           const name = session.name ?? session.id;
-          this.names.set(sessionId, name);
-          // 补投首波缓存（此刻血缘已知，重新走 route 产出正确路由）
-          const queued = this.pending.get(sessionId);
+          SubAgentRouter.setBounded(this.names, sessionId, name);
+          // 补投首波缓存（此刻血缘已知，重新走 route 产出正确路由；首条输出不丢）
+          const queue = this.pending.get(sessionId);
           this.pending.delete(sessionId);
-          if (queued && this.onDrain) {
-            for (const item of queued) {
+          if (queue && this.onDrain) {
+            for (const item of queue.items) {
               const routed = this.route(item.sessionId, item.event);
               if (routed) this.onDrain(routed);
             }
           }
         } else {
-          // 非子代理会话记为"无父"（空串哨兵），避免反复解析；缓存作废
-          this.parents.set(sessionId, "");
+          // 非子代理会话记为“无父”（空串哨兵），避免反复解析；缓存作废
+          SubAgentRouter.setBounded(this.parents, sessionId, "");
           this.pending.delete(sessionId);
         }
       })
       .catch(() => {
-        // 解析失败（扫描异常）：负缓存限速重试，不清 pending（事件不丢，到期后补解析）
-        this.retryAfter.set(sessionId, Date.now() + SubAgentRouter.RETRY_AFTER_MS);
+        // 解析失败（扫描异常）：负缓存限速重试；pending 保留至 PENDING_TTL（到期 sweep 丢弃，不永久驻留），
+        // retryAfter 到期后下一条事件触发重试，成功即按序 flush（首波语义不变）
+        SubAgentRouter.setBounded(this.retryAfter, sessionId, Date.now() + SubAgentRouter.RETRY_AFTER_MS);
       })
       .finally(() => {
         this.resolving.delete(sessionId);

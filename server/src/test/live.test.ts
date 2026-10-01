@@ -317,3 +317,28 @@ describe("live: POST /api/live/:sessionId → WS 广播（fake WS 断言）", ()
     }
   });
 });
+
+describe("live: 大量 delta 合并（OOM 审计 AC6）", () => {
+  it("7 万段相邻 delta 分片收集后一次性 join：不栈溢出、不反复拷贝、结果一致", () => {
+    const n = 70_000;
+    const events: ServerEvent[] = [];
+    for (let i = 0; i < n; i += 1) events.push({ type: "text_delta", messageId: "m1", delta: "x" });
+    const merged = coalesceDeltas(events);
+    assert.equal(merged.length, 1, "全部合并为一条");
+    assert.equal((merged[0] as unknown as { delta: string }).delta.length, n, "拼接结果完整（7 万段一段不少）");
+  });
+
+  it("多组交替合并：分片 join 不改变合并语义（与逐段拼接逐字一致）", () => {
+    const events: ServerEvent[] = [];
+    for (let i = 0; i < 500; i += 1) {
+      events.push({ type: "text_delta", messageId: "a", delta: String(i % 10) });
+      if (i % 100 === 99) events.push({ type: "thinking_delta", messageId: "a", delta: "|" });
+    }
+    const merged = coalesceDeltas(events);
+    assert.equal(merged.length, 10, "5 组 text + 5 条 thinking 交替：只有相邻同类型同 messageId 才合并");
+    const group = Array.from({ length: 100 }, (_, i) => String(i % 10)).join("");
+    assert.equal((merged[0] as unknown as { delta: string }).delta, group, "首组拼接逐字一致");
+    assert.equal((merged[1] as unknown as { type: string }).type, "thinking_delta");
+    assert.equal((merged[9] as unknown as { type: string }).type, "thinking_delta", "末条不与前组跨类型合并");
+  });
+});

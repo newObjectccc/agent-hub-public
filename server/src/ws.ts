@@ -36,6 +36,8 @@ export class WsHub {
   private readonly globalClients = new Set<WebSocket>();
   private wss: WebSocketServer | null = null;
   private tails: SessionTailManager | null = null;
+  /** 子代理会话增量发现间隔（默认 10s；测试可注入短值） */
+  childScanMs = 10_000;
   /** prompt 冲突保护（E3：attach 接管期间拒绝 parallel 发送，防双写） */
   private promptGuard: ((sessionId: string) => { code: string; message: string } | null) | null = null;
 
@@ -164,8 +166,9 @@ export class WsHub {
     let ready = false;
     let acquired = false;
     let closed = false;
-    /** 父会话订阅期间顺带 tail 的子代理会话（反馈轮 3 #4，cleanup 时释放） */
-    const childTails: string[] = [];
+    /** 父会话订阅期间顺带 tail 的子代理会话（反馈轮 3 #4）：Set 单一事实源，acquire/release 严格配对，
+     * 子会话消失时同步移除后再 release，cleanup 不会二次 release 误减其它连接同 id tail 的 ref */
+    const childTails = new Set<string>();
     const cleanupFns: Array<() => void> = [];
     const process = (text: string): void => {
       void this.handleClientMessage(socket, sessionId, hub, text);
@@ -179,9 +182,10 @@ export class WsHub {
         acquired = false;
         this.tails?.release(sessionId);
       }
-      for (const childId of childTails.splice(0)) {
+      for (const childId of childTails) {
         this.tails?.release(childId);
       }
+      childTails.clear();
     };
 
     socket.on("message", (raw: Buffer | ArrayBuffer | Buffer[]) => {
@@ -218,7 +222,6 @@ export class WsHub {
       // 子代理会话 tail（反馈轮 3 #4）：父会话订阅期间顺带 tail 全部子代理会话，
       // 其事件经 emit → SubAgentRouter 按 parentSessionId 路由回父通道（活动面板实时更新）。
       // 异步解析完成前连接已关：不 acquire（或立即 release），防 tail 泄漏。
-      const childSet = new Set<string>();
       const syncChildren = (): void => {
         if (!this.tails || closed || !hub.listChildren || socket.readyState !== WebSocket.OPEN) return;
         void hub
@@ -228,11 +231,10 @@ export class WsHub {
             const seen = new Set<string>();
             for (const child of children) {
               seen.add(child.id);
-              if (childSet.has(child.id) || hub.isLive(child.id)) continue;
+              if (childTails.has(child.id) || hub.isLive(child.id)) continue;
               const childLoader = child.source === "claude" ? loadClaudeSessionMessages : undefined;
               this.tails?.acquire(child.id, child.sessionFile, childLoader);
-              childSet.add(child.id);
-              childTails.push(child.id);
+              childTails.add(child.id);
               // 发现即推：静态子会话文件零 tail 事件，主动广播一条活动卡（面板 ≤10s 必现）
               this.broadcast(sessionId, {
                 type: "subagent_activity",
@@ -247,10 +249,10 @@ export class WsHub {
                 },
               } as never);
             }
-            // 消失的子会话 release（防 tail 泄漏）
-            for (const id of [...childSet]) {
+            // 消失的子会话：同步移除追踪并 release（每连接 acquire/release 严格配对，不误减其它连接的 ref）
+            for (const id of [...childTails]) {
               if (!seen.has(id)) {
-                childSet.delete(id);
+                childTails.delete(id);
                 this.tails?.release(id);
               }
             }
@@ -260,7 +262,7 @@ export class WsHub {
       if (this.tails && hub.listChildren) {
         syncChildren();
         // 增量发现：订阅期间新派生的子代理（面板开着不刷新也能看到新卡片）
-        const childScan = setInterval(syncChildren, 10_000); // 发现上界 ≤10s（轻量血缘扫描毫秒级）
+        const childScan = setInterval(syncChildren, this.childScanMs); // 发现上界（轻量血缘扫描毫秒级；测试可注入短值）
         childScan.unref?.();
         cleanupFns.push(() => clearInterval(childScan));
       }
