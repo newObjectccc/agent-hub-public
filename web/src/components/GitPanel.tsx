@@ -6,6 +6,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "../api/client";
 import type { GitBranchInfo, GitCommit, GitDiffResult } from "../api/types";
 import { DiffView } from "./DiffView";
+import { GitStatusBadge } from "./GitStatusBadge";
 import { Sheet } from "./Sheet";
 import { Button } from "./ui/button";
 
@@ -73,6 +74,8 @@ export function GitPanel({ cwd, initialTab = "diff", initialFile = null, onClose
         ) : undefined
       }
     >
+      {/* i1 头部收纳：git 状态 chips 从 chat subbar 移入面板（信息零损失） */}
+      <GitStatusBadge cwd={cwd} />
       <div className="git-tabs" role="tablist" aria-label="Git 面板">
         {(Object.keys(TAB_LABEL) as Tab[]).map((t) => (
           <button

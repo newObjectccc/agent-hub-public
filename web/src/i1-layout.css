@@ -1,0 +1,464 @@
+/* ============================================================
+ * i1 chat 布局精修（Redmi K90 真机反馈 + 子代理面板追加项）
+ * 1. 头部收纳：chat 顶栏一行化；git 并入顶栏图标按钮（原 subbar 不再占一行）；
+ *    次要徽章（驱动/来源）窄屏隐藏、信息收进 ⋯ 菜单（DOM 保留，零信息损失）
+ * 2. 弹层铁律：任何浮层 max-width ≤ 100vw - 16px - safe，右对齐/居中永不超屏；
+ *    wrap 去 relative，弹层锚定宽容器（header / modebar / composer）防"锚点贴右 → 向左超屏"
+ * 3. 树页贴边：tree-page 去掉多余水平 padding（树行自带缩进，行内右留 4px）
+ * 4. 子代理面板：modebar 空间分配（子代理区优先占宽 / 按钮不换行 / 中止紧凑）+
+ *    展开浮层全宽 + z-index 阶梯统一
+ * 5. 提示条（bg-hint / driver-hint）单行紧凑
+ * 覆盖式后加载（main.tsx 最后 import）：不动历史样式，独立可回滚。
+ * ============================================================ */
+
+/* ---------- z-index 阶梯（全部浮层统一口径，报告附表） ----------
+ *  0-2      内容内浮起（tab-slider / session-expand / tree-toggle）
+ *  30       输入区上挂面板（快捷指令 / slash / @文件树 / 待发送队列）
+ *  50       弹出菜单（发送模式 / 驱动模式 / 消息长按 / 子代理展开 / 待发送队列）
+ *  60       顶栏弹层（⋯ 操作 / 通知中心 / 搜索 / 设置）
+ *  80       侧边抽屉（drawer）
+ *  90       瞬时 toast（压过一切浮层，不被菜单盖住）
+ *  100      全屏 sheet / 顶部横幅（最顶层）
+ * ---------------------------------------------------------------- */
+:root {
+  --z-inline: 2;
+  --z-float: 30;
+  --z-menu: 50;
+  --z-popover: 60;
+  --z-drawer: 80;
+  --z-toast: 90;
+  --z-sheet: 100;
+}
+
+/* ============================================================
+ * 1. 顶栏一行化（空闲态头部 110px + subbar 54px → ~52px）
+ * ============================================================ */
+.chat-header {
+  position: relative; /* 驱动模式弹层锚定顶栏全宽容器 */
+  flex-wrap: nowrap; /* 一行为主：徽章簇绝不换行吃消息区高度 */
+  gap: 6px;
+  padding: 6px 8px;
+}
+
+.chat-title .name {
+  font-size: 14.5px;
+  line-height: 1.25;
+}
+
+/* cwd 第二行窄屏隐藏（信息收进 ⋯ 菜单）；≥480px 恢复两行标题 */
+.chat-title .cwd {
+  display: none;
+}
+
+@media (min-width: 480px) {
+  .chat-title .cwd {
+    display: block;
+  }
+}
+
+/* 返回按钮：视觉 36px（热区 48×44 由 .chat-header .back::after 外扩，见 styles.css） */
+.chat-header .back {
+  min-width: 36px;
+  min-height: 36px;
+  padding: 2px 4px;
+}
+
+/* 树入口：视觉 36px 紧凑，热区 44px 外扩 */
+.chat-tree-btn {
+  position: relative;
+  min-height: 36px;
+  padding: 0 8px;
+  flex-shrink: 0;
+}
+
+.chat-tree-btn::after,
+.chat-git-btn::after,
+.driver-hint button::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 44px;
+  height: 44px;
+  transform: translate(-50%, -50%);
+}
+
+/* git 状态并入顶栏（i1）：🌿 图标 + 脏/净状态点，点击进 Git 面板（面板内有完整 chips） */
+.chat-git-btn {
+  position: relative;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  width: 38px;
+  height: 36px;
+  padding: 0;
+  background: var(--card);
+  color: var(--card-foreground);
+  border: 2px solid var(--border);
+  border-radius: var(--nb-radius);
+  box-shadow: var(--shadow-sm);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.chat-git-btn:active {
+  transform: translate(1px, 1px);
+  box-shadow: none;
+}
+
+.chat-git-dot {
+  width: 6px;
+  height: 6px;
+  border: 1.5px solid var(--border);
+  background: var(--ok, #22c55e);
+}
+
+.chat-git-dot.dirty {
+  background: var(--warn, #f59e0b);
+}
+
+/* 徽章簇：一行不换行；窄屏隐藏次要徽章（驱动/来源），信息在 ⋯ 菜单里同样可见 */
+.chat-badges {
+  flex-wrap: nowrap;
+  overflow: hidden;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+@media (max-width: 479px) {
+  .chat-badges > .badge.driven-panel,
+  .chat-badges > .badge.driven-terminal {
+    display: none;
+  }
+}
+
+/* 超窄屏（<400px，如 360）：一行顶栏空间不足会把右侧 ⋯ 裁出界（overflow:hidden 裁尾）。
+ * 收缩次序：标题（ellipsis）→ 树按钮纯图标（title/读屏仍可读）→ 驱动徽章去文字（留图标+caret）
+ * → 状态徽章减 padding。⋯/树/git 触控热区不受影响（::after 外扩 44px）。 */
+@media (max-width: 399px) {
+  .chat-title {
+    flex: 1 1 40px;
+  }
+
+  .chat-tree-btn {
+    font-size: 0; /* 隐藏“树”文字节点，svg 图标不受影响 */
+    gap: 0;
+    padding: 0 6px;
+  }
+
+  .attach-trigger-label {
+    display: none;
+  }
+
+  .chat-badges > .badge {
+    padding: 2px 4px;
+    letter-spacing: 0;
+  }
+}
+
+/* ============================================================
+ * 2. 提示条紧凑（bg-hint 单行 ~28px / driver-hint ~44px）
+ * ============================================================ */
+.bg-hint {
+  margin: 1px 0 3px;
+  padding: 1px 2px 1px 6px;
+  gap: 4px;
+}
+
+.bg-hint-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bg-hint-close {
+  width: 22px;
+  height: 22px;
+  font-size: 11px;
+}
+
+.driver-hint {
+  flex-wrap: nowrap;
+  gap: 6px;
+  padding: 5px 8px;
+  font-size: 11px;
+}
+
+.driver-hint-text {
+  flex: 1 1 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.4;
+}
+
+.driver-hint-actions {
+  gap: 5px;
+}
+
+.driver-hint button {
+  position: relative;
+  min-height: 32px;
+  padding: 0 8px;
+  font-size: 11px;
+}
+
+/* ============================================================
+ * 3. composer-modebar 空间分配（追加项：中止按钮不挤爆子代理区）
+ * ============================================================ */
+.composer-modebar {
+  flex-wrap: nowrap;
+  gap: 6px;
+  margin: 2px 0;
+}
+
+/* 子代理区优先占宽但可收缩（内容 ellipsis）；展开按钮永不换行 */
+.subagent-panel.inline {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.subagent-panel.inline .subagent-panel-head {
+  flex-wrap: nowrap;
+  min-height: 36px;
+  padding: 1px 6px;
+}
+
+.subagent-panel.inline .subagent-panel-title {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.subagent-panel-toggle {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+/* 阶段条：可收缩（长文案 ellipsis），不与中止按钮抢宽 */
+.wait-stage-bar {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.wait-stage {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 右侧动作区：固定不收缩（中止按钮） */
+.modebar-right {
+  flex: 0 0 auto;
+}
+
+.abort-btn {
+  position: relative;
+  min-height: 36px;
+  padding: 0 10px;
+  white-space: nowrap;
+}
+
+.abort-btn::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 44px;
+  height: 44px;
+  transform: translate(-50%, -50%);
+}
+
+/* 子代理展开浮层：完整宽度（锚定 modebar 全宽容器，非行内挤压），菜单级层级 */
+.subagent-panel.inline .subagent-cards {
+  left: 0;
+  right: 0;
+  margin-left: auto;
+  z-index: var(--z-menu);
+  max-width: calc(100vw - 8px - var(--safe-left, 0px) - var(--safe-right, 0px));
+  max-height: 50vh;
+}
+
+.subagent-card {
+  min-width: 0;
+}
+
+.subagent-head {
+  flex-wrap: nowrap;
+}
+
+.subagent-name {
+  min-width: 0;
+}
+
+/* ============================================================
+ * 4. 弹层铁律：宽度约束 + 定位锚定宽容器（全部浮层不超屏）
+ * ============================================================ */
+.action-menu,
+.mode-menu,
+.attach-menu,
+.queue-popover,
+.msg-menu,
+.quick-panel,
+.slash-panel,
+.ft-panel,
+.notif-panel,
+.settings-panel,
+.subagent-panel.inline .subagent-cards {
+  box-sizing: border-box;
+  max-width: calc(100vw - 16px - var(--safe-left, 0px) - var(--safe-right, 0px));
+  overflow-wrap: anywhere;
+}
+
+/* 弹层 wrap 去定位：弹层改锚定宽容器（header / composer-modebar / composer），
+ * 右对齐 + max-width → 容器在屏内则弹层必在屏内（x = 容器右缘 - 宽 ≥ 16px 余量） */
+.mode-menu-wrap,
+.attach-menu-wrap,
+.queue-badge-wrap {
+  position: static;
+}
+
+.mode-menu {
+  left: 0;
+  right: 0;
+  margin-left: auto; /* 右对齐宽容器右缘 */
+  width: min(320px, calc(100vw - 16px - var(--safe-left, 0px) - var(--safe-right, 0px)));
+  z-index: var(--z-menu);
+}
+
+.attach-menu {
+  left: 0;
+  right: 8px; /* 与顶栏内容右缘对齐（header padding 8px），右缘留 8px 余量不贴屏 */
+  margin-left: auto;
+  width: min(300px, calc(100vw - 16px - var(--safe-left, 0px) - var(--safe-right, 0px)));
+  z-index: var(--z-menu);
+}
+
+.queue-popover {
+  left: 0;
+  right: 0;
+  margin-left: auto;
+  width: min(300px, calc(100vw - 16px - var(--safe-left, 0px) - var(--safe-right, 0px)));
+  z-index: var(--z-float);
+}
+
+/* ⋯ 操作菜单：fixed 右上 + max-width（任何按钮位置不超屏）；top 跟随紧凑顶栏 */
+.action-menu {
+  left: auto;
+  top: calc(var(--safe-top, 0px) + 52px);
+  right: max(8px, env(safe-area-inset-right, 0px));
+  z-index: var(--z-popover);
+}
+
+.action-menu-info {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 6px 9px;
+  border-bottom: 2px solid var(--border);
+  background: var(--muted);
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+
+.action-menu-info-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.action-menu-info-row .hint-text {
+  flex-shrink: 0;
+  width: 2.5em;
+}
+
+.action-menu-mono {
+  min-width: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  overflow-wrap: anywhere;
+}
+
+/* 消息长按菜单：fixed 屏幕居中（贴右气泡上也不超屏），按钮过多自动换行 */
+.msg-menu {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  flex-wrap: wrap;
+  justify-content: center;
+  max-width: calc(100vw - 24px - var(--safe-left, 0px) - var(--safe-right, 0px));
+  z-index: var(--z-menu);
+}
+
+.msg-menu-backdrop {
+  z-index: 45; /* 低于菜单（50），且不拦截 hit-test（滚动手感保持） */
+}
+
+/* 输入区上挂面板（快捷指令 / slash / @文件树）：全宽容器内不超屏 */
+.quick-panel,
+.slash-panel,
+.ft-panel {
+  overflow-x: hidden;
+  z-index: var(--z-float);
+}
+
+.notif-panel,
+.settings-panel {
+  z-index: var(--z-popover);
+}
+
+/* toast 压过菜单；sheet 保持最顶 */
+.toast-host {
+  z-index: var(--z-toast);
+}
+
+.sheet-overlay,
+.notice-banner {
+  z-index: var(--z-sheet);
+}
+
+.drawer-root {
+  z-index: var(--z-drawer);
+}
+
+/* ============================================================
+ * 5. 树页贴边（左右 gap 移除；树行自带缩进，行内文本右留 4px ≤ 8px）
+ *    与 chat 页有意区分：树是结构列表，贴边更像原生文件树/相册列表
+ * ============================================================ */
+.tree-page {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.tree-preview {
+  margin-left: 0;
+  margin-right: 0;
+}
+
+/* 触控设备：紧凑视觉按钮不被全局 44px min-height 撑高（热区由 ::after 保证） */
+@media (pointer: coarse) {
+  .chat-tree-btn,
+  .abort-btn,
+  .driver-hint button {
+    min-height: 36px;
+  }
+
+  .driver-hint button {
+    min-height: 32px;
+  }
+}
+
+/* reduced-motion：i1 不新增动画；浮层动画沿用既有 180ms/150ms 克制渐入 */
+@media (prefers-reduced-motion: reduce) {
+  .mode-menu,
+  .attach-menu,
+  .action-menu,
+  .msg-menu {
+    animation: none;
+  }
+}
