@@ -5,6 +5,7 @@ import "./styles.css";
 import "./d-polish.css";
 import "./e3-attach.css";
 import "./f1-security.css";
+import "./i1-layout.css"; /* i1 chat 布局精修（后加载覆盖：头部收纳/弹层铁律/树页贴边/子代理） */
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

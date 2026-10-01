@@ -7,9 +7,10 @@
  * - 完成后卡片转「✅ 完成，点击查看结果」+ 结果摘要
  * - 动画克制：输出摘要更新短渐变；运行时长每秒数字跳动；reduced-motion 下无渐变
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import type { SubAgentActivity } from "../api/types";
 import { elapsedLabel } from "../chat/subAgents";
+import { safeStorage } from "../utils/recentRefs";
 import { Button } from "./ui/button";
 
 /** 秒级时钟（仅存在未完成子代理时跳动，避免空转） */
@@ -128,23 +129,38 @@ export function SubAgentPanel({
   inline = false,
   agents,
   onOpenSession,
+  defaultCollapsed = false,
+  preferenceKey,
 }: {
   /** inline：折叠头并入输入区工具行（与模式按钮同排），展开内容浮层 */
   inline?: boolean;
   agents: SubAgentActivity[];
   onOpenSession: (sessionId: string) => void;
+  /** i1：进入会话默认收起（chat 页传 true），不自动展开打扰阅读 */
+  defaultCollapsed?: boolean;
+  /** i1：折叠偏好持久化 key（按会话）：用户手动展开/收起后记住自己的选择 */
+  preferenceKey?: string;
 }) {
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState<boolean>(() => {
+    if (preferenceKey) {
+      const saved = safeStorage()?.getItem(preferenceKey);
+      if (saved === "1") return true;
+      if (saved === "0") return false;
+    }
+    return defaultCollapsed;
+  });
   const [showAllDone, setShowAllDone] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const hasRunning = agents.some((a) => !a.done);
   const nowMs = useTicker(hasRunning);
-  // 折叠偏好只在面板重新出现时生效一次
-  const prevCountRef = useRef(0);
-  useEffect(() => {
-    if (prevCountRef.current === 0 && agents.length > 0) setCollapsed(false);
-    prevCountRef.current = agents.length;
-  }, [agents.length]);
+
+  const toggle = () => {
+    setCollapsed((v) => {
+      const next = !v;
+      if (preferenceKey) safeStorage()?.setItem(preferenceKey, next ? "1" : "0");
+      return next;
+    });
+  };
 
   if (agents.length === 0) return null;
 
@@ -166,7 +182,7 @@ export function SubAgentPanel({
         <button
           type="button"
           className="subagent-panel-toggle"
-          onClick={() => setCollapsed((v) => !v)}
+          onClick={toggle}
           aria-expanded={!collapsed}
         >
           {collapsed ? "展开" : "折叠"}

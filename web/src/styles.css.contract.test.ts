@@ -82,3 +82,22 @@ describe("会话页 flex 布局回归（tab 组不被压缩）", () => {
     expect(block).toContain("flex-shrink: 0");
   });
 });
+
+describe("REV-I1 防回归：触控热区定位上下文", () => {
+  it(".attach-trigger 必须保持 position: relative（::after 不得逃逸到 chat-header）", () => {
+    const css = readFileSync(join(process.cwd(), "src", "i1-layout.css"), "utf8");
+    const m = /\.attach-trigger\s*\{([^}]*)\}/.exec(css);
+    expect(m, ".attach-trigger 规则必须存在").toBeTruthy();
+    expect(m![1]).toMatch(/position:\s*relative/);
+  });
+});
+
+describe("REV-I1b 防回归：徽章簇收缩级联", () => {
+  it(".chat-badges 的 flex 不得含 0 1 auto（会覆盖 flex-shrink:0 致 ⋯ 按钮被裁）", () => {
+    const css = readFileSync(join(process.cwd(), "src", "i1-layout.css"), "utf8");
+    const m = /\.chat-badges\s*\{([^}]*)\}/.exec(css);
+    expect(m, ".chat-badges 规则必须存在").toBeTruthy();
+    expect(m![1]).not.toMatch(/flex:\s*0\s*1\s*auto/);
+    expect(m![1]).toMatch(/flex:\s*0\s*0\s*auto/);
+  });
+});

@@ -29,7 +29,6 @@ import { useSessionSocket } from "../hooks/useSessionSocket";
 import type { FileRef } from "../utils/fileRefs";
 import { FileViewer } from "../components/FileViewer";
 import { GitPanel } from "../components/GitPanel";
-import { GitStatusBadge } from "../components/GitStatusBadge";
 import { FileTreePanel } from "../components/FileTreePanel";
 import { MessageBubble } from "../components/MessageBubble";
 import { SubAgentPanel } from "../components/SubAgentPanel";
@@ -42,7 +41,7 @@ import { ChannelEcho } from "../components/ChannelEcho";
 import { UploadButton } from "../components/UploadButton";
 import { SendModeMenu } from "../components/SendModeMenu";
 import { SessionActionsMenu } from "../components/SessionActionsMenu";
-import { SlashCommandPanel } from "../components/SlashCommandPanel";import { SourceBadge } from "../components/SourceBadge";
+import { SlashCommandPanel } from "../components/SlashCommandPanel";
 import { QuickCommandPanel } from "../components/QuickCommandPanel";
 import { StatusBadge } from "../components/StatusBadge";
 import { VoiceInputButton } from "../components/VoiceInputButton";
@@ -177,6 +176,8 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
   const [newCount, setNewCount] = useState(0);
   const prevLenRef = useRef(0);
   const prevTailRef = useRef<string | null>(null);
+  /** i1：首屏对账填充（loadSession）不算“新消息”——刚打开会话不该弹浮标 */
+  const initialFillRef = useRef(false);
   /** 移动端键盘避让：被键盘遮住的高度 → CSS 变量抬高输入区 */
   const kbInset = useVisualViewportInset();
   /** message_end 后的待定收尾定时器（tail 丢 status / 事件丢失时的 UI 兜底） */
@@ -305,6 +306,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
       });
       setSession(detail.session);
       // 对账保留在途流式标志（重连时占位不被误判为“（无内容）”）
+      initialFillRef.current = true; // i1：首屏/对账填充不触发新消息浮标
       setMessages(reconcileMessages(messagesRef.current, detail.messages ?? []));
       setHasMore(Boolean(detail.hasMore));
       setStatus(detail.session.status);
@@ -805,6 +807,10 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
       if (shouldLoadOlder({ scrollTop: el.scrollTop, hasMore: hasMoreRef.current, loading: loadingOlderRef.current })) {
         void loadOlder();
       }
+      // i1 防御性二次校验：滚回底部（几何 <160px）立即清零浮标，不残留“已看见还提示”
+      if (el.scrollHeight - el.scrollTop - el.clientHeight < STICK_TO_BOTTOM_PX) {
+        setNewCount(0);
+      }
       recomputeWindow();
     });
   }, [loadOlder, recomputeWindow]);
@@ -822,14 +828,25 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
     const tailId = messages.length > 0 ? messages[messages.length - 1].id : null;
     const grew = messages.length > prevLenRef.current && tailId !== prevTailRef.current;
     const delta = Math.max(0, messages.length - prevLenRef.current);
+    // i1 新消息浮标误报修复：首屏对账填充不计数——打开会话本来就在最新处
+    const firstLoad = initialFillRef.current;
+    initialFillRef.current = false;
     prevLenRef.current = messages.length;
     prevTailRef.current = tailId;
-    // 跟随判定 = 几何口径（E2 统一）：贴底 <160px 视为跟随
+    // 贴底口径与 stick-to-bottom 同源（双口径任一 <160px 即视为跟随）：
+    // - distancePrev（上次 effect 的内容高口径）：新消息把 scrollHeight 瞬时撑大时
+    //   不会误判成“用户上翻”（旧口径只看当前几何 → 大消息贴底也弹浮标，根因）
+    // - distanceNow：内容收缩/外部布局变化后的真实贴底
     const el0 = scrollRef.current;
-    const nearBottom0 = el0 !== null && el0.scrollHeight - el0.scrollTop - el0.clientHeight < 160;
-    if (grew && !nearBottom0) {
+    const distancePrev0 = el0 !== null ? lastContentHeightRef.current - el0.scrollTop - el0.clientHeight : Infinity;
+    const distanceNow0 = el0 !== null ? el0.scrollHeight - el0.scrollTop - el0.clientHeight : Infinity;
+    // distancePrev 仅在有历史高度基准时可信（首帧/无布局数据时不拿它判贴底）
+    const nearBottom0 =
+      distanceNow0 < STICK_TO_BOTTOM_PX ||
+      (lastContentHeightRef.current > 0 && distancePrev0 < STICK_TO_BOTTOM_PX);
+    if (grew && !firstLoad && !nearBottom0) {
       setNewCount((c) => c + delta);
-    } else if (nearBottom0) {
+    } else if (nearBottom0 || firstLoad) {
       setNewCount(0);
     }
     const el = scrollRef.current;
@@ -1355,6 +1372,11 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
     return ranks;
   }, [messages]);
 
+  // i1 空间回收：modebar 仅活动期显示（running/等待/子代理/离线队列/断线），空闲态零占位，
+  // 发送模式入口移到输入按钮行（功能不丢，只是换个位置）
+  const modebarActive =
+    status === "running" || wait !== null || subAgents.length > 0 || sessionQueue.length > 0 || !connected;
+
   return (
     <div className="chat-page" style={{ "--kb-inset": `${kbInset}px` } as CSSProperties}>
       <header className="chat-header">
@@ -1372,6 +1394,19 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
           <div className="name">{session?.name ?? sessionId}</div>
           <div className="cwd">{session?.cwd ?? ""}</div>
         </div>
+        {/* i1 头部收纳：git 状态并入顶栏图标按钮（完整 chips 进 Git 面板），不再占一行 subbar */}
+        {session && (
+          <button
+            type="button"
+            className="chat-git-btn"
+            onClick={() => { setGitFile(null); setGitOpen(true); }}
+            aria-label="查看 git 变更"
+            title="仓库状态与变更"
+          >
+            <span aria-hidden="true">🌿</span>
+            <span className={`chat-git-dot${(gitStatus?.dirty.length ?? 0) > 0 ? " dirty" : ""}`} aria-hidden="true" />
+          </button>
+        )}
         <Button
           type="button"
           variant="outline"
@@ -1383,18 +1418,10 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
           <TreeIcon />
           树
         </Button>
-        {/* 右侧状态徽章簇（独立分组：窄屏整组换行到第二行，绝不横向溢出） */}
+        {/* 右侧徽章簇（一行不换行）：状态/驱动/模式/⋯；次要信息（cwd/来源/子代理）收进 ⋯ 菜单 */}
         <div className="chat-badges">
-          {/* 子代理来源标记：pi-subagents 派生会话在顶栏明示 */}
-          {session?.isSubAgent === true && (
-            <span className="badge subagent" title="pi-subagents 派生的子代理会话">
-              🤖 子代理
-            </span>
-          )}
-          <SessionActionsMenu onFork={() => void doFork()} forkBusy={forkBusy} />
-          {/* 驱动来源徽章（心理预期管理）：📱 面板驱动 / 🖥 终端驱动，与 ⚡旧标识语义统一 */}
+          {/* 子代理来源标记：信息收进 ⋯ 菜单（i1），避免顶栏换行挤压消息区 */}
           <DrivenBadge drivenBy={drivenBy} />
-          <SourceBadge source={session?.source ?? null} />
           <StatusBadge status={status} />
           {/* 双模式切换（E3）：顶栏一个紧凑徽章，弹出小菜单二选一，零额外常驻占位 */}
           <AttachModeMenu
@@ -1403,15 +1430,25 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
             busy={attachBusy}
             onChange={(m) => void changeAttachMode(m)}
           />
+          <SessionActionsMenu
+            onFork={() => void doFork()}
+            forkBusy={forkBusy}
+            info={{
+              cwd: session?.cwd ?? null,
+              source: session?.source ?? null,
+              drivenBy,
+              isSubAgent: session?.isSubAgent === true,
+            }}
+          />
         </div>
       </header>
 
       {notice && <div className="chat-notice">{notice}</div>}
 
-      {/* 预期提示条（心理预期管理）：面板驱动过的会话首次进入提醒两条工作流，可一键分叉 */}
+      {/* 预期提示条（心理预期管理）：面板驱动过的会话首次进入提醒两条工作流，可一键分叉（i1 紧凑单行） */}
       {driverHint && (
         <div className="driver-hint" role="note" aria-label="驱动来源提示">
-          <span className="driver-hint-text">
+          <span className="driver-hint-text" title="此会话由手机面板继续过——电脑端 pi 需重开会话（pi --resume）才能看到这些消息">
             💬 此会话由手机面板继续过——电脑端 pi 需重开会话（pi --resume）才能看到这些消息
           </span>
           <div className="driver-hint-actions">
@@ -1425,14 +1462,6 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
         </div>
       )}
 
-      {session && (
-        <div className="chat-subbar">
-          <GitStatusBadge cwd={session.cwd} onClick={() => { setGitFile(null); setGitOpen(true); }} />
-          <Button type="button" variant="secondary" size="xs" onClick={() => { setGitFile(null); setGitOpen(true); }}>
-            变更
-          </Button>
-        </div>
-      )}
 
       <div
         className="chat-messages"
@@ -1511,9 +1540,16 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
             </button>
           </div>
         )}
-        {/* 一行 = 子代理摘要 | 阶段化等待反馈 | 模式选择 | 中止（E1 阶段条 × E3 inline 融合） */}
+        {/* 一行 = 子代理摘要 | 阶段化等待反馈 | 中止（i1：仅活动期渲染；子代理区优先占宽、按钮不换行） */}
+        {modebarActive && (
         <div className="composer-modebar">
-          <SubAgentPanel inline agents={subAgents} onOpenSession={(id) => navigate(chatPath(id))} />
+          <SubAgentPanel
+            inline
+            agents={subAgents}
+            defaultCollapsed
+            preferenceKey={`agent-hub.subagentPanel.v1:${sessionId}`}
+            onOpenSession={(id) => navigate(chatPath(id))}
+          />
           <WaitStageBar
             phase={wait?.phase ?? null}
             startedAt={wait?.startedAt ?? null}
@@ -1556,7 +1592,6 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
             </div>
           )}
           <div className="modebar-right">
-            <SendModeMenu value={sendMode} onChange={setSendMode} />
             {/* attach 下中止无意义（run 在终端 pi 进程里），隐藏以免误导 */}
             {status === "running" && !isAttachSending(attachMode, terminal) && (
               <Button type="button" variant="destructive" size="sm" className="abort-btn" onClick={() => void doAbort()}>
@@ -1565,10 +1600,13 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
             )}
           </div>
         </div>
-        {/* 任务生命周期预期（心理预期管理）：任务由 server 进程持有，退出/锁屏不中断 */}
+        )}
+        {/* 任务生命周期预期（心理预期管理）：任务由 server 进程持有，退出/锁屏不中断（i1 单行紧凑） */}
         {wait !== null && !bgHintDismissed && (
           <div className="bg-hint" role="note" aria-label="任务生命周期说明">
-            <span className="bg-hint-text">📌 任务在后台继续——退出页面、锁屏都不中断，完成后通知你</span>
+            <span className="bg-hint-text" title="任务在后台继续——退出页面、锁屏都不中断，完成后通知你">
+              📌 任务在后台继续，完成后通知你
+            </span>
             <span className="bg-hint-boundary" title="server 重启会中断运行中的任务">
               （server 重启会中断）
             </span>
@@ -1708,6 +1746,8 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
                 onTranscript={(text) => updateInput(insertSnippet(inputRef.current, text))}
                 disabled={sending}
               />
+              {/* i1：发送模式入口从 modebar 移入按钮行（空闲态不占一整行）；弹层向上弹、右对齐 */}
+              <SendModeMenu value={sendMode} onChange={setSendMode} />
               <button
                 type="button"
                 className={`composer-send${hasContent ? " ready" : ""}`}
