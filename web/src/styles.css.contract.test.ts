@@ -67,11 +67,18 @@ describe("styles.css 布局/滚动/滑块契约", () => {
   it("html/body 横向滚动全局兜底", () => {
     expect(css).toContain("overflow-x: clip");
   });
+
+  it("长按菜单遮罩不吞纵向拖动（chat 消息区拖动兑底）", () => {
+    expect(blockOf(".msg-menu-backdrop {")).toContain("touch-action: pan-y");
+  });
 });
 
 describe("会话页 flex 布局回归（tab 组不被压缩）", () => {
-  it(".sessions-page 头部区域 flex-shrink: 0，仅列表区伸缩", () => {
-    const block = blockOf(".sessions-page > * {");
+  it(".sessions-page 头部区域 flex-shrink: 0，但不罩住 .ptr（高度链不被级联打翻）", () => {
+    // 根因回归：`.sessions-page > *` 同特异性后写胜，会覆盖 .ptr 的 flex: 1 1 auto
+    // → shrink 被罩成 0 → 高度链失效 → 内部滚动死。必须用 :not(.ptr) 排除。
+    expect(css).not.toMatch(/\.sessions-page > \*\s*\{/);
+    const block = blockOf(".sessions-page > *:not(.ptr) {");
     expect(block).toContain("flex-shrink: 0");
   });
 });

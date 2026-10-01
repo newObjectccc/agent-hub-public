@@ -35,9 +35,12 @@ export function SessionTabs({
   const [ready, setReady] = useState(false);
   /** 测量失配：滑块隐藏 + active 按钮纯 CSS 兜底（见 styles.css .tab-slider.misaligned） */
   const [misaligned, setMisaligned] = useState(false);
+  /** 最近一次写入滑块的定位值（失配比对基准：DOM 实际布局 vs 已写入值） */
+  const sliderRef = useRef<{ left: number; width: number }>({ left: 0, width: 0 });
   /** 下一次定位允许播动画（仅用户点击切换触发） */
   const animateNextRef = useRef(false);
   const rafRef = useRef<number | null>(null);
+  const postCheckRafRef = useRef<number | null>(null);
   /** 返回导航保护窗口：挂载后短时间内非交互横滚一律校正回 0（#6 tab 左侧 padding 被覆盖） */
   const guardUntilRef = useRef(0);
   const interactedRef = useRef(false);
@@ -75,6 +78,18 @@ export function SessionTabs({
     };
   }, []);
 
+  /** 失配判定：滑块定位值必须与按钮当前实际布局一致，否则隐藏滑块走纯 CSS 兜底 */
+  const checkAlign = useCallback(() => {
+    const btn = btnRefs.current[value];
+    if (!btn) return;
+    const width = btn.offsetWidth;
+    if (width <= 0) return; // jsdom / 隐藏态不做判定（布局不可测）
+    const ok =
+      Math.abs(btn.offsetLeft - sliderRef.current.left) <= ALIGN_TOLERANCE_PX &&
+      Math.abs(width - sliderRef.current.width) <= ALIGN_TOLERANCE_PX;
+    setMisaligned(!ok);
+  }, [value]);
+
   /** 测量并同步滑块位置（跟随选中 tab 的 offsetLeft/offsetWidth，与滚动位置无关） */
   const measure = useCallback(() => {
     const btn = btnRefs.current[value];
@@ -86,9 +101,18 @@ export function SessionTabs({
       setMisaligned(true);
       return;
     }
-    setMisaligned(false);
+    sliderRef.current = { left, width };
     setSlider({ left, width });
-  }, [value]);
+    setMisaligned(false);
+    // 每次测量后判定：measure 写入后布局仍可能继续漂移（字体迟到/换行/旋转/返回），
+    // 一帧后拿 DOM 实际值与已写入值核对——失配即进入 misaligned 兜底并重测修正。
+    // （旧实现只在 [slider, value] 变化时判定，布局变而二者不变的序列会漏报）
+    if (postCheckRafRef.current !== null) cancelAnimationFrame(postCheckRafRef.current);
+    postCheckRafRef.current = requestAnimationFrame(() => {
+      postCheckRafRef.current = null;
+      checkAlign();
+    });
+  }, [value, checkAlign]);
 
   /** rAF 门控重测：合并同帧多次触发（ResizeObserver/字体/可见性风暴） */
   const scheduleMeasure = useCallback(() => {
@@ -107,21 +131,6 @@ export function SessionTabs({
       setReady(true);
     }
   }, [value, counts, measure]);
-
-  // 测量自检：定位值必须与按钮当前实际布局一致，否则隐藏滑块走纯 CSS 兜底
-  useEffect(() => {
-    const btn = btnRefs.current[value];
-    if (!btn) return;
-    const check = (): void => {
-      const width = btn.offsetWidth;
-      if (width <= 0) return; // jsdom / 隐藏态不做判定（布局不可测）
-      const ok =
-        Math.abs(btn.offsetLeft - slider.left) <= ALIGN_TOLERANCE_PX &&
-        Math.abs(width - slider.width) <= ALIGN_TOLERANCE_PX;
-      setMisaligned(!ok);
-    };
-    check();
-  }, [slider, value]);
 
   // 视口/布局变化（旋转、字号、桌面拖宽、键盘弹出收起）→ 重新测量滑块
   useEffect(() => {
@@ -144,9 +153,14 @@ export function SessionTabs({
       () => window.visualViewport?.removeEventListener("resize", scheduleMeasure),
     ];
 
-    // 逐按钮 + 容器 ResizeObserver：counts 字体加载/换行/主题切换引起按钮宽度变化也能跟上
+    // 逐按钮 + 容器 ResizeObserver：counts 字体加载/换行/主题切换引起按钮宽度变化也能跟上。
+    // 回调里先做失配判定再重测：尺寸/位置变化（换行导致 offsetLeft 变化等）时
+    // 滑块可能已 stale，立即进入 misaligned 兜底，不给"错位但没标记"的中间态留窗口。
     if (typeof ResizeObserver !== "undefined") {
-      const ro = new ResizeObserver(scheduleMeasure);
+      const ro = new ResizeObserver(() => {
+        checkAlign();
+        scheduleMeasure();
+      });
       if (scrollerRef.current) ro.observe(scrollerRef.current);
       if (groupRef.current) ro.observe(groupRef.current);
       for (const tab of SESSION_TABS) {
@@ -170,9 +184,11 @@ export function SessionTabs({
     return () => {
       if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
       rafRef.current = null;
+      if (postCheckRafRef.current !== null) cancelAnimationFrame(postCheckRafRef.current);
+      postCheckRafRef.current = null;
       for (const fn of cleanups) fn();
     };
-  }, [scheduleMeasure]);
+  }, [scheduleMeasure, checkAlign]);
 
   // 真实切换：把选中 tab 滚入可视区（仅横向容器滚动，不带动页面）
   useEffect(() => {

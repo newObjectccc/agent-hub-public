@@ -143,4 +143,28 @@ describe("SessionTabs 滑块对齐（H1 老病根）", () => {
     });
     expect(slider.classList.contains("ready")).toBe(true);
   });
+
+  it("测量后布局漂移 → 测量后判定捕获失配（旋转/换行盲区，整改#4）", async () => {
+    // 老盲区：失配比对只挂在 [slider, value] 上，布局变而二者不变时永远不判定
+    const el = render();
+    const slider = el.querySelector<HTMLElement>(".tab-slider")!;
+    await flushRaf(2); // 清掉挂载期重测队列，进入稳定态（slider={0,96}）
+    expect(slider.classList.contains("misaligned")).toBe(false);
+
+    // 一次测量（resize 触发）→ 紧接着布局漂移（旋转/换行/字体迟到）：测量值与按钮
+    // 实际布局失配，但 slider/value 都没变——靠“测量后判定”（postCheck rAF）捕获
+    window.dispatchEvent(new Event("resize"));
+    await flushRaf(1); // 帧内只跑 measure（读到旧布局，sliderRef={0,96}）
+    layout.left = 50;
+    layout.width = 120;
+    await flushRaf(1); // 测量后判定：失配 → misaligned 兜底（滑块隐藏，active 走纯 CSS）
+    expect(slider.classList.contains("misaligned")).toBe(true);
+
+    // 后续重测（RO/resize 触发）：修正定位并退出兜底
+    window.dispatchEvent(new Event("resize"));
+    await flushRaf();
+    expect(slider.classList.contains("misaligned")).toBe(false);
+    expect(slider.style.transform).toBe("translateX(50px)");
+    expect(slider.style.width).toBe("120px");
+  });
 });

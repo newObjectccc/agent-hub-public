@@ -3176,6 +3176,12 @@ button.git-bar:active {  transform: translate(2px, 2px);
   position: fixed;
   inset: 0;
   z-index: 35;
+  /* 菜单开着时手指拖动也要能滚消息区：backdrop 是 fixed，从 .chat-messages 的
+   * 滚动链（scroll chain）脱离——它一旦成为 touch 目标，pan 目标就是 window，
+   * 消息区拖动零反应（历史 bug 根因）。故不拦截 hit-test，触摸直接落到消息上；
+   * "点击空白关闭菜单"由 MessageBubble 的 document 级一次性监听承担 */
+  pointer-events: none;
+  touch-action: pan-y;
 }
 
 .msg-menu {
@@ -4671,8 +4677,10 @@ button.git-bar:active {  transform: translate(2px, 2px);
 }
 
 /* 头部区域（工具栏/标题/tab 组）不参与压缩——只有列表区（.ptr）伸缩占余高。
- * 不加这条时 tab 组会被 flex-shrink 压成一条缝 */
-.sessions-page > * {
+ * 不加这条时 tab 组会被 flex-shrink 压成一条缝。
+ * **必须排除 .ptr**：`.sessions-page > *` 与 `.ptr` 特异性相同、位置在后，会把
+ * flex: 1 1 auto 里的 shrink 罩成 0 → 高度链失效 → 列表内部滚动死（验收实测根因）。 */
+.sessions-page > *:not(.ptr) {
   flex-shrink: 0;
 }
 

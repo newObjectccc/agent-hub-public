@@ -156,6 +156,29 @@ export const MessageBubble = memo(function MessageBubble({
     onQuote?.(message);
   };
 
+  // 菜单开着时"点击/触摸空白处关闭"：backdrop 不拦截 hit-test（见 styles.css 注释，
+  // fixed 层会把触摸拖动的滚动目标变成 window，消息区拖不动），改由 document 捕获监听；
+  // 首次点击只关菜单不落到下方内容（与旧 backdrop 吞 click 语义一致）
+  useEffect(() => {
+    if (!menuOpen) return;
+    const swallowClick = (e: Event): void => {
+      e.preventDefault();
+      e.stopPropagation();
+      document.removeEventListener("click", swallowClick, true);
+    };
+    const onPointerDown = (e: Event): void => {
+      const t = e.target instanceof HTMLElement ? e.target : null;
+      if (t?.closest(".msg-menu")) return; // 点在菜单内：交给菜单按钮自身处理
+      setMenuOpen(false);
+      document.addEventListener("click", swallowClick, true);
+    };
+    document.addEventListener("pointerdown", onPointerDown, true);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown, true);
+      document.removeEventListener("click", swallowClick, true);
+    };
+  }, [menuOpen]);
+
   return (
     <div
       id={`msg-${message.id}`}
@@ -257,7 +280,8 @@ export const MessageBubble = memo(function MessageBubble({
 
         {menuOpen && (
           <>
-            <div className="msg-menu-backdrop" onClick={() => setMenuOpen(false)} aria-hidden="true" />
+            {/* 纯视觉遮罩（pointer-events: none）：点击/触摸空白关菜单在 document 监听里处理 */}
+            <div className="msg-menu-backdrop" aria-hidden="true" />
             <div className="msg-menu" role="menu" aria-label="消息操作">
               <button type="button" role="menuitem" className="msg-menu-item" onClick={() => void handleCopy()}>
                 复制文本
