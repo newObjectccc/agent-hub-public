@@ -28,6 +28,7 @@ import { PresenceWatcher } from "./sessions/presence.js";
 import { findSessionFiles } from "./sessions/scan.js";
 import { SessionTailManager } from "./sessions/tail.js";
 import { createSystemInfoProvider } from "./system.js";
+import { attachTerminalProxy, TerminalService, type TerminalRuntime } from "./terminal.js";
 import type { ServerEvent } from "./types.js";
 import { WsHub } from "./ws.js";
 
@@ -35,6 +36,8 @@ export interface CreateAppOptions extends RouteDeps {
   /** 静态托管根目录（web/dist）；null 表示不托管 */
   webRoot?: string | null;
   logger?: boolean;
+  /** ttyd Web 终端（F2）：比 RouteDeps.terminal 多出反代所需运行时能力 */
+  terminal?: TerminalRuntime;
 }
 
 /** 装配 Fastify app：CORS + REST 路由 + 静态托管 + SPA history fallback */
@@ -54,7 +57,13 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
     panelDriven: options.panelDriven,
     dashboard: options.dashboard,
     agents: options.agents,
+    terminal: options.terminal,
+    terminalUnlocked: options.terminalUnlocked,
   });
+  // /terminal/* 同源反代（ttyd Web 终端，F2）：HTTP + WS upgrade，token 保护
+  if (options.terminal) {
+    attachTerminalProxy(app, options.terminal);
+  }
   // 静态托管 web/dist（存在时），单进程即可服务 PWA
   const root = options.webRoot ?? null;
   const hasWeb = root !== null && existsSync(join(root, "index.html"));
@@ -126,6 +135,13 @@ export async function startHub(): Promise<StartedHub> {
   });
   piHub.onActivity = (sessionId, activity) => dashboard.recordActivity(sessionId, activity);
   const kpi = new KpiService({ configDir, kpiRefreshMinutes: config.kpiRefreshMinutes });
+  // ttyd Web 终端服务（F2）：生命周期归 server 管（关闭时回收 ttyd）
+  const terminalService = new TerminalService();
+  const systemInfo = createSystemInfoProvider({
+    sessionDir: config.sessionDir,
+    workspaceRoot: config.workspaceRoot,
+    sdkVersion: VERSION,
+  });
   // pi 扩展 live-feed 接入：终端 pi 会话的 token 级实时流（契约 §6）
   const liveIngest = new LiveIngest({
     emit,
@@ -144,10 +160,11 @@ export async function startHub(): Promise<StartedHub> {
     agents,
     webRoot: webDistDir,
     logger: true,
-    systemInfo: createSystemInfoProvider({
-      sessionDir: config.sessionDir,
-      workspaceRoot: config.workspaceRoot,
-      sdkVersion: VERSION,
+    // ttyd Web 终端（F2）：按需拉起 + 同源反代（POSIX；win32 自动降级为提示）
+    terminal: terminalService,
+    systemInfo: async () => ({
+      ...(await systemInfo()),
+      terminal: await terminalService.status(),
     }),
   });
 
@@ -193,6 +210,7 @@ export async function startHub(): Promise<StartedHub> {
     presence.stop();
     liveIngest.close();
     agents.close();
+    terminalService.dispose();
     hub.disposeAll();
     // 先掐掉全部 WS 连接再关 HTTP，否则在线 WS 客户端会让 app.close() 永不 resolve
     wshub.closeAll();

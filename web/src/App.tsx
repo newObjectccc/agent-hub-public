@@ -3,6 +3,7 @@ import { AppShell } from "./components/AppShell";
 import { HomePage } from "./pages/HomePage";
 import { SessionsPage } from "./pages/SessionsPage";
 import { SystemPage } from "./pages/SystemPage";
+import { TerminalPage } from "./pages/TerminalPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { ChatPage } from "./pages/ChatPage";
 import { TreePage } from "./pages/TreePage";
@@ -56,6 +57,8 @@ export function App() {
           <SessionsPage />
         ) : route.name === "system" ? (
           <SystemPage />
+        ) : route.name === "terminal" ? (
+          <TerminalPage />
         ) : route.name === "settings" ? (
           <SettingsPage />
         ) : (

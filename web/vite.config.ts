@@ -25,6 +25,9 @@ export default defineConfig({
     proxy: {
       "/api": { target: serverTarget, changeOrigin: true },
       "/ws": { target: serverTarget, ws: true, changeOrigin: true },
+      // ttyd Web 终端同源反代（F2）：只匹配 /terminal/ 前缀（资源 + ws 握手）；
+      // SPA 页面路由 /terminal（无斜杠）留给 dev server 前端路由
+      "^/terminal/": { target: serverTarget, ws: true, changeOrigin: true },
     },
   },
   test: {

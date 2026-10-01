@@ -17,6 +17,8 @@ import type {
   SessionTree,
   SubAgentsResponse,
   SystemStatus,
+  TerminalSession,
+  TerminalStatus,
   ApiErrorBody,
   FileContentResult,
   GitBranchInfo,
@@ -189,6 +191,23 @@ export const api = {
 
   getSystem(): Promise<SystemStatus> {
     return request("/api/system");
+  },
+
+  /* ===== ttyd Web 终端（契约 §13） ===== */
+
+  /** GET /api/terminal/status：可用性 + 运行态 + 降级提示（不拉起进程） */
+  getTerminalStatus(): Promise<TerminalStatus> {
+    return request("/api/terminal/status");
+  },
+
+  /** POST /api/terminal/session：按需拉起 ttyd 并签发同源反代 URL */
+  startTerminalSession(): Promise<TerminalSession> {
+    return request("/api/terminal/session", { method: "POST", body: JSON.stringify({}) });
+  },
+
+  /** POST /api/terminal/stop：回收 ttyd（幂等） */
+  stopTerminal(): Promise<{ stopped: boolean }> {
+    return request("/api/terminal/stop", { method: "POST", body: JSON.stringify({}) });
   },
 
   /* ===== git / 文件只读 API（契约 §6） ===== */

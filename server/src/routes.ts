@@ -19,6 +19,7 @@ import { dataDir } from "./paths.js";
 import type { PromptResult } from "./sessions/hub.js";
 import { fullPage, paginateMessages, parseLimit } from "./sessions/paginate.js";
 import { buildSubAgentActivity } from "./subagents.js";
+import type { TerminalServiceLike } from "./terminal.js";
 import {
   loadImageAttachments,
   MAX_ATTACHMENTS_PER_MESSAGE,
@@ -76,6 +77,10 @@ export interface RouteDeps {
   panelDriven?: PanelDrivenStoreLike;
   /** 终端 pi 反向指令通道（E3 双模式；可注入 mock，缺省不启用接管相关路由） */
   agents?: AgentLinkLike;
+  /** ttyd Web 终端服务（F2；可注入 mock，缺省时 /api/terminal/* 返回 503） */
+  terminal?: TerminalServiceLike;
+  /** 应用锁门禁（F1 预留）：返回 false 时拒绝签发终端 token；缺省视为已解锁 */
+  terminalUnlocked?: () => boolean | Promise<boolean>;
 }
 
 /** 会话项注入终端驱动状态（仅 pi 会话；agents 未启用时原样返回） */
@@ -526,6 +531,47 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
     try {
       const info = await deps.systemInfo();
       return reply.send(info);
+    } catch (err) {
+      return handle(reply, err);
+    }
+  });
+
+  /* ===== ttyd Web 终端（契约 §13） ===== */
+
+  const requireTerminal = (): TerminalServiceLike => {
+    if (!deps.terminal) {
+      throw new HubError(ErrorCodes.TERMINAL_UNAVAILABLE, "终端服务未启用", 503);
+    }
+    return deps.terminal;
+  };
+
+  // GET /api/terminal/status：ttyd 可用性 + 运行态 + 降级提示（不拉起进程）
+  app.get("/api/terminal/status", async (_req, reply) => {
+    try {
+      return reply.send(await requireTerminal().status());
+    } catch (err) {
+      return handle(reply, err);
+    }
+  });
+
+  // POST /api/terminal/session：按需拉起 ttyd 并签发同源反代 URL（token 能力凭证）
+  app.post("/api/terminal/session", async (_req, reply) => {
+    try {
+      if (deps.terminalUnlocked && !(await deps.terminalUnlocked())) {
+        throw new HubError(ErrorCodes.UNAUTHORIZED, "应用已锁定：解锁后可用终端", 401);
+      }
+      const session = await requireTerminal().ensureSession();
+      return reply.status(201).send(session);
+    } catch (err) {
+      return handle(reply, err);
+    }
+  });
+
+  // POST /api/terminal/stop：回收 ttyd（幂等）
+  app.post("/api/terminal/stop", async (_req, reply) => {
+    try {
+      await requireTerminal().stop();
+      return reply.send({ stopped: true });
     } catch (err) {
       return handle(reply, err);
     }

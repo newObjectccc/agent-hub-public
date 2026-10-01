@@ -25,6 +25,8 @@ export const ErrorCodes = {
   // 上传 API（契约 §11）
   UPLOAD_TOO_LARGE: "UPLOAD_TOO_LARGE",
   UNSUPPORTED_MEDIA_TYPE: "UNSUPPORTED_MEDIA_TYPE",
+  // ttyd Web 终端（契约 §13）
+  TERMINAL_UNAVAILABLE: "TERMINAL_UNAVAILABLE",
 } as const;
 
 export type ErrorCode = (typeof ErrorCodes)[keyof typeof ErrorCodes];

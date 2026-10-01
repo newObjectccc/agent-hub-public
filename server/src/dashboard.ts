@@ -194,6 +194,83 @@ export interface WeekCommitsOptions {
   timeoutMs?: number;
   /** 递归找 git 仓库的最大深度（workspaceRoot 本身=0） */
   maxDepth?: number;
+  /** 每仓计数 + 仓库清单缓存（缺省不缓存，行为与旧版一致） */
+  cache?: WeekCommitsCache;
+  /** git 并发上限（默认 4） */
+  concurrency?: number;
+  /** 仓库清单缓存 TTL（默认 30min） */
+  repoListTtlMs?: number;
+  /** 每仓 rev-list 计数缓存 TTL（默认 5min） */
+  countTtlMs?: number;
+  /** git 可执行路径（缺省 "git"；传 resolveGitBin() 结果可避开 PATH 查找开销） */
+  gitBin?: string;
+}
+
+/** 仓库扫描性能参数（F2：~/Workspace 几十个仓库冷查询 11s+ 的专项优化） */
+export const WEEK_COMMITS_DEFAULT_CONCURRENCY = 4;
+export const REPO_LIST_CACHE_TTL_MS = 30 * 60 * 1000;
+export const REPO_COUNT_CACHE_TTL_MS = 5 * 60 * 1000;
+/** 单仓 git 命令超时（毫秒）；超时/失败按 0 计，不拖累整体 */
+export const REPO_GIT_TIMEOUT_MS = 2_000;
+
+interface RepoCountEntry {
+  count: number;
+  at: number;
+  /** 计数所属周窗（周一起点毫秒）；跨周直接失效 */
+  weekStart: number;
+  /** 仓库 .git/HEAD mtime（可选失效：变了就重算；拿不到则只靠 TTL） */
+  mtimeMs: number | null;
+}
+
+export interface WeekCommitsCache {
+  repos: { value: string[]; at: number; root: string } | null;
+  counts: Map<string, RepoCountEntry>;
+}
+
+export function createWeekCommitsCache(): WeekCommitsCache {
+  return { repos: null, counts: new Map() };
+}
+
+/**
+ * 解析 git 可执行绝对路径（进程内缓存一次）：node spawn 按 PATH 逐目录搜索的开销
+ * 实测是绝对路径的 4-6 倍（96 仓冷查询的大头），解析后每次 rev-list 直接用绝对路径。
+ * 解析失败/非路径输出回退 "git"（fake exec 测试环境不受影响）。
+ */
+let gitBinCache: string | null = null;
+
+export function resetGitBinCache(): void {
+  gitBinCache = null;
+}
+
+export async function resolveGitBin(execFileFn: ExecFileFn = execFile): Promise<string> {
+  if (gitBinCache !== null) return gitBinCache;
+  const finder = process.platform === "win32" ? "where" : "which";
+  const out = await new Promise<string>((resolve) => {
+    try {
+      execFileFn(finder, ["git"], { timeout: 2_000, windowsHide: true }, (error, stdout) =>
+        resolve(error === null ? String(stdout ?? "") : ""),
+      );
+    } catch {
+      resolve("");
+    }
+  });
+  const candidate = out.trim().split("\n")[0] ?? "";
+  gitBinCache = candidate !== "" && (candidate.startsWith("/") || /^[A-Za-z]:[\\/]/.test(candidate)) ? candidate : "git";
+  return gitBinCache;
+}
+
+/** 仓库变更感知用的 mtime（.git 与 .git/HEAD 取新；都拿不到则 null） */
+async function repoMtimeMs(repo: string): Promise<number | null> {
+  let latest: number | null = null;
+  for (const path of [join(repo, ".git"), join(repo, ".git", "HEAD")]) {
+    try {
+      const s = await stat(path);
+      if (latest === null || s.mtimeMs > latest) latest = s.mtimeMs;
+    } catch {
+      // 取不到不阻断（worktree 的 .git 是文件等场景）
+    }
+  }
+  return latest;
 }
 
 async function isGitDir(dir: string): Promise<boolean> {
@@ -206,7 +283,10 @@ async function isGitDir(dir: string): Promise<boolean> {
   }
 }
 
-/** 收集 workspaceRoot 下的 git 仓库（自身 + 子孙目录，含 worktree） */
+/** 目录并发遍历上限（找仓库阶段不再串行阻塞） */
+const WALK_CONCURRENCY = 8;
+
+/** 收集 workspaceRoot 下的 git 仓库（自身 + 子孙目录，含 worktree；结果有序） */
 export async function findGitRepos(root: string, maxDepth = 2): Promise<string[]> {
   const repos: string[] = [];
   async function walk(dir: string, depth: number): Promise<void> {
@@ -221,28 +301,60 @@ export async function findGitRepos(root: string, maxDepth = 2): Promise<string[]
     } catch {
       return;
     }
-    for (const entry of entries) {
-      if (entry.isDirectory() && !entry.name.startsWith(".")) {
-        await walk(join(dir, entry.name), depth + 1);
-      }
+    const dirs = entries
+      .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
+      .map((entry) => join(dir, entry.name));
+    for (let i = 0; i < dirs.length; i += WALK_CONCURRENCY) {
+      await Promise.all(dirs.slice(i, i + WALK_CONCURRENCY).map((d) => walk(d, depth + 1)));
     }
   }
   await walk(root, 0);
-  return repos;
+  return repos.sort();
 }
 
 /** workspaceRoot 下所有 git 仓库本周（周一起）commit 总数；无 git/无仓库 → 0 */
 export async function countWeekCommits(root: string, options: WeekCommitsOptions): Promise<number> {
   const execFileFn = options.execFileFn ?? execFile;
-  const timeoutMs = options.timeoutMs ?? 5_000;
-  const since = new Date(startOfWeek(options.now)).toISOString();
-  const repos = await findGitRepos(root, options.maxDepth ?? 2);
-  const counts: number[] = [];
-  for (const repo of repos) {
+  const gitBin = options.gitBin ?? "git";
+  const timeoutMs = options.timeoutMs ?? REPO_GIT_TIMEOUT_MS;
+  const concurrency = Math.max(1, options.concurrency ?? WEEK_COMMITS_DEFAULT_CONCURRENCY);
+  const weekStart = startOfWeek(options.now);
+  const since = new Date(weekStart).toISOString();
+  const cache = options.cache;
+  const repoListTtlMs = options.repoListTtlMs ?? REPO_LIST_CACHE_TTL_MS;
+  const countTtlMs = options.countTtlMs ?? REPO_COUNT_CACHE_TTL_MS;
+
+  // 1) 仓库清单：TTL 30min（目录增删低频；presence invalidate 时也会重建）
+  let repos: string[];
+  const cachedList = cache?.repos ?? null;
+  if (cachedList !== null && cachedList.root === root && options.now - cachedList.at < repoListTtlMs) {
+    repos = cachedList.value;
+  } else {
+    repos = await findGitRepos(root, options.maxDepth ?? 2);
+    if (cache) cache.repos = { value: repos, at: options.now, root };
+  }
+
+  // 2) 每仓计数：缓存命中（同周窗 + TTL 内 + 仓库未变）直接用；否则 git 重算
+  const counts: number[] = new Array(repos.length).fill(0);
+  const computeOne = async (index: number): Promise<void> => {
+    const repo = repos[index];
+    const mtimeMs = await repoMtimeMs(repo);
+    const entry = cache?.counts.get(repo);
+    const mtimeUnchanged = entry !== undefined && (entry.mtimeMs === null || mtimeMs === null || entry.mtimeMs === mtimeMs);
+    if (
+      entry !== undefined &&
+      entry.weekStart === weekStart &&
+      options.now - entry.at < countTtlMs &&
+      mtimeUnchanged
+    ) {
+      counts[index] = entry.count;
+      return;
+    }
+    // 有界并发 + 单仓 2s 超时按 0 计（坏仓库不拖累整体）
     const stdout = await new Promise<string>((resolve) => {
       try {
         execFileFn(
-          "git",
+          gitBin,
           ["-C", repo, "rev-list", "--count", `--since=${since}`, "HEAD"],
           { timeout: timeoutMs, windowsHide: true },
           (error, out) => resolve(error === null ? String(out ?? "") : ""),
@@ -251,8 +363,19 @@ export async function countWeekCommits(root: string, options: WeekCommitsOptions
         resolve("");
       }
     });
-    if (stdout !== "") counts.push(parseRevListCount(stdout));
-  }
+    const count = parseRevListCount(stdout);
+    counts[index] = count;
+    if (cache) cache.counts.set(repo, { count, at: options.now, weekStart, mtimeMs });
+  };
+
+  let next = 0;
+  const workers = Array.from({ length: Math.min(concurrency, repos.length) }, async () => {
+    for (let i = next; i < repos.length; i = next) {
+      next = i + 1;
+      await computeOne(i);
+    }
+  });
+  await Promise.all(workers);
   return sumCommitCounts(counts);
 }
 
@@ -363,6 +486,10 @@ export class DashboardService implements DashboardServiceLike {
   private cachedAt = 0;
   private weekCommits: number | null = null;
   private weekCommitsAt = 0;
+  /** git 扫描缓存（仓库清单 30min + 每仓计数 5min，后台重算毫秒级） */
+  private readonly weekCommitsCache = createWeekCommitsCache();
+  /** git 绝对路径（避开 PATH 查找开销；首次解析后复用） */
+  private gitBin: string | null = null;
   private refreshing = false;
   private readonly liveItems = new Map<string, NotificationItem>();
   private readonly lastAssistantText = new Map<string, string>();
@@ -418,10 +545,13 @@ export class DashboardService implements DashboardServiceLike {
   async getStats(): Promise<DashboardStats> {
     const insights = await this.getInsights();
     const now = this.now();
+    const gitBin = this.gitBin ?? (this.gitBin = await resolveGitBin(this.options.execFileFn));
     if (this.weekCommits === null) {
       this.weekCommits = await countWeekCommits(this.options.workspaceRoot, {
         now,
         execFileFn: this.options.execFileFn,
+        cache: this.weekCommitsCache,
+        gitBin,
       });
       this.weekCommitsAt = now;
     } else if (now - this.weekCommitsAt > WEEK_COMMITS_CACHE_TTL_MS) {
@@ -429,6 +559,8 @@ export class DashboardService implements DashboardServiceLike {
       void countWeekCommits(this.options.workspaceRoot, {
         now,
         execFileFn: this.options.execFileFn,
+        cache: this.weekCommitsCache,
+        gitBin,
       }).then((v) => {
         this.weekCommits = v;
       }).catch(() => undefined);

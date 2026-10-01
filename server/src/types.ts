@@ -252,6 +252,29 @@ export interface SystemInfo {
   workspaceRoot: string;
   /** 真实系统指标；整体采集失败为 null（不影响工具探测字段） */
   metrics: SystemMetrics | null;
+  /** ttyd Web 终端运行态（可选增强，F2；缺省按未启用容错） */
+  terminal?: TerminalStatusDto;
+}
+
+/** ===== ttyd Web 终端（docs/API_CONTRACT.md §13） ===== */
+
+/** GET /api/terminal/status / GET /api/system.terminal 运行态 DTO */
+export interface TerminalStatusDto {
+  /** 平台是否支持（仅 POSIX；Windows 显示 WSL 降级提示） */
+  supported: boolean;
+  /** ttyd 二进制是否已安装 */
+  installed: boolean;
+  /** 按需拉起的 ttyd 是否正在运行 */
+  running: boolean;
+  version: string | null;
+  /** 降级提示（未安装/不支持时给安装命令；正常为 null） */
+  hint: string | null;
+}
+
+/** POST /api/terminal/session 响应（url 为同源反代地址，含一次性 token） */
+export interface TerminalSessionDto {
+  url: string;
+  expiresAt: string;
 }
 
 /** ===== slash 命令清单（docs/API_CONTRACT.md §8） ===== */

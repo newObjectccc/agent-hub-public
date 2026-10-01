@@ -206,6 +206,29 @@ export interface SystemStatus {
   workspaceRoot: string;
   /** 真实系统指标；缺省/为 null 表示不可用（旧 server 兼容，UI 降级不显示） */
   metrics?: SystemMetrics | null;
+  /** ttyd Web 终端运行态（F2；旧 server 缺省，UI 按未启用容错） */
+  terminal?: TerminalStatus;
+}
+
+/* ===== ttyd Web 终端（docs/API_CONTRACT.md §13） ===== */
+
+/** GET /api/terminal/status / GET /api/system.terminal */
+export interface TerminalStatus {
+  /** 平台是否支持（仅 POSIX；Windows 降级提示） */
+  supported: boolean;
+  /** ttyd 是否已安装 */
+  installed: boolean;
+  /** 按需拉起的 ttyd 是否运行中 */
+  running: boolean;
+  version: string | null;
+  /** 降级提示（未安装/不支持时给安装命令） */
+  hint: string | null;
+}
+
+/** POST /api/terminal/session：同源反代地址（含一次性 token） */
+export interface TerminalSession {
+  url: string;
+  expiresAt: string;
 }
 
 export interface PromptResult {

@@ -481,6 +481,91 @@ a {
   font-weight: 700;
 }
 
+/* ---------- ttyd Web 终端（F2，契约 §13） ---------- */
+.terminal-card {
+  gap: clamp(0.65rem, 2.6vw, 1rem);
+}
+
+.terminal-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: clamp(0.45rem, 2vw, 0.7rem);
+}
+
+.terminal-hint {
+  color: var(--muted-foreground);
+  overflow-wrap: anywhere;
+}
+
+/* 终端入口快捷方式（系统指标条）：可点态 + 降级说明态；触控目标 ≥44px */
+button.syschip.terminal-entry {
+  min-height: 44px;
+  font: inherit;
+  cursor: pointer;
+}
+
+button.syschip.terminal-entry:hover {
+  background: var(--accent);
+  color: var(--accent-foreground);
+}
+
+.syschip.terminal-entry .label {
+  font-weight: 700;
+}
+
+.terminal-fallback p {
+  margin: 0 0 0.35rem;
+}
+
+.terminal-launch {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.65rem;
+}
+
+.terminal-launch p {
+  margin: 0;
+}
+
+.terminal-error {
+  margin: 0;
+  color: var(--destructive);
+  font-weight: 700;
+}
+
+.terminal-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  min-height: 0;
+}
+
+.terminal-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+}
+
+/* iframe 全宽内嵌终端：小屏 320 起自适应，大屏限高不无限拉伸 */
+.terminal-frame {
+  width: 100%;
+  height: clamp(300px, 66dvh, 720px);
+  min-height: 300px;
+  border: var(--bw) solid var(--border);
+  border-radius: var(--nb-radius);
+  background: #0b0f14; /* ttyd 深色底，避免加载期白闪（深浅色主题下均一致） */
+}
+
+@media (max-width: 380px) {
+  .terminal-frame {
+    height: clamp(260px, 60dvh, 720px);
+    min-height: 260px;
+  }
+}
+
+
 /* ---------- 子代理分组（🤖 isSubAgent 会话收纳） ---------- */
 .badge.subagent {
   background: var(--accent);

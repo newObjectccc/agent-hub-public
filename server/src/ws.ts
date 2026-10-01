@@ -9,6 +9,7 @@ import { loadClaudeSessionMessages } from "./adapters/claude-transcript.js";
 import { ErrorCodes } from "./errors.js";
 import type { PromptResult } from "./sessions/hub.js";
 import type { SessionTailManager } from "./sessions/tail.js";
+import { UPGRADE_HANDLED_MARK } from "./terminal.js";
 import type { ServerEvent, SessionListItem } from "./types.js";
 
 const WS_PATH_RE = /^\/ws\/sessions\/([^/]+)$/;
@@ -103,7 +104,11 @@ export class WsHub {
       }
       const match = WS_PATH_RE.exec(url);
       if (!match) {
-        socket.destroy();
+        // 非 hub WS 路径：若已被其他 upgrade 处理器接管（如 /terminal/ws ttyd 反代，
+        // 见 terminal.ts 的 UPGRADE_HANDLED_MARK），不销毁；否则拒绝未知 upgrade
+        if ((req as unknown as Record<string, unknown>)[UPGRADE_HANDLED_MARK] !== true) {
+          socket.destroy();
+        }
         return;
       }
       const sessionId = decodeURIComponent(match[1]);
