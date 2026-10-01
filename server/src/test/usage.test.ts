@@ -180,6 +180,7 @@ describe("usage: UsageService（临时会话目录 + 增量缓存）", () => {
     service = new UsageService({
       sessionDir: dir,
       ttlMs: 60_000,
+      minRescanMs: 0, // 测试时间尺度：invalidate 后立即对账（防风暴限速单独用例验证）
       readFile: async (file) => {
         reads.push(file);
         return readFile(file, "utf8");
@@ -231,6 +232,27 @@ describe("usage: UsageService（临时会话目录 + 增量缓存）", () => {
     assert.ok(reads[reads.length - 1].endsWith(fileA));
     assert.equal(out.windows.today.totalTokens, 177);
     assert.equal(out.sessions.find((s) => s.sessionId === "sess-usage-1")?.usage.totalTokens, 192);
+  });
+
+  it("防风暴：minRescanMs 窗口内 invalidate 不触发重扫（脏标保留，窗口后补扫）", async () => {
+    const throttledReads: string[] = [];
+    const throttled = new UsageService({
+      sessionDir: dir,
+      ttlMs: 60_000,
+      minRescanMs: 60_000,
+      readFile: async (file) => {
+        throttledReads.push(file);
+        return readFile(file, "utf8");
+      },
+    });
+    await throttled.overview(NOW); // 首扫（lastScanAt=0 不受 minRescan 限制）
+    const before = throttledReads.length;
+    await appendFile(join(dir, fileB), `\n${usageLine("b2", OLD_TS, USAGE_B)}`);
+    throttled.invalidate();
+    await throttled.overview(NOW);
+    throttled.invalidate();
+    await throttled.overview(NOW);
+    assert.equal(throttledReads.length, before, "minRescan 窗口内 invalidate 风暴零重读");
   });
 
   it("session：单会话汇总（found / 不存在 → null）", async () => {

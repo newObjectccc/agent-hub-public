@@ -4,6 +4,7 @@
  * diff 出新增消息后按契约推送 `message_end`（前端 reducer 同 id 覆盖、新 id 追加，零改动兼容），
  * 并推断运行态：文件持续写入 → status:"running"，静默 → status:"idle"。
  */
+import { stat } from "node:fs/promises";
 import { loadSessionMessages } from "./scan.js";
 import type { MessageDto } from "../types.js";
 import type { EmitFn } from "./hub.js";
@@ -91,6 +92,11 @@ class SessionTail {
   private closed = false;
   /** 最近一次「assistant 回复落盘」时间；null=当前无回复静默计时（走长窗口） */
   private replyQuietMs: number | null = null;
+  /** 文件指纹（size+mtime）：未变则跳过全量解析（订阅静止会话零 CPU） */
+  private lastSize = -1;
+  private lastMtimeMs = -1;
+  /** 重入保护：解析慜于轮询间隔时不让 tick 任务堆积（否则 CPU 高时正反馈恶化） */
+  private ticking = false;
   private readonly pollMs: number;
   private readonly idleAfterMs: number;
   private readonly idleAfterReplyMs: number;
@@ -127,36 +133,63 @@ class SessionTail {
     this.timer = null;
   }
 
-  private async tick(): Promise<void> {
-    if (this.closed) return;
+  /** 文件是否自上次解析后变更（size+mtime 双指纹）；stat 失败按变更处理（解析兕底） */
+  private async isChanged(): Promise<boolean> {
     try {
-      const messages = await this.loadMessages(this.file);
-      let changed = false;
-      let lastNew: { role: string; text: string } | null = null;
-      for (const m of messages) {
-        if (this.knownIds.has(m.id)) continue;
-        this.knownIds.add(m.id);
-        changed = true;
-        lastNew = { role: m.role, text: m.text };
-        // 契约事件：message_end 携带权威消息（前端 upsert）
-        this.emit(this.sessionId, { type: "message_end", message: m });
-      }
-      const now = Date.now();
-      if (changed) {
-        this.lastChangeMs = now;
-        this.pushRunning();
-        // 只有「本轮最后新增是 assistant 文本消息」才启动回复静默计时：
-        // user/工具落盘说明新一轮或工具活动刚开始，维持长窗口避免误判
-        this.replyQuietMs =
-          lastNew !== null && lastNew.role === "assistant" && lastNew.text.trim() !== "" ? now : null;
-      } else if (this.runningPushed) {
-        const replySettled = this.replyQuietMs !== null && now - this.replyQuietMs > this.idleAfterReplyMs;
-        const silentSettled = now - this.lastChangeMs > this.idleAfterMs;
-        if (replySettled || silentSettled) this.pushSettled();
+      const st = await stat(this.file);
+      if (st.size === this.lastSize && st.mtimeMs === this.lastMtimeMs) return false;
+      this.lastSize = st.size;
+      this.lastMtimeMs = st.mtimeMs;
+      return true;
+    } catch {
+      return true;
+    }
+  }
+
+  private async tick(): Promise<void> {
+    if (this.closed || this.ticking) return;
+    this.ticking = true;
+    try {
+      if (await this.isChanged()) {
+        const messages = await this.loadMessages(this.file);
+        let changed = false;
+        let lastNew: { role: string; text: string } | null = null;
+        for (const m of messages) {
+          if (this.knownIds.has(m.id)) continue;
+          this.knownIds.add(m.id);
+          changed = true;
+          lastNew = { role: m.role, text: m.text };
+          // 契约事件：message_end 携带权威消息（前端 upsert）
+          this.emit(this.sessionId, { type: "message_end", message: m });
+        }
+        const now = Date.now();
+        if (changed) {
+          this.lastChangeMs = now;
+          this.pushRunning();
+          // 只有「本轮最后新增是 assistant 文本消息」才启动回复静默计时：
+          // user/工具落盘说明新一轮或工具活动刚开始，维持长窗口避免误判
+          this.replyQuietMs =
+            lastNew !== null && lastNew.role === "assistant" && lastNew.text.trim() !== "" ? now : null;
+        } else {
+          this.settleIfQuiet(now);
+        }
+      } else {
+        // 文件未变：跳过全量解析，但静默推断照常推进（依赖时间而非文件内容）
+        this.settleIfQuiet(Date.now());
       }
     } catch {
       // 单轮失败（文件损坏/写入中）忽略，下一轮重试
+    } finally {
+      this.ticking = false;
     }
+  }
+
+  /** 静默窗口推进：已推过 running 且够安静则收尾（与解析成本解耦） */
+  private settleIfQuiet(now: number): void {
+    if (!this.runningPushed) return;
+    const replySettled = this.replyQuietMs !== null && now - this.replyQuietMs > this.idleAfterReplyMs;
+    const silentSettled = now - this.lastChangeMs > this.idleAfterMs;
+    if (replySettled || silentSettled) this.pushSettled();
   }
 
   /** 本轮工作结束：发契约 agent_settled（UI 恢复输入框、通知聚合），随后 status 回 idle */

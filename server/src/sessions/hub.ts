@@ -27,7 +27,6 @@ import {
   contentToText,
   contentToThinking,
   encodeCwdDirName,
-  findSessionById,
   isSubAgentName,
   RESULT_PREVIEW_LIMIT,
   scanSessions,
@@ -87,6 +86,10 @@ export class SessionHub {
   private readonly emit: EmitFn;
   private readonly live = new Map<string, LiveSession>();
   private readonly statuses = new Map<string, SessionStatus>();
+  /** 会话清单 TTL 缓存（listSessions/findSession 共享一次扫描） */
+  private listCache: SessionListItem[] | null = null;
+  private listCacheAt = 0;
+  private listCacheInflight: Promise<SessionListItem[]> | null = null;
   private readonly searchService: SearchService;
   private readonly createSessionFn: typeof createAgentSession;
   /** 扩展 live-feed 推送过的会话：id → 最后事件时间（10 分钟内视为 live，防文件 tail 双推送） */
@@ -98,6 +101,8 @@ export class SessionHub {
 
   /** live-feed 活跃窗口：超过此时长无事件则重新允许文件 tail（pi 退出后自愈） */
   static readonly FEED_TTL_MS = 10 * 60_000;
+  /** 会话清单缓存 TTL：外部新会话最多晚 5s 可见；写路径 invalidate 立即可见 */
+  static readonly LIST_TTL_MS = 5_000;
 
   constructor(sessionDir: string, emit: EmitFn, options: SessionHubOptions = {}) {
     this.sessionDir = sessionDir;
@@ -152,13 +157,40 @@ export class SessionHub {
     this.emit(id, { type: "status", status });
   }
 
-  /** 扫描列表（运行态注入：本进程优先 + 外部活动推断） */
+  /** 扫描列表（运行态注入：本进程优先 + 外部活动推断）。
+   * TTL 缓存共享 + 并发去重：live 事件风暴下不重复全量解析全部 JSONL（曾致 CPU 打满/OOM） */
   listSessions(): Promise<SessionListItem[]> {
-    return scanSessions(this.sessionDir, { statusOf: (id, updatedMs) => this.statusWithInference(id, updatedMs) });
+    const now = Date.now();
+    if (this.listCache !== null && now - this.listCacheAt < SessionHub.LIST_TTL_MS) {
+      return Promise.resolve(this.listCache);
+    }
+    if (this.listCacheInflight !== null) return this.listCacheInflight;
+    this.listCacheInflight = scanSessions(this.sessionDir, {
+      statusOf: (id, updatedMs) => this.statusWithInference(id, updatedMs),
+    })
+      .then((items) => {
+        this.listCache = items;
+        this.listCacheAt = Date.now();
+        return items;
+      })
+      .finally(() => {
+        this.listCacheInflight = null;
+      });
+    return this.listCacheInflight;
   }
 
   findSession(id: string): Promise<SessionListItem | null> {
-    return findSessionById(this.sessionDir, id, { statusOf: (sid, updatedMs) => this.statusWithInference(sid, updatedMs) });
+    return this.listSessions().then((all) => {
+      const hit = all.find((s) => s.id === id);
+      // status 查询时重算（缓存里是扫描时刻值，与原 findSessionById 语义一致）
+      return hit ? { ...hit, status: this.statusWithInference(hit.id, Date.parse(hit.updatedAt)) } : null;
+    });
+  }
+
+  /** 写盘后失效清单缓存（fork/新建会话立即可见，不等 TTL） */
+  invalidateList(): void {
+    this.listCache = null;
+    this.listCacheAt = 0;
   }
 
   async loadMessages(id: string): Promise<MessageDto[] | null> {
@@ -273,6 +305,7 @@ export class SessionHub {
           writeFileSync(newFile, `${entries.map((e) => JSON.stringify(e)).join("\n")}\n`, { flag: "wx" });
         }
       }
+      this.invalidateList(); // fork 落盘：新会话立即可见
     } catch (err) {
       throw new HubError(
         ErrorCodes.INTERNAL,

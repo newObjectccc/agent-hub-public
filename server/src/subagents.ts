@@ -140,6 +140,9 @@ type SessionLookup = (id: string) => Promise<SessionListItem | null>;
 export class SubAgentRouter {
   private readonly parents = new Map<string, string>();
   private readonly names = new Map<string, string>();
+  /** 解析失败负缓存：到点前的事件不重试 lookup（避免每事件触发全量扫描） */
+  private readonly retryAfter = new Map<string, number>();
+  static readonly RETRY_AFTER_MS = 30_000;
   private readonly resolving = new Set<string>();
   private readonly lookup: SessionLookup;
 
@@ -167,7 +170,7 @@ export class SubAgentRouter {
       const q = this.pending.get(sessionId) ?? [];
       if (q.length < 8) q.push({ sessionId, event });
       this.pending.set(sessionId, q);
-      this.resolveAsync(sessionId);
+      if ((this.retryAfter.get(sessionId) ?? 0) <= Date.now()) this.resolveAsync(sessionId);
       return null;
     }
     // 空串哨兵 = 已解析为非子代理（无父），不再路由
@@ -208,7 +211,10 @@ export class SubAgentRouter {
           this.pending.delete(sessionId);
         }
       })
-      .catch(() => undefined)
+      .catch(() => {
+        // 解析失败（扫描异常）：负缓存限速重试，不清 pending（事件不丢，到期后补解析）
+        this.retryAfter.set(sessionId, Date.now() + SubAgentRouter.RETRY_AFTER_MS);
+      })
       .finally(() => {
         this.resolving.delete(sessionId);
       });

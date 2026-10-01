@@ -44,8 +44,11 @@ export class SessionRegistry {
     return sessions;
   }
 
-  /** 按 id 解析归属 source（claude 优先，未命中回退 pi；都没有 → null） */
+  /** 按 id 解析归属 source（缓存优先；未命中才双源探测——避免每次查找两轮全量扫描） */
   private async resolve(id: string): Promise<SessionAdapter | null> {
+    const known = this.sources.get(id);
+    if (known === "claude") return this.claude;
+    if (known === "pi") return this.pi;
     const claudeHit = await this.claude.findSession(id);
     if (claudeHit) {
       this.remember([claudeHit]);

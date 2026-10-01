@@ -213,6 +213,8 @@ export class UsageService implements UsageServiceLike {
   /** 每文件用量快照：mtime+size 未变的文件不重读（增量对账） */
   private readonly cache = new Map<string, FileUsageEntry>();
   private lastScanAt = 0;
+  /** invalidate 脏标：已对账缓存受 TTL 保护，脏标让变更文件尽快重读（受 minRescanMs 限速） */
+  private dirty = false;
   private refreshing: Promise<void> | null = null;
 
   constructor(options: UsageServiceOptions) {
@@ -220,8 +222,9 @@ export class UsageService implements UsageServiceLike {
     this.readFile = options.readFile ?? readSessionFile;
   }
 
+  /** 文件变更（presence）时标记过期；不归零 lastScanAt（否则 minRescan/TTL 防护被绕过） */
   invalidate(): void {
-    this.lastScanAt = 0;
+    this.dirty = true;
   }
 
   private now(): number {
@@ -232,10 +235,11 @@ export class UsageService implements UsageServiceLike {
   private async ensureFresh(): Promise<void> {
     const ttlMs = this.options.ttlMs ?? USAGE_CACHE_TTL_MS;
     const now = this.now();
-    if (this.lastScanAt > 0 && now - this.lastScanAt < ttlMs) return;
+    if (!this.dirty && this.lastScanAt > 0 && now - this.lastScanAt < ttlMs) return;
     if (this.refreshing !== null) return this.refreshing;
     // 最小重扫间隔：invalidate 高频触发时拒绝风暴式对账
     if (this.lastScanAt > 0 && now - this.lastScanAt < (this.options.minRescanMs ?? USAGE_MIN_RESCAN_MS)) return;
+    this.dirty = false;
     const task = this.refresh(now);
     this.refreshing = task;
     try {
