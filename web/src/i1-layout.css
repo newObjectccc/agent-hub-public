@@ -51,6 +51,16 @@
 }
 
 @media (min-width: 480px) {
+  /* 标题收缩优先于徽章簇：cwd 行展开不得把 ⋯ 按钮挤出视口（480-488 带实测回归） */
+  .chat-title {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .chat-badges {
+    flex-shrink: 0;
+  }
   .chat-title .cwd {
     display: block;
   }
@@ -316,6 +326,12 @@
 
 /* 弹层 wrap 去定位：弹层改锚定宽容器（header / composer-modebar / composer），
  * 右对齐 + max-width → 容器在屏内则弹层必在屏内（x = 容器右缘 - 宽 ≥ 16px 余量） */
+/* 触发热区伪元素的定位上下文必须是按钮自身（position: relative）——
+   否则 ::after 逃逸锚定到 .chat-header，成为盖住 返回/树/git 的隐形死区（REV-I1 实测回归） */
+.attach-trigger {
+  position: relative;
+}
+
 .mode-menu-wrap,
 .attach-menu-wrap,
 .queue-badge-wrap {

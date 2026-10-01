@@ -82,3 +82,12 @@ describe("会话页 flex 布局回归（tab 组不被压缩）", () => {
     expect(block).toContain("flex-shrink: 0");
   });
 });
+
+describe("REV-I1 防回归：触控热区定位上下文", () => {
+  it(".attach-trigger 必须保持 position: relative（::after 不得逃逸到 chat-header）", () => {
+    const css = readFileSync(join(process.cwd(), "src", "i1-layout.css"), "utf8");
+    const m = /\.attach-trigger\s*\{([^}]*)\}/.exec(css);
+    expect(m, ".attach-trigger 规则必须存在").toBeTruthy();
+    expect(m![1]).toMatch(/position:\s*relative/);
+  });
+});
