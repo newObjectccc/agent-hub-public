@@ -153,7 +153,7 @@ export async function main(argv = [], deps = {}) {
       log(`  ${colors.yellow('-')} ${t.label}`);
       for (const line of String(installAdvice(t, platform)).split('\n')) log(`     ${colors.dim(line)}`);
     }
-    log(colors.dim('  以上均为可选，缺失不影响会话列表 / chat / KPI。'));
+    log(colors.dim('  以上均为可选，缺失不影响会话列表 / chat。'));
   }
   if (isWindows(platform)) {
     log('');
