@@ -1,0 +1,172 @@
+/* ============================================================
+ * J1 chat 顶栏图标按钮统一规范（小米 Redmi K90 实测反馈）
+ * 1. 一套 .icon-btn token 驱动全部图标按钮：返回 / 树 / git / ⋯ / 模式切换 / 中止
+ *    - 盒子 44×44 实心（触控达标即视觉盒，废除 ::after 外扩热区的老口径）
+ *    - 边框 2px solid var(--border)、圆角 var(--nb-radius)、硬阴影 var(--nb-shadow-xs)
+ *    - 图标 18px SVG currentColor 同字号、flex 居中、同行垂直对齐
+ *    - 按压 translate(1px,1px) + 阴影消失（野兽派硬反馈）；深浅色全走 palette token
+ * 2. 模式切换纯图标（🖥 终端显示器 / 📱 手机图形，不带文字——窄屏文字看不清的根治），
+ *    点击弹出菜单；菜单两项文字前带各自 icon，说明文字保留
+ * 3. 中止按钮并入同一规范（危险色 token 区分语义），running 态顶栏不再显示「运行中」
+ *    文字徽章（WaitStageBar 阶段状态已表达运行态；模式区分图标保留）
+ * 覆盖式后加载（main.tsx 最后 import）：不动历史样式，独立可回滚。
+ * ============================================================ */
+
+/* ---------- 1. 统一图标按钮 token（历史各按钮差异在此归一） ---------- */
+.icon-btn,
+.chat-header .back,
+.chat-header .chat-tree-btn,
+.chat-header .chat-git-btn,
+.chat-header .attach-trigger,
+.chat-header .tool-btn,
+.modebar-right .abort-btn {
+  box-sizing: border-box;
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  min-height: 44px; /* 触控标准：实心盒自身即 ≥44px 热区 */
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 0;
+  font-family: var(--nb-font-head);
+  font-size: 16px;
+  line-height: 1;
+  white-space: nowrap;
+  background: var(--card);
+  color: var(--card-foreground);
+  border: 2px solid var(--border);
+  border-radius: var(--nb-radius);
+  box-shadow: var(--nb-shadow-xs);
+  cursor: pointer;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+
+.icon-btn:active,
+.chat-header .back:active,
+.chat-header .chat-tree-btn:active,
+.chat-header .chat-git-btn:active,
+.chat-header .attach-trigger:active,
+.chat-header .tool-btn:active,
+.modebar-right .abort-btn:active {
+  transform: translate(1px, 1px);
+  box-shadow: none;
+}
+
+.icon-btn:disabled,
+.chat-header .attach-trigger:disabled {
+  opacity: 0.6;
+  cursor: default;
+  transform: none;
+}
+
+/* 焦点可见性（键盘/读屏）：图标化后仍可辨当前焦点 */
+.icon-btn:focus-visible,
+.chat-header .back:focus-visible,
+.chat-header .chat-tree-btn:focus-visible,
+.chat-header .chat-git-btn:focus-visible,
+.chat-header .attach-trigger:focus-visible,
+.chat-header .tool-btn:focus-visible,
+.modebar-right .abort-btn:focus-visible {
+  outline: 2px solid var(--foreground);
+  outline-offset: 2px;
+}
+
+/* 图标同字号居中（18px SVG；下拉小箭头 10px 缩在图标旁） */
+.icon-btn svg,
+.chat-header .back svg,
+.chat-header .chat-tree-btn svg,
+.chat-header .chat-git-btn svg,
+.chat-header .attach-trigger svg,
+.chat-header .tool-btn svg,
+.modebar-right .abort-btn svg {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+}
+
+.attach-trigger-caret svg {
+  width: 10px;
+  height: 10px;
+}
+
+/* 热区伪元素退役：实心 44×44 盒取代 ::after 外扩（REV-I1d 同一口径，避免隐形死区） */
+.chat-header .back::after,
+.chat-header .chat-tree-btn::after,
+.chat-header .chat-git-btn::after,
+.modebar-right .abort-btn::after {
+  content: none;
+}
+
+/* 中止：同一盒子规格，危险色 token 区分语义（仍为 icon-btn） */
+.modebar-right .abort-btn {
+  background: var(--destructive);
+  color: var(--destructive-foreground);
+}
+
+/* git 脏/净状态点：右上角角标（不挤图标、不改变盒子尺寸） */
+.chat-header .chat-git-btn {
+  position: relative;
+}
+
+.chat-header .chat-git-dot {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 8px;
+  height: 8px;
+  border: 1.5px solid var(--border);
+  background: var(--ok, #22c55e);
+}
+
+.chat-header .chat-git-dot.dirty {
+  background: var(--warn, #f59e0b);
+}
+
+/* ---------- 2. 模式切换纯图标 + 菜单图标化 ---------- */
+.attach-trigger-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.attach-trigger-caret {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+}
+
+/* 菜单两项：各自 icon 在文字前（终端显示器 vs 手机图形），说明文字保留 */
+.attach-menu-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.attach-menu-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.attach-menu-icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* reduced-motion：按压反馈只做位移/阴影瞬时变化，不引行动画 */
+@media (prefers-reduced-motion: reduce) {
+  .icon-btn,
+  .chat-header .back,
+  .chat-header .chat-tree-btn,
+  .chat-header .chat-git-btn,
+  .chat-header .attach-trigger,
+  .chat-header .tool-btn,
+  .modebar-right .abort-btn {
+    transition: none;
+  }
+}

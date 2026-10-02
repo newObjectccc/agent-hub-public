@@ -33,7 +33,7 @@ export function SessionActionsMenu({ onFork, forkBusy = false, info }: SessionAc
     <div className="action-menu-wrap" ref={wrapRef}>
       <button
         type="button"
-        className="tool-btn"
+        className="icon-btn tool-btn"
         aria-label="会话操作"
         aria-haspopup="menu"
         aria-expanded={open}

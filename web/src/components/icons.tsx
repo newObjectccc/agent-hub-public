@@ -247,3 +247,55 @@ export function RoleIcon({ role }: { role: TreeRole }) {
       );
   }
 }
+
+/* ===== J1 顶栏图标按钮图形（统一 18px 描边风格，纯图标模式切换用） ===== */
+
+/** 终端显示器（接管终端模式） */
+export function MonitorIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden>
+      <rect x="3" y="4.5" width="18" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
+      <path d="M8.5 20.5h7M12 16.5v4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+/** 手机图形（平行继续模式） */
+export function PhoneIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden>
+      <rect x="7" y="2.5" width="10" height="19" rx="2" fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
+      <path d="M10.8 18.4h2.4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+/** git 分支（顶栏 git 状态入口） */
+export function GitBranchIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden>
+      <circle cx="6.5" cy="5.5" r="2.5" fill="none" stroke="currentColor" strokeWidth="2" />
+      <circle cx="6.5" cy="18.5" r="2.5" fill="none" stroke="currentColor" strokeWidth="2" />
+      <circle cx="17.5" cy="8" r="2.5" fill="none" stroke="currentColor" strokeWidth="2" />
+      <path d="M6.5 8v8M17.5 10.5c0 3-2.5 4.5-6 5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+/** 停止（中止任务） */
+export function StopIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden>
+      <rect x="6" y="6" width="12" height="12" rx="1" fill="currentColor" />
+    </svg>
+  );
+}
+
+/** 下拉小箭头（模式切换弹出菜单的展开提示） */
+export function CaretDownIcon() {
+  return (
+    <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden>
+      <path d="M1.5 3.2L5 6.8l3.5-3.6" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}

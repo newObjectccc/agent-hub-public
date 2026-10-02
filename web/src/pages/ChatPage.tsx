@@ -45,7 +45,7 @@ import { SlashCommandPanel } from "../components/SlashCommandPanel";
 import { QuickCommandPanel } from "../components/QuickCommandPanel";
 import { StatusBadge } from "../components/StatusBadge";
 import { VoiceInputButton } from "../components/VoiceInputButton";
-import { BackIcon, TreeIcon } from "../components/icons";
+import { BackIcon, GitBranchIcon, StopIcon, TreeIcon } from "../components/icons";
 import { PullToRefresh } from "../components/PullToRefresh";
 import { Button } from "../components/ui/button";
 import { Textarea } from "../components/ui/textarea";
@@ -629,10 +629,18 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
       if (result.hitId) {
         const hitId = result.hitId;
         setHighlightId(hitId);
-        // 等待高亮 class 落 DOM 后再滚动，确保元素存在；平滑滚动尊重 prefers-reduced-motion
-        window.requestAnimationFrame(() => {
-          document.getElementById(`msg-${hitId}`)?.scrollIntoView({ behavior: scrollBehaviorOf(window), block: "center" });
-        });
+        // 等待高亮 class 落 DOM 后再滚动，确保元素存在；平滑滚动尊重 prefers-reduced-motion。
+        // 有界重试（≤10 帧）：单发 rAF 在重负载/慢机下元素尚未 commit 时会静默跳过滚动（REV-J1 实测）
+        let scrollTries = 0;
+        const tryScrollToHit = () => {
+          const el = document.getElementById(`msg-${hitId}`);
+          if (el) {
+            el.scrollIntoView({ behavior: scrollBehaviorOf(window), block: "center" });
+            return;
+          }
+          if (++scrollTries < 10) window.requestAnimationFrame(tryScrollToHit);
+        };
+        window.requestAnimationFrame(tryScrollToHit);
       } else {
         showToast("未在已加载范围找到该消息");
       }
@@ -1380,16 +1388,16 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
   return (
     <div className="chat-page" style={{ "--kb-inset": `${kbInset}px` } as CSSProperties}>
       <header className="chat-header">
-        <Button
+        {/* J1 统一图标按钮规范（.icon-btn）：返回/树/git/⋯/模式切换/中止同一套盒子 */}
+        <button
           type="button"
-          variant="outline"
-          size="icon"
-          className="back"
+          className="icon-btn back"
           onClick={() => navigate(chatReturnPath())}
           aria-label="返回列表"
+          title="返回列表"
         >
           <BackIcon />
-        </Button>
+        </button>
         <div className="chat-title">
           <div className="name">{session?.name ?? sessionId}</div>
           <div className="cwd">{session?.cwd ?? ""}</div>
@@ -1398,31 +1406,31 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
         {session && (
           <button
             type="button"
-            className="chat-git-btn"
+            className="icon-btn chat-git-btn"
             onClick={() => { setGitFile(null); setGitOpen(true); }}
             aria-label="查看 git 变更"
             title="仓库状态与变更"
           >
-            <span aria-hidden="true">🌿</span>
+            <GitBranchIcon />
             <span className={`chat-git-dot${(gitStatus?.dirty.length ?? 0) > 0 ? " dirty" : ""}`} aria-hidden="true" />
           </button>
         )}
-        <Button
+        <button
           type="button"
-          variant="outline"
-          size="sm"
-          className="chat-tree-btn"
+          className="icon-btn chat-tree-btn"
           onClick={() => navigate(treePath(sessionId))}
           aria-label="查看会话分支树"
+          title="查看会话分支树"
         >
           <TreeIcon />
-          树
-        </Button>
+        </button>
         {/* 右侧徽章簇（一行不换行）：状态/驱动/模式/⋯；次要信息（cwd/来源/子代理）收进 ⋯ 菜单 */}
         <div className="chat-badges">
           {/* 子代理来源标记：信息收进 ⋯ 菜单（i1），避免顶栏换行挤压消息区 */}
           <DrivenBadge drivenBy={drivenBy} />
-          <StatusBadge status={status} />
+          {/* J1 去「运行中」：running 态顶栏不再显示文字徽章（WaitStageBar 阶段状态已表达运行态，
+              信息冗余）；空闲/错误保留，模式区分图标（AttachModeMenu）保留 */}
+          {status !== "running" && <StatusBadge status={status} />}
           {/* 双模式切换（E3）：顶栏一个紧凑徽章，弹出小菜单二选一，零额外常驻占位 */}
           <AttachModeMenu
             mode={attachMode}
@@ -1594,9 +1602,15 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
           <div className="modebar-right">
             {/* attach 下中止无意义（run 在终端 pi 进程里），隐藏以免误导 */}
             {status === "running" && !isAttachSending(attachMode, terminal) && (
-              <Button type="button" variant="destructive" size="sm" className="abort-btn" onClick={() => void doAbort()}>
-                中止
-              </Button>
+              <button
+                type="button"
+                className="icon-btn abort-btn"
+                onClick={() => void doAbort()}
+                aria-label="中止当前任务"
+                title="中止当前任务"
+              >
+                <StopIcon />
+              </button>
             )}
           </div>
         </div>
