@@ -42,10 +42,25 @@ afterEach(() => {
 });
 
 describe("AttachModeMenu", () => {
-  it("触发徽章按当前模式显示（📱 平行 / 🖥 接管），默认收起", () => {
+  it("触发器纯图标不带文字（手机图形/终端显示器区分），语义在 aria-label/title", () => {
     const el = render(<AttachModeMenu mode="parallel" terminal={null} onChange={() => undefined} />);
-    expect(el.querySelector(".attach-trigger")!.textContent).toContain("📱 平行");
+    const trigger = el.querySelector(".attach-trigger")!;
+    // J1 图标化：可见文字为零（窄屏文字看不清的根治），只留图标 + 下拉箭头
+    expect(trigger.textContent!.trim()).toBe("");
+    expect(trigger.querySelector("svg")).not.toBeNull();
+    expect(trigger.getAttribute("aria-label")).toContain("平行继续");
+    expect(trigger.getAttribute("title")).toContain("平行继续");
     expect(el.querySelector(".attach-menu")).toBeNull();
+  });
+
+  it("attach 模式触发器图标切为终端显示器；aria-label 带「接管终端」", () => {
+    const onChange = vi.fn();
+    const el = render(
+      <AttachModeMenu mode="attach" terminal={{ online: true, attached: true }} onChange={onChange} />,
+    );
+    const trigger = el.querySelector(".attach-trigger")!;
+    expect(trigger.textContent!.trim()).toBe("");
+    expect(trigger.getAttribute("aria-label")).toContain("接管终端");
   });
 
   it("点开菜单两项带一句话说明；选「接管终端」触发 onChange 且收起", () => {
@@ -56,14 +71,35 @@ describe("AttachModeMenu", () => {
     click(el.querySelector(".attach-trigger"));
     const items = el.querySelectorAll('[role="menuitemradio"]');
     expect(items.length).toBe(2);
-    expect(items[0].textContent).toContain("📱 平行继续");
-    expect(items[1].textContent).toContain("🖥 接管终端");
+    expect(items[0].textContent).toContain("平行继续");
+    expect(items[1].textContent).toContain("接管终端");
     expect(items[0].textContent).toMatch(/server/);
     expect(items[1].textContent).toMatch(/终端实时显示/);
 
     click(items[1]);
     expect(onChange).toHaveBeenCalledWith("attach");
     expect(el.querySelector(".attach-menu")).toBeNull();
+  });
+
+  it("菜单两项文字前各自 icon（终端显示器 vs 手机图形），说明文字保留", () => {
+    const el = render(
+      <AttachModeMenu mode="parallel" terminal={{ online: true, attached: false }} onChange={() => undefined} />,
+    );
+    click(el.querySelector(".attach-trigger"));
+    const items = el.querySelectorAll('[role="menuitemradio"]');
+    // 每项 label 内 icon 在文字前（.attach-menu-icon 是 label 的第一个子节点）
+    for (const item of items) {
+      const label = item.querySelector(".attach-menu-label")!;
+      expect(label.querySelector(".attach-menu-icon svg")).not.toBeNull();
+      expect(label.firstElementChild!.classList.contains("attach-menu-icon")).toBe(true);
+    }
+    // 两项图形不同：手机图形（平行）vs 终端显示器（接管），可视觉区分
+    const parallelSvg = items[0].querySelector(".attach-menu-icon svg")!;
+    const attachSvg = items[1].querySelector(".attach-menu-icon svg")!;
+    expect(parallelSvg.innerHTML).not.toBe(attachSvg.innerHTML);
+    // 说明文字保留
+    expect(items[0].querySelector(".attach-menu-hint")!.textContent).toMatch(/server/);
+    expect(items[1].querySelector(".attach-menu-hint")!.textContent).toMatch(/终端实时显示/);
   });
 
   it("接管不可用（终端离线）：接管项灰显 + 原因，点击无效", () => {
@@ -78,12 +114,12 @@ describe("AttachModeMenu", () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 
-  it("attach 模式触发徽章显示 🖥 接管；切回平行触发 onChange('parallel')", () => {
+  it("attach 模式切回平行触发 onChange('parallel')（触发器已纯图标）", () => {
     const onChange = vi.fn();
     const el = render(
       <AttachModeMenu mode="attach" terminal={{ online: true, attached: true }} onChange={onChange} />,
     );
-    expect(el.querySelector(".attach-trigger")!.textContent).toContain("🖥 接管");
+    expect(el.querySelector(".attach-trigger")!.getAttribute("aria-label")).toContain("接管终端");
     click(el.querySelector(".attach-trigger"));
     click(el.querySelectorAll('[role="menuitemradio"]')[0]);
     expect(onChange).toHaveBeenCalledWith("parallel");

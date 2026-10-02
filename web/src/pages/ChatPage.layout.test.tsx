@@ -303,3 +303,62 @@ describe("i1 新消息浮标误报（贴底不弹 / 上翻弹）", () => {
     expect(el.querySelector(".new-messages-btn")).toBeNull();
   });
 });
+
+describe("J1 顶栏图标按钮统一规范（Redmi K90 实测反馈）", () => {
+  it("顶栏全部图标按钮同属 .icon-btn 盒子（返回/树/git/⋯/模式切换）且带 aria-label 语义", async () => {
+    const el = await render();
+    const expectIconBtn = (sel: string, aria: string): void => {
+      const btn = el.querySelector<HTMLButtonElement>(sel);
+      expect(btn, sel).not.toBeNull();
+      expect(btn!.classList.contains("icon-btn"), sel).toBe(true);
+      expect(btn!.getAttribute("aria-label"), sel).toContain(aria);
+    };
+    expectIconBtn(".chat-header .back", "返回列表");
+    expectIconBtn(".chat-header .chat-tree-btn", "查看会话分支树");
+    expectIconBtn(".chat-header .chat-git-btn", "git");
+    expectIconBtn(".chat-header .attach-trigger", "会话驱动模式");
+    expectIconBtn(".action-menu-wrap .tool-btn", "会话操作");
+    // 树按钮纯图标（可见文字为零，语义在 aria-label/title）
+    expect(el.querySelector(".chat-tree-btn")!.textContent!.trim()).toBe("");
+  });
+
+  it("running 态顶栏无「运行中」文字徽章（信息冗余），模式区分图标保留", async () => {
+    const el = await render();
+    act(() => {
+      wsStatus?.(true);
+      wsEvent?.({ type: "status", status: "running" });
+    });
+    const header = el.querySelector(".chat-header")!;
+    expect(header.textContent).not.toContain("运行中");
+    expect(header.textContent).not.toContain("空闲");
+    // 模式区分本身保留（纯图标触发器仍在）
+    expect(header.querySelector(".attach-trigger")).not.toBeNull();
+  });
+
+  it("空闲/错误态状态徽章保留（只去掉 running 的冗余文案，信息不丢）", async () => {
+    const el = await render();
+    act(() => {
+      wsStatus?.(true);
+    });
+    expect(el.querySelector(".chat-header .badge.idle")).not.toBeNull();
+    act(() => {
+      wsEvent?.({ type: "status", status: "error" });
+    });
+    expect(el.querySelector(".chat-header .badge.error")).not.toBeNull();
+  });
+
+  it("中止按钮并入同一图标规范：icon-btn 危险色盒子 + aria-label，无可见文字", async () => {
+    const el = await render();
+    act(() => {
+      wsStatus?.(true);
+      wsEvent?.({ type: "status", status: "running" });
+    });
+    const abort = el.querySelector<HTMLButtonElement>(".modebar-right .abort-btn");
+    expect(abort).not.toBeNull();
+    expect(abort!.classList.contains("icon-btn")).toBe(true);
+    expect(abort!.textContent!.trim()).toBe("");
+    expect(abort!.querySelector("svg")).not.toBeNull();
+    expect(abort!.getAttribute("aria-label")).toBe("中止当前任务");
+    expect(abort!.getAttribute("title")).toBe("中止当前任务");
+  });
+});

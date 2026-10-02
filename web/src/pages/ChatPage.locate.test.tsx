@@ -90,11 +90,11 @@ async function mount(): Promise<HTMLElement> {
   return container;
 }
 
-/** 等待定位的 rAF 滚动落地（重负载下 rAF 可能晚于固定等待） */
+/** 等待定位的 rAF 滚动落地（重负载下 rAF 可能晚于固定等待；窗口放宽到 5s 抗慢机抖动） */
 async function waitForScroll(): Promise<void> {
-  for (let i = 0; i < 50 && scrollIntoView.mock.calls.length === 0; i++) {
+  for (let i = 0; i < 200 && scrollIntoView.mock.calls.length === 0; i++) {
     await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await new Promise((resolve) => setTimeout(resolve, 25));
     });
   }
 }

@@ -103,7 +103,8 @@ function userRows(el: HTMLElement): HTMLElement[] {
 }
 
 function abortButton(el: HTMLElement): HTMLButtonElement | null {
-  return Array.from(el.querySelectorAll<HTMLButtonElement>("button")).find((b) => b.textContent === "中止") ?? null;
+  // J1 图标化：中止按钮改 icon-btn + aria-label（不再以可见文字识别）
+  return el.querySelector<HTMLButtonElement>(".modebar-right .abort-btn");
 }
 
 beforeEach(() => {
