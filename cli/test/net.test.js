@@ -7,6 +7,8 @@ import {
   tailscaleServeHttpCommand,
   parseControlUrl,
   isOfficialControlUrl,
+  parseNetcheck,
+  latencyAdvice,
   parseTailscaleStatus,
   setupTailscaleServe,
 } from '../lib/net.js';
@@ -41,6 +43,77 @@ test('listLanIps: 只取非 internal 的 IPv4', () => {
     ],
   });
   assert.deepEqual(ips, [{ name: 'en0', address: '192.168.1.23' }]);
+});
+
+// 真实 netcheck 输出样本（国内家宽实测：无 IPv6、无端口映射、DERP 绕美）
+const NETCHECK_SAMPLE = `Report:
+\t* Time: 2026-10-08 15:32:18.40027+08:00
+\t* UDP: true
+\t* IPv4: yes, 171.223.196.96:43500
+\t* IPv6: no, but OS has support
+\t* MappingVariesByDestIP: false
+\t* PortMapping: 
+\t* CaptivePortal: false
+\t* Nearest DERP: San Francisco
+\t* DERP latency:
+\t\t- sfo: 197.9ms (San Francisco)
+\t\t- lax: 198.1ms (Los Angeles)
+\t\t- hkg: 246ms (Hong Kong)
+`;
+
+const NETCHECK_HEALTHY = `Report:
+\t* UDP: true
+\t* IPv4: yes, 203.0.113.7:41641
+\t* IPv6: yes, 240e::a:b:c:d
+\t* MappingVariesByDestIP: false
+\t* PortMapping: UPnP
+\t* Nearest DERP: Hong Kong
+\t* DERP latency:
+\t\t- hkg: 32.1ms (Hong Kong)
+\t\t- tok: 48.2ms (Tokyo)
+`;
+
+test('parseNetcheck: 解析打洞关键指标（真实样本）', () => {
+  const r = parseNetcheck(NETCHECK_SAMPLE);
+  assert.equal(r.ok, true);
+  assert.equal(r.udp, true);
+  assert.equal(r.ipv4, '171.223.196.96:43500');
+  assert.equal(r.ipv6, null);
+  assert.equal(r.ipv6OsSupport, true);
+  assert.equal(r.mappingVariesByDestIP, false);
+  assert.equal(r.portMapping, null);
+  assert.equal(r.nearestDerp, 'San Francisco');
+  assert.equal(r.minDerpLatencyMs, 197.9);
+
+  const healthy = parseNetcheck(NETCHECK_HEALTHY);
+  assert.equal(healthy.ipv6, '240e::a:b:c:d');
+  assert.equal(healthy.portMapping, 'UPnP');
+  assert.equal(healthy.minDerpLatencyMs, 32.1);
+
+  assert.equal(parseNetcheck('not netcheck output').ok, false);
+  assert.equal(parseNetcheck('').ok, false);
+});
+
+test('latencyAdvice: 按优先级给可操作建议（IPv6 > 对称 NAT > 端口映射 > DERP 绕路）', () => {
+  const advice = latencyAdvice(parseNetcheck(NETCHECK_SAMPLE));
+  assert.equal(advice.length, 3); // 无 IPv6 + 无端口映射 + DERP 绕路（锥形 NAT 不报警）
+  assert.match(advice[0], /IPv6/);
+  assert.match(advice[1], /UPnP/);
+  assert.match(advice[2], /San Francisco.*197\.9ms/);
+
+  assert.deepEqual(latencyAdvice(parseNetcheck(NETCHECK_HEALTHY)), []); // 条件良好：零建议
+
+  const symmetric = latencyAdvice(parseNetcheck(NETCHECK_HEALTHY.replace(
+    'MappingVariesByDestIP: false', 'MappingVariesByDestIP: true',
+  )));
+  assert.equal(symmetric.length, 1);
+  assert.match(symmetric[0], /对称 NAT/);
+
+  const noUdp = latencyAdvice(parseNetcheck(NETCHECK_HEALTHY.replace('UDP: true', 'UDP: false')));
+  assert.match(noUdp[0], /UDP/);
+
+  assert.match(latencyAdvice(parseNetcheck('garbage'))[0], /无法解析/);
+  assert.match(latencyAdvice(null)[0], /无法解析/);
 });
 
 test('parseTailscaleStatus: 解析 DNSName 与运行状态', () => {

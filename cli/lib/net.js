@@ -44,6 +44,72 @@ export function isOfficialControlUrl(controlUrl) {
   return /(^|\.)tailscale\.com/i.test(new URL(controlUrl).hostname);
 }
 
+/**
+ * 解析 `tailscale netcheck` 文本输出（纯函数，供测试）。
+ * 关注打洞关键指标：UDP / IPv6 / MappingVariesByDestIP（对称 NAT）/ PortMapping / DERP 延迟。
+ * @returns {{ok: boolean, udp: boolean|null, ipv4: string|null, ipv6: string|null,
+ *   mappingVariesByDestIP: boolean|null, portMapping: string|null,
+ *   nearestDerp: string|null, minDerpLatencyMs: number|null}}
+ */
+export function parseNetcheck(text) {
+  const empty = {
+    ok: false, udp: null, ipv4: null, ipv6: null, ipv6OsSupport: false,
+    mappingVariesByDestIP: null, portMapping: null, nearestDerp: null, minDerpLatencyMs: null,
+  };
+  const t = String(text ?? '');
+  if (!/^Report:/m.test(t)) return empty;
+  // 行内空白只用 [ \t]（\s 会跨行，空值行会把下一行吃进来）
+  const line = (re) => {
+    const m = t.match(re);
+    return m ? m[1].trim() : null;
+  };
+  const udpRaw = line(/^[ \t]*\*[ \t]*UDP:[ \t]*(.+)$/m);
+  const ipv4Raw = line(/^[ \t]*\*[ \t]*IPv4:[ \t]*(.+)$/m);
+  const ipv6Raw = line(/^[ \t]*\*[ \t]*IPv6:[ \t]*(.+)$/m);
+  const mapRaw = line(/^[ \t]*\*[ \t]*MappingVariesByDestIP:[ \t]*(.+)$/m);
+  const pmRaw = line(/^[ \t]*\*[ \t]*PortMapping:[ \t]*(.*)$/m) ?? '';
+  const nearest = line(/^[ \t]*\*[ \t]*Nearest DERP:[ \t]*(.+)$/m);
+  // DERP latency 段：`        - sfo: 197.9ms (San Francisco)`
+  const latencies = [...t.matchAll(/^[ \t]*-[ \t]*[\w.-]+:[ \t]*([\d.]+)ms\b/gm)].map((m) => Number(m[1]));
+  return {
+    ok: true,
+    udp: udpRaw === null ? null : /^true/i.test(udpRaw),
+    ipv4: ipv4Raw && /^yes/i.test(ipv4Raw) ? (ipv4Raw.replace(/^yes,?\s*/i, '') || 'yes') : null,
+    ipv6: ipv6Raw && /^yes/i.test(ipv6Raw) ? (ipv6Raw.replace(/^yes,?\s*/i, '') || 'yes') : null,
+    ipv6OsSupport: /OS has support/i.test(ipv6Raw ?? ''),
+    mappingVariesByDestIP: mapRaw === null ? null : /^true/i.test(mapRaw),
+    portMapping: pmRaw.trim() === '' ? null : pmRaw.trim(),
+    nearestDerp: nearest,
+    minDerpLatencyMs: latencies.length > 0 ? Math.min(...latencies) : null,
+  };
+}
+
+/**
+ * 打洞/直连条件诊断（纯函数，供测试）：按优先级返回可操作建议；空数组 = 条件良好。
+ * 判定依据：IPv6 直连免打洞（首选）→ 对称 NAT 打洞难 → 端口映射提升 v4 打洞率 → DERP 绕路兜底风险。
+ * @returns {string[]}
+ */
+export function latencyAdvice(report) {
+  if (!report?.ok) return ['无法解析 tailscale netcheck 输出，手动执行 `tailscale netcheck` 自查'];
+  const advice = [];
+  if (report.udp === false) {
+    advice.push('UDP 被禁/被拦截：WireGuard 打洞依赖 UDP，检查代理/防火墙软件后再测');
+  }
+  if (report.ipv6 === null) {
+    advice.push('未启用 IPv6（首选优化）：路由器开启 IPv6 + 防火墙放行入站 UDP 41641，两端有 v6 时免打洞直连（<50ms）');
+  }
+  if (report.mappingVariesByDestIP === true) {
+    advice.push('对称 NAT（MappingVariesByDestIP: true）打洞困难：路由器开 UPnP；手机蜂窝网络常见，换 Wi-Fi 或用蜂窝 IPv6 出口');
+  }
+  if (report.portMapping === null) {
+    advice.push('未拿到端口映射：路由器开启 UPnP（或手动 UDP 41641 端口转发到本机）提升 v4 打洞成功率');
+  }
+  if (typeof report.minDerpLatencyMs === 'number' && report.minDerpLatencyMs >= 150) {
+    advice.push(`最近 DERP ${report.nearestDerp ?? '?'} 延迟 ${report.minDerpLatencyMs}ms（疑似国际链路绕路）：直连失败时会明显卡慢，优先配好上述直连条件，兜底可自建国内 DERP`);
+  }
+  return advice;
+}
+
 /** 解析 `tailscale status --json`（纯函数，供测试）。 */
 export function parseTailscaleStatus(jsonText) {
   let data;

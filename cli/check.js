@@ -5,9 +5,10 @@ import { pathToFileURL } from 'node:url';
 import { isDirectRun as isDirectRunCheck } from './lib/entry.js';
 import { createColors } from './lib/color.js';
 import { detectAll, installAdvice } from './lib/detect.js';
+import { parseNetcheck, latencyAdvice } from './lib/net.js';
 import { parseCliArgs, checkHelpText } from './lib/args.js';
 import { defaultConfigPath, repoRoot } from './lib/paths.js';
-import { isWindows } from './lib/process.js';
+import { isWindows, runCapture, findCommand } from './lib/process.js';
 
 /**
  * 打印检测结果（setup / check 共用）。
@@ -73,6 +74,40 @@ function reportConfig(configPath, colors, log) {
   }
 }
 
+/** 只读远程链路延迟体检（tailscale netcheck 解析 + 可操作建议）。tailscale 缺失时跳过（不致命）。 */
+export function reportLatency(colors, log, deps = {}) {
+  const {
+    platform = process.platform,
+    env = process.env,
+    run = runCapture,
+    find = findCommand,
+  } = deps;
+  log('');
+  log(colors.bold('-- 链路延迟体检 / Remote latency (Tailscale) --'));
+  const locate = find('tailscale', { platform, env, run });
+  if (!locate.found) {
+    log(`${colors.warn} 未检测到 tailscale（手机远程需要；纯局域网 --lan 模式可忽略）`);
+    return;
+  }
+  const res = run('tailscale', ['netcheck'], { env, shell: isWindows(platform), timeout: 20_000 });
+  const report = parseNetcheck(res.stdout);
+  if (!res.ok || !report.ok) {
+    log(`${colors.warn} netcheck 执行/解析失败（${res.error || res.stderr.trim() || '未知原因'}），可手动执行 \`tailscale netcheck\` 自查`);
+    return;
+  }
+  log(` UDP=${report.udp ? 'yes' : 'NO'}  IPv4=${report.ipv4 ?? '无'}  IPv6=${report.ipv6 ?? (report.ipv6OsSupport ? '无（OS 已支持）' : '无')}`);
+  log(` NAT=${report.mappingVariesByDestIP === true ? '对称（打洞难）' : '锥形（打洞友好）'}  端口映射=${report.portMapping ?? '无'}  最近 DERP=${report.nearestDerp ?? '?'}${report.minDerpLatencyMs !== null ? ` (${report.minDerpLatencyMs}ms)` : ''}`);
+  const advice = latencyAdvice(report);
+  if (advice.length === 0) {
+    log(`${colors.ok} 直连条件良好：预期 P2P 直连 <50ms。验证：${colors.bold('tailscale ping <手机 Tailscale IP>')} 出现 direct 即成功`);
+    return;
+  }
+  for (const line of advice) {
+    for (const part of line.split('\n')) log(`     ${colors.yellow(part)}`);
+  }
+  log(`     ${colors.dim('指标解读与优化步骤见 README「⚠️ 延迟警告」一节')}`);
+}
+
 export async function main(argv = [], deps = {}) {
   const { options } = parseCliArgs(argv, {
     booleans: ['help', 'color', 'no-color'],
@@ -87,6 +122,12 @@ export async function main(argv = [], deps = {}) {
   const report = detectAll({ platform: deps.platform, env: deps.env });
   const coreOk = printReport(report, colors, { platform: deps.platform ?? process.platform });
   reportConfig(deps.configPath ?? defaultConfigPath(root), colors, console.log);
+  reportLatency(colors, console.log, {
+    platform: deps.platform ?? process.platform,
+    env: deps.env ?? process.env,
+    run: deps.run,
+    find: deps.find,
+  });
   console.log('');
   console.log(coreOk
     ? `${colors.ok} 环境就绪。下一步：${colors.bold('npm run start')}`

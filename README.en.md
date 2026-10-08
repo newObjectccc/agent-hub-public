@@ -87,6 +87,39 @@ Open it on your phone's browser → menu → "Install app" = a real PWA without 
 4. **Install the PWA on your phone**: open the printed `https://…` URL in Chrome → menu → **"Install app"** (NOT "Add to Home screen") → verify: no address bar, standalone window, its own task entry
 5. From then on, when your computer isn't around: open the PWA on your phone → workbench → dispatch tasks / spectate live / continue chats
 
+### ⚠️ Latency warning: verify P2P direct connection first (must-read for latency-sensitive users)
+
+The phone-remote experience **depends entirely on whether traffic goes P2P direct or through a DERP relay**:
+
+| Path | Latency | Experience |
+|---|---|---|
+| ✅ P2P direct (IPv6 / successful UDP hole punching) | < 50ms | instant, smooth streaming |
+| ❌ DERP relay (fallback when hole punching fails) | 300ms+ | noticeably sluggish — dozens of API/WS round-trips on first paint, latency compounds |
+
+Run this one command right after deployment (see the "Remote latency" section of the output):
+
+```bash
+agent-hub check              # equivalent: tailscale netcheck
+```
+
+Three key metrics and expected values:
+
+| Metric | Healthy | If unhealthy |
+|---|---|---|
+| `IPv6` | `yes` | `no` → enable IPv6 on your router + allow inbound UDP 41641 (**best option: no NAT with v6, direct without hole punching**) |
+| `MappingVariesByDestIP` | `false` | `true` = symmetric NAT, hard to punch → enable UPnP; common on cellular, switch to Wi-Fi or use the carrier's IPv6 |
+| `PortMapping` | `UPnP` / `NAT-PMP` | empty → enable UPnP on the router, or manually port-forward UDP 41641 to the computer |
+
+Also check `Nearest DERP`: healthy is Hong Kong/Tokyo (30-50ms); an overseas node at 200ms+ (international routing detour) means it will be very slow whenever hole punching fails — get the direct-connection conditions above right; as a last resort self-host a DERP in your country/region.
+
+Verify the direct connection (run on the computer while the phone is connected):
+
+```bash
+tailscale ping <phone's Tailscale IP>    # seeing direct (UDPv6) = P2P is up
+```
+
+> 💡 On the same Wi-Fi you don't need Tailscale at all: `npm run start -- --lan` connects directly over the LAN — always fastest.
+
 ### Known issues (from real-world testing)
 
 | Symptom | Fix |
@@ -95,6 +128,7 @@ Open it on your phone's browser → menu → "Install app" = a real PWA without 
 | The installed PWA shows an address bar / is just a shortcut | You installed from an HTTP origin (e.g. self-hosted headscale); Chrome only creates a home-screen shortcut there. Reinstall from an HTTPS origin |
 | `serve` reports a certificate error | HTTPS Certificates is not enabled in the Admin Console (see step 2) |
 | The phone times out opening the URL | Phone's Tailscale is disconnected, or the two devices are logged into different accounts |
+| The phone opens it but it's very slow | Traffic is probably going through a DERP relay (hole punching failed): run `agent-hub check` and follow the "⚠️ Latency warning" above |
 
 > 💡 PWA fact: only an **HTTPS origin** can be installed as a real WebAPK (standalone window without an address bar) — this is unrelated to manifest configuration. Tailscale serve's automatic certificates exist precisely for this.
 

@@ -200,6 +200,9 @@ export function checkHelpText() {
 用法 / Usage:
   node cli/check.js [options]
 
+包含远程链路延迟体检（tailscale netcheck 解析 + 可操作优化建议）。
+Includes a remote-link latency check (tailscale netcheck parsing + actionable advice).
+
 选项 / Options:
   --no-color   禁用彩色 / disable colors
   -h, --help   显示帮助 / show help

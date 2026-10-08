@@ -85,6 +85,39 @@ Tailscale Serve 已开启（HTTPS）：https://<node>.<tailnet>.ts.net
 4. **手机安装 PWA**：Chrome 打开打印的 `https://…` 地址 → 菜单 →「**安装应用**」（不是「添加到主屏幕」）→ 打开验证：无地址栏、独立窗口、独立任务栈
 5. 之后电脑不在身边时：手机打开 PWA → 工作台 → 派任务 / 实时旁观 / chat 续聊
 
+### ⚠️ 延迟警告：先体检 P2P 直连（延迟敏感用户必读）
+
+手机远程的体验**完全取决于链路走 P2P 直连还是 DERP 中继**：
+
+| 链路 | 延迟 | 体验 |
+|---|---|---|
+| ✅ P2P 直连（IPv6 / UDP 打洞成功） | < 50ms | 秒开、流式丝滑 |
+| ❌ DERP 中继（打洞失败的兜底） | 300ms+ | 明显卡慢——首屏几十个 API/WS 往返，延迟逐级放大 |
+
+部署完先跑一条命令体检（输出「链路延迟体检」一节）：
+
+```bash
+agent-hub check              # 等价手动：tailscale netcheck
+```
+
+三个关键指标与预期值：
+
+| 指标 | 健康值 | 不健康时怎么做 |
+|---|---|---|
+| `IPv6` | `yes` | `no` → 路由器启用 IPv6 + 防火墙放行入站 UDP 41641（**首选：v6 无 NAT，免打洞直连**） |
+| `MappingVariesByDestIP` | `false` | `true` = 对称 NAT 打洞难 → 路由器开 UPnP；手机蜂窝网络常见，换 Wi-Fi 或用蜂窝 IPv6 出口 |
+| `PortMapping` | `UPnP` / `NAT-PMP` | 空 → 路由器开 UPnP，或手动端口转发 UDP 41641 到电脑 |
+
+另看 `Nearest DERP`：正常应为香港/东京（30-50ms）；若显示海外节点且 200ms+（国际链路绕路），打洞失败时会非常慢——务必配好上述直连条件，兜底可自建国内 DERP。
+
+验证直连成功（手机连上 Tailscale 后在电脑执行）：
+
+```bash
+tailscale ping <手机的 Tailscale IP>    # 出现 direct（UDPv6）= P2P 直连已打通
+```
+
+> 💡 同一 Wi-Fi 下无需 Tailscale：`npm run start -- --lan` 直连局域网 IP，永远最快。
+
 ### 已知问题（实测踩坑记录）
 
 | 现象 | 解法 |
@@ -93,6 +126,7 @@ Tailscale Serve 已开启（HTTPS）：https://<node>.<tailnet>.ts.net
 | PWA 装出来带地址栏 / 只是快捷方式 | 当前是 HTTP 源（如自建 headscale），Chrome 只会生成主屏幕快捷方式；换 HTTPS 源重装即解 |
 | serve 报证书错误 | Admin Console 的 HTTPS Certificates 未开启（见步骤 2） |
 | 手机打开地址超时 | 手机 Tailscale 未连接，或两端登的不是同一账号 |
+| 手机能打开但非常慢 | 大概率走 DERP 中继（打洞失败）：跑 `agent-hub check` 体检，按上方「⚠️ 延迟警告」逐条优化 |
 
 > 💡 PWA 冷知识：只有 **HTTPS 源**才能装成真 WebAPK（无地址栏独立窗口），与 manifest 配置无关。官方 Tailscale 的 serve 自动签证书就是为此服务的。
 
