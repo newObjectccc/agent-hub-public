@@ -30,7 +30,7 @@
 - **💬 Chat 工作页**：阶段化等待反馈、slash 命令、快捷指令模板、@ 文件引用、上传图片、引用回复、代码高亮/复制
 - **📊 会话管理**：优先级排序、子代理父子树、全局搜索、分支树、复制会话（fork）
 - **🌿 Git 集成**：仓库状态、diff 查看器、工具调用文件联动（只读安全）
-- **⚡ 性能**：WS 批处理、消息 memo、长会话窗口化（流式渲染 12-15x、DOM 21x 瘦身）
+- **⚡ 性能**：WS 批处理、消息 memo、长会话窗口化（流式渲染 12-15x、DOM 21x 瘦身）；服务端 brotli 压缩 + hash 产物长缓存（弱网/远程友好）
 - **🔔 通知中心**：会话完结横幅/震动/声音、未读聚合、点击即读
 - **🔐 应用锁 + 离线队列**：PIN / WebAuthn 通行密钥解锁、断网消息排队自动重发
 - **🖥 Web 终端**（ttyd 可选）：面板内直接开真终端
@@ -173,6 +173,16 @@ pnpm build && pnpm lint && pnpm test   # 全量验证（1200+ 测试，GitHub Ac
 npm run setup -- --autostart   # macOS launchd / Linux systemd / Windows 任务计划
 npm run start                  # 前台正式启动（构建 + 启动，配置缺失自动生成）
 ```
+
+注册后开机自动启动，无需手动操作。日常运维：
+
+| 操作 | macOS（launchd） | Linux（systemd --user） |
+|---|---|---|
+| 停止 | `launchctl unload ~/Library/LaunchAgents/com.agent-hub.plist` | `systemctl --user stop agent-hub` |
+| 启动 | `launchctl load ~/Library/LaunchAgents/com.agent-hub.plist` | `systemctl --user start agent-hub` |
+| 日志 | `~/Library/Logs/agent-hub.log` | `journalctl --user -u agent-hub` |
+
+> 💡 崩溃自愈：launchd 默认 `KeepAlive=false`（崩溃后下次开机才拉起）；需要崩溃自动重启时把 plist 里 `KeepAlive` 改为 `true`。服务器场景直接用下方 pm2（自带自愈）。
 
 服务器（pm2，崩溃自愈 + 开机自启）：
 

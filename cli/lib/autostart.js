@@ -10,9 +10,19 @@ export function escapeXml(s) {
   return String(s).replace(/[&<>"']/g, (c) => XML_ESCAPES[c]);
 }
 
+/**
+ * 服务进程的 PATH（纯函数，供测试）：launchd/systemd 的默认 PATH 不含 nvm/homebrew，
+ * 会导致 start.js 构建步骤找不到 npm/pnpm（实测踩坑）——把 node 同目录与常见包管理器目录前置。
+ */
+export function buildServicePath(nodePath, base = '/usr/bin:/bin:/usr/sbin:/sbin') {
+  const nodeDir = path.dirname(String(nodePath));
+  return [nodeDir, '/usr/local/bin', '/opt/homebrew/bin', base].join(':');
+}
+
 /** 生成 macOS LaunchAgent plist（纯函数，供测试）。 */
-export function buildLaunchdPlist({ label = 'com.agent-hub', nodePath, scriptPath, repoRoot, extraArgs = [], logDir }) {
+export function buildLaunchdPlist({ label = 'com.agent-hub', nodePath, scriptPath, repoRoot, extraArgs = [], logDir, envPath }) {
   const args = [nodePath, scriptPath, ...extraArgs].map((a) => `    <string>${escapeXml(a)}</string>`).join('\n');
+  const servicePath = envPath ?? buildServicePath(nodePath);
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -23,6 +33,11 @@ export function buildLaunchdPlist({ label = 'com.agent-hub', nodePath, scriptPat
   <array>
 ${args}
   </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>${escapeXml(servicePath)}</string>
+  </dict>
   <key>WorkingDirectory</key>
   <string>${escapeXml(repoRoot)}</string>
   <key>RunAtLoad</key>
@@ -39,8 +54,9 @@ ${args}
 }
 
 /** 生成 systemd user unit（纯函数，供测试）。 */
-export function buildSystemdUnit({ nodePath, scriptPath, repoRoot, extraArgs = [] }) {
+export function buildSystemdUnit({ nodePath, scriptPath, repoRoot, extraArgs = [], envPath }) {
   const exec = [nodePath, scriptPath, ...extraArgs].join(' ');
+  const servicePath = envPath ?? buildServicePath(nodePath);
   return `[Unit]
 Description=Agent Hub (pi agent session hub)
 After=network-online.target
@@ -48,6 +64,7 @@ After=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=${repoRoot}
+Environment=PATH=${servicePath}
 ExecStart=${exec}
 Restart=on-failure
 RestartSec=5

@@ -6,6 +6,7 @@ import {
   buildLaunchdPlist,
   buildSystemdUnit,
   buildSchtasksCommand,
+  buildServicePath,
   escapeXml,
   installAutostart,
 } from '../lib/autostart.js';
@@ -15,6 +16,13 @@ const NODE = '/usr/local/bin/node';
 
 test('escapeXml: 转义 XML 特殊字符', () => {
   assert.equal(escapeXml('a&b<c>"d"\'e\''), 'a&amp;b&lt;c&gt;&quot;d&quot;&apos;e&apos;');
+});
+
+test('buildServicePath: node 同目录前置（nvm 场景服务里找得到 npm/pnpm）', () => {
+  const p = buildServicePath('/Users/u/.nvm/versions/node/v22.20.0/bin/node');
+  assert.ok(p.startsWith('/Users/u/.nvm/versions/node/v22.20.0/bin:'));
+  assert.ok(p.includes('/usr/local/bin') && p.includes('/opt/homebrew/bin'));
+  assert.ok(p.endsWith('/usr/bin:/bin:/usr/sbin:/sbin'));
 });
 
 test('buildLaunchdPlist: 包含 label / node / start.js / RunAtLoad', () => {
@@ -31,6 +39,9 @@ test('buildLaunchdPlist: 包含 label / node / start.js / RunAtLoad', () => {
   assert.match(xml, /<key>RunAtLoad<\/key>\s*<true\/>/);
   assert.match(xml, /<string>--lan<\/string>/);
   assert.match(xml, /<string>\/home\/u\/Library\/Logs\/agent-hub\.log<\/string>/);
+  // PATH 注入：launchd 默认 PATH 不含 nvm/homebrew，缺了 start.js 会「未找到 pnpm / npm」
+  assert.match(xml, /<key>EnvironmentVariables<\/key>/);
+  assert.match(xml, /<key>PATH<\/key>\s*<string>\/usr\/local\/bin:/);
 });
 
 test('buildSystemdUnit: 包含 ExecStart / WorkingDirectory / WantedBy', () => {
@@ -42,6 +53,7 @@ test('buildSystemdUnit: 包含 ExecStart / WorkingDirectory / WantedBy', () => {
   });
   assert.match(unit, /ExecStart=\/usr\/local\/bin\/node \/repo\/agent-hub\/cli\/start\.js/);
   assert.match(unit, /WorkingDirectory=\/repo\/agent-hub/);
+  assert.match(unit, /Environment=PATH=\/usr\/local\/bin:/); // 同 launchd：服务进程 PATH 需含 node 同目录
   assert.match(unit, /WantedBy=default\.target/);
 });
 

@@ -30,7 +30,7 @@ Open the PWA panel in any device's browser → see every agent session and its w
 - 💬 **Chat workspace**: staged waiting feedback, slash commands, quick-prompt templates, @ file references, image uploads, quoted replies, code highlighting & copy
 - 📊 **Session management**: priority ordering, sub-agent parent–child tree, global search, branch tree, session forking
 - 🌿 **Git integration**: repo status, diff viewer, tool-call ↔ file linking (read-only, safe)
-- ⚡ **Performance**: WS batching, message memoization, windowed long sessions (12–15× streaming render, 21× DOM slim-down)
+- ⚡ **Performance**: WS batching, message memoization, windowed long sessions (12–15× streaming render, 21× DOM slim-down); server-side brotli compression + long-lived cache for hashed assets (weak-network / remote friendly)
 - 🔔 **Notification center**: session-completion banners / vibration / sound, unread aggregation, tap-to-read
 - 🔐 **App lock + offline queue**: PIN / WebAuthn passkey unlock, queued messages auto-resend when back online
 - 🖥 **Web terminal** (ttyd optional): a real terminal right inside the panel
@@ -175,6 +175,16 @@ Always-on on your own machine (platform-native autostart recommended):
 npm run setup -- --autostart   # macOS launchd / Linux systemd / Windows Task Scheduler
 npm run start                  # foreground production start (build + serve; config auto-generated if missing)
 ```
+
+Once registered it starts on boot with no manual steps. Day-to-day operations:
+
+| Task | macOS (launchd) | Linux (systemd --user) |
+|---|---|---|
+| Stop | `launchctl unload ~/Library/LaunchAgents/com.agent-hub.plist` | `systemctl --user stop agent-hub` |
+| Start | `launchctl load ~/Library/LaunchAgents/com.agent-hub.plist` | `systemctl --user start agent-hub` |
+| Logs | `~/Library/Logs/agent-hub.log` | `journalctl --user -u agent-hub` |
+
+> 💡 Crash recovery: launchd defaults to `KeepAlive=false` (restarts on next boot only); set `KeepAlive` to `true` in the plist for automatic restart after a crash. On servers just use pm2 below (self-healing built in).
 
 On a server (pm2, self-healing + start on boot):
 
