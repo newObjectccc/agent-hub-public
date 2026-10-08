@@ -81,13 +81,16 @@ export function rootHelpText() {
 用法 / Usage:
   node cli/cli.js <command> [options]
   node cli/setup.js [options]      # 等价 agent-hub setup
+  node cli/dev.js [options]        # 等价 npm run dev / pnpm dev
   node cli/start.js [options]      # 等价 agent-hub start
 
 命令 / Commands:
   setup    环境检测、安装依赖、生成 config、安装 pi 扩展、可选自启注册
            detect environment, install deps, write config, install pi extensions, optional autostart
-  start    安装依赖、构建 web/server 并启动面板
-           install deps, build web/server and start the panel
+  dev      开发模式一条命令：server 热重载 + web Vite HMR
+           dev mode: server hot reload + web Vite HMR in one command
+  start    安装依赖、构建 web/server 并启动面板（配置缺失自动生成）
+           install deps, build web/server and start the panel (config auto-generated)
   remote   一键远程入口：首次自动 setup + 构建 + start --tailscale（幂等）
            one-command remote entry: auto-setup on first run, build + start --tailscale
   check    只读环境检测报告（doctor 为同义别名）/ read-only environment report
@@ -101,12 +104,39 @@ export function rootHelpText() {
 示例 / Examples:
   node cli/cli.js setup --port 8080 --session-dir "~/.pi/agent/sessions"
   node cli/cli.js setup --autostart
+  node cli/cli.js dev
   node cli/cli.js start --lan
   node cli/cli.js start --tailscale
   node cli/cli.js remote          # 等价 npm run remote：一键远程
   node cli/cli.js check
   node cli/cli.js doctor
   node cli/cli.js open
+`;
+}
+
+export function devHelpText() {
+  return `agent-hub dev — 开发模式（热重载）/ dev mode with hot reload
+
+用法 / Usage:
+  node cli/dev.js [options]        # 等价 npm run dev / pnpm dev
+
+流程 / Pipeline:
+  1. 配置缺失自动生成（config/hub.config.json，从模板生成）
+  2. node_modules 缺失时安装依赖
+  3. server 初始构建（tsc）后并行启动三个进程：
+     - server:tsc  tsc --watch（增量编译）
+     - server      node --watch server/dist/index.js（改代码自动重启）
+     - web         Vite dev server（HMR，/api /ws 代理到 server）
+
+选项 / Options:
+  --port <n>       覆盖 server 端口 / override server port
+  --web-port <n>   Vite dev server 端口（默认 5173）/ Vite port (default 5173)
+  --no-color       禁用彩色 / disable colors
+  -h, --help       显示帮助 / show help
+
+说明 / Notes:
+  - 前端调试地址是 Vite（默认 http://localhost:5173），不是 server 的 7700。
+  - Ctrl+C 一次停止全部子进程。
 `;
 }
 

@@ -10,6 +10,7 @@
   "files": [
     "LICENSE",
     "README.md",
+    "README.en.md",
     "cli",
     "config/hub.config.example.json",
     "config/kpi-sources.json",
@@ -41,6 +42,7 @@
     "build": "pnpm -r build",
     "test": "pnpm -r test",
     "lint": "pnpm -r lint",
+    "dev": "node cli/dev.js",
     "setup": "node cli/setup.js",
     "start": "node cli/start.js",
     "remote": "node cli/remote.js",

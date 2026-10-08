@@ -7,7 +7,7 @@ import { pathToFileURL } from 'node:url';
 import { isDirectRun as isDirectRunCheck } from './lib/entry.js';
 import { createColors } from './lib/color.js';
 import { parseCliArgs, startHelpText } from './lib/args.js';
-import { defaultConfigPath, repoRoot } from './lib/paths.js';
+import { defaultConfigPath, defaultConfigTemplatePath, repoRoot } from './lib/paths.js';
 import { ensureConfig, loadConfig } from './lib/config.js';
 import {
   assertPort,
@@ -76,20 +76,23 @@ export async function main(argv = [], deps = {}) {
 
   log(colors.bold('agent-hub start') + colors.dim(` (platform=${platform}${dryRun ? ', dry-run' : ''})`));
 
-  // 1. 配置：--port / --lan 覆盖写入（server 读 config/hub.config.json）
-  if (!fs.existsSync(configPath)) {
-    log(`${colors.fail} 配置不存在: ${configPath}`);
-    log(`  请先运行 ${colors.bold('agent-hub setup')}（源码运行：node cli/setup.js）生成配置。`);
-    return 1;
-  }
+  // 1. 配置：缺失自愈（从模板生成）；--port / --lan 覆盖写入（server 读 config/hub.config.json）
   let config;
   try {
-    let overrides = {};
+    const overrides = {};
     if (options.port !== undefined) overrides.port = assertPort(options.port);
     if (options.lan) overrides.host = '0.0.0.0';
-    if (Object.keys(overrides).length) {
-      const res = ensureConfig({ configPath, templatePath: configPath, overrides, dryRun });
-      log(`${colors.ok} 配置已${dryRun ? '（dry-run 将）' : ''}更新: ${configPath} ${colors.dim(`(port=${res.config.port}, host=${res.config.host})`)}`);
+    const missing = !fs.existsSync(configPath);
+    if (missing || Object.keys(overrides).length) {
+      const res = ensureConfig({
+        configPath,
+        templatePath: defaultConfigTemplatePath(root),
+        overrides,
+        dryRun,
+      });
+      log(missing
+        ? `${colors.ok} 配置不存在，已自动生成: ${configPath} ${colors.dim('(完整初始化、装 pi 扩展请运行 agent-hub setup)')}`
+        : `${colors.ok} 配置已${dryRun ? '（dry-run 将）' : ''}更新: ${configPath} ${colors.dim(`(port=${res.config.port}, host=${res.config.host})`)}`);
       config = res.config;
     } else {
       config = loadConfig(configPath);

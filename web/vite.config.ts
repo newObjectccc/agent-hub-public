@@ -10,6 +10,8 @@ const pkg = createRequire(import.meta.url)("./package.json") as { version: strin
 
 // 开发时把 /api 与 /ws 转发到 agent-hub server（默认 127.0.0.1:7700）
 const serverTarget = process.env.AGENT_HUB_SERVER ?? "http://127.0.0.1:7700";
+// dev 编排（cli/dev.js）可经 AGENT_HUB_WEB_PORT 指定 Vite 端口（默认 5173）
+const webPort = Number(process.env.AGENT_HUB_WEB_PORT ?? 5173);
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
@@ -22,6 +24,7 @@ export default defineConfig({
     },
   },
   server: {
+    port: webPort,
     proxy: {
       "/api": { target: serverTarget, changeOrigin: true },
       "/ws": { target: serverTarget, ws: true, changeOrigin: true },
