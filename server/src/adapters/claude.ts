@@ -102,8 +102,10 @@ export class ClaudeAdapter implements SessionAdapter {
   }
 
   private statusWithInference(id: string, updatedMs: number): SessionStatus {
+    // 本进程状态优先（含显式 idle）：与 sessions/hub.ts 同口径——刚创建/刚 settled 的
+    // 文件 mtime 必然新鲜，丢弃 idle 走时间推断会误判 running 60s（新会话显示「思考中」）
     const own = this.statuses.get(id);
-    if (own && own !== "idle") return own;
+    if (own) return own;
     return inferExternalStatus(updatedMs);
   }
 
@@ -234,6 +236,8 @@ export class ClaudeAdapter implements SessionAdapter {
       lines.push(JSON.stringify({ type: "ai-title", aiTitle: trimmedName, sessionId, cwd, timestamp }));
     }
     await writeFile(file, `${lines.join("\n")}\n`, { flag: "wx" });
+    // 显式登记 idle：空会话文件 mtime=now，不登记会被时间推断误判 running 60s
+    this.statuses.set(sessionId, "idle");
     this.invalidateList();
     return {
       id: sessionId,

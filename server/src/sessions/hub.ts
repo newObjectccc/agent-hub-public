@@ -155,9 +155,14 @@ export class SessionHub {
   }
 
   /** 本进程运行态优先，否则按文件活动推断外部 running */
+  /**
+   * 本进程状态优先（含显式 idle）：刚创建/刚 settled 的会话文件 mtime 必然新鲜，
+   * 丢弃 idle 走时间推断会误判 running 60s（实测 bug：新建会话进 chat 页即显示
+   * 「思考中」+ 停止按钮）。无本进程记录（外部 CLI 会话）才按文件活动推断。
+   */
   private statusWithInference(id: string, updatedMs: number): SessionStatus {
     const own = this.statuses.get(id)?.status;
-    if (own && own !== "idle") return own;
+    if (own) return own;
     return inferExternalStatus(updatedMs);
   }
 
@@ -196,7 +201,9 @@ export class SessionHub {
       if (now - at > SessionHub.FEED_TTL_MS) this.feedSessions.delete(id);
     }
     for (const [id, entry] of [...this.statuses]) {
-      if (entry.status === "idle" || now - entry.at > SessionHub.STATE_TTL_MS) this.statuses.delete(id);
+      // idle 条目同样走 STATE_TTL（不再随时清）：秒清会让刚 settled/刚创建的会话
+      // 很快又落回时间推断而误判 running，丢失本进程的权威 idle 记录
+      if (now - entry.at > SessionHub.STATE_TTL_MS) this.statuses.delete(id);
     }
   }
 
@@ -325,6 +332,11 @@ export class SessionHub {
       );
     }
     await writeFile(file, `${lines.join("\n")}\n`, { flag: "wx" });
+    // 显式登记 idle：空会话文件 mtime=now，不登记会被时间推断误判 running 60s
+    // （实测 bug：新建会话进 chat 页即显示「思考中」+ 停止按钮）
+    this.statuses.set(sessionId, { status: "idle", at: Date.now() });
+    // 失效清单缓存：新建会话立即可见（否则 TTL 窗口内 findSession 查不到，chat 页加载落空）
+    this.invalidateList();
 
     return {
       id: sessionId,

@@ -302,6 +302,8 @@ describe("claude adapter: createSession 空白 transcript + forkSession 复制�
       assert.ok(found);
       assert.equal(found.messageCount, 0);
       assert.equal(found.name, "我的 claude 会话");
+      // 状态推断回归：新建会话（文件 mtime=now）不得被误判 running（显式 idle 优先）
+      assert.equal(found.status, "idle");
     } finally {
       adapter.disposeAll();
     }
