@@ -4,9 +4,10 @@
  */
 import { existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import Fastify, { type FastifyInstance } from "fastify";
+import fastifyCompress from "@fastify/compress";
 import fastifyCors from "@fastify/cors";
 import fastifyStatic from "@fastify/static";
 import { VERSION } from "@earendil-works/pi-coding-agent";
@@ -44,6 +45,9 @@ export interface CreateAppOptions extends RouteDeps {
 /** 装配 Fastify app：CORS + REST 路由 + 静态托管 + SPA history fallback */
 export async function createApp(options: CreateAppOptions): Promise<FastifyInstance> {
   const app = Fastify({ logger: options.logger ?? false, forceCloseConnections: true });
+  // 响应压缩（brotli 优先）：弱网/移动网络下 JSON 与静态资源体积降约 70%；
+  // 仅在请求带 Accept-Encoding 时生效（WS upgrade / 终端反代不受影响）
+  await app.register(fastifyCompress, { encodings: ["br", "gzip", "deflate"] });
   await app.register(fastifyCors, { origin: true });
 
   await registerRoutes(app, {
@@ -70,7 +74,17 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
   const root = options.webRoot ?? null;
   const hasWeb = root !== null && existsSync(join(root, "index.html"));
   if (hasWeb && root !== null) {
-    await app.register(fastifyStatic, { root, prefix: "/" });
+    await app.register(fastifyStatic, {
+      root,
+      prefix: "/",
+      setHeaders(res, filePath) {
+        // Vite 产物带内容 hash（/assets/*）：长缓存 + immutable，二次打开零请求；
+        // index.html / sw.js / manifest 保持协商缓存（发版可见性与 SW 更新检查）
+        if (filePath.split(sep).includes("assets")) {
+          res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+        }
+      },
+    });
     app.log.info(`serving PWA from ${root}`);
   }
 
