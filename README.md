@@ -2,7 +2,7 @@
 
 [English](README.en.md) | 简体中文
 
-![License: MIT](https://img.shields.io/badge/license-MIT-blue) ![Node.js ≥ 20](https://img.shields.io/badge/node-%3E%3D20-brightgreen) ![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen) ![PWA](https://img.shields.io/badge/PWA-ready-orange)
+![CI](https://github.com/newObjectccc/agent-hub/actions/workflows/ci.yml/badge.svg) ![License: MIT](https://img.shields.io/badge/license-MIT-blue) ![Node.js ≥ 20](https://img.shields.io/badge/node-%3E%3D20-brightgreen) ![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen) ![PWA](https://img.shields.io/badge/PWA-ready-orange)
 
 > 手机就是电脑的遥控器 + 独立工作台。跨平台（macOS / Linux / Windows）的 **pi / Claude Code 会话中枢**。
 
@@ -158,7 +158,7 @@ pnpm dev                           # 一条命令开发调试（推荐）
 #   server:tsc  tsc --watch 增量编译
 #   server      node --watch 热重启（改后端代码自动生效）
 #   web         Vite HMR（改前端代码即时生效）
-pnpm build && pnpm lint && pnpm test   # 全量验证（900+ 测试，CI 守护）
+pnpm build && pnpm lint && pnpm test   # 全量验证（1200+ 测试，GitHub Actions CI 守护）
 ```
 
 注意：开发调试入口是 Vite（默认 `http://localhost:5173`），`/api` `/ws` 已代理到 server（默认 7700）；不是直接访问 7700。

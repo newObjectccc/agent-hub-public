@@ -198,14 +198,14 @@ test('setupTailscaleServe: 自建 headscale 控制面 → 走 tailnet 内 HTTP�
     find: () => ({ found: true, path: '/usr/bin/tailscale' }),
     run: (cmd, args) => {
       calls.push(args.join(' '));
-      if (args.includes('status')) return ok(JSON.stringify({ BackendState: 'Running', Self: { DNSName: 'hub.tail.example.com.' } }));
+      if (args.includes('status')) return ok(JSON.stringify({ BackendState: 'Running', Self: { DNSName: 'hub.tailnet.example.' } }));
       if (args.includes('debug')) return ok(JSON.stringify({ ControlURL: 'https://headscale.example.com' }));
       return ok('serving');
     },
   });
   assert.equal(res.ok, true);
   assert.equal(res.mode, 'http');
-  assert.equal(res.tsUrl, 'http://hub.tail.example.com:8080');
+  assert.equal(res.tsUrl, 'http://hub.tailnet.example:8080');
   assert.ok(calls.some((c) => c.includes('serve --bg --http=8080')));
   assert.match(res.message, /headscale/);
 });

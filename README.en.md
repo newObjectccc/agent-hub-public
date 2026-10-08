@@ -2,7 +2,7 @@
 
 English | [简体中文](README.md)
 
-![License: MIT](https://img.shields.io/badge/license-MIT-blue) ![Node.js ≥ 20](https://img.shields.io/badge/node-%3E%3D20-brightgreen) ![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen) ![PWA](https://img.shields.io/badge/PWA-ready-orange)
+![CI](https://github.com/newObjectccc/agent-hub/actions/workflows/ci.yml/badge.svg) ![License: MIT](https://img.shields.io/badge/license-MIT-blue) ![Node.js ≥ 20](https://img.shields.io/badge/node-%3E%3D20-brightgreen) ![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen) ![PWA](https://img.shields.io/badge/PWA-ready-orange)
 
 > Your phone is a remote control **and** a standalone workstation for your computer. A cross-platform (macOS / Linux / Windows) **session hub for pi / Claude Code**.
 
@@ -160,7 +160,7 @@ pnpm dev                           # one-command dev (recommended)
 #   server:tsc  tsc --watch incremental build
 #   server      node --watch hot restart (backend edits apply automatically)
 #   web         Vite HMR (frontend edits apply instantly)
-pnpm build && pnpm lint && pnpm test   # full verification (900+ tests, CI-guarded)
+pnpm build && pnpm lint && pnpm test   # full verification (1200+ tests, GitHub Actions CI-guarded)
 ```
 
 Note: the dev entry is Vite (default `http://localhost:5173`) with `/api` and `/ws` proxied to the server (default 7700) — not 7700 directly.

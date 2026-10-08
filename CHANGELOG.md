@@ -14,6 +14,7 @@
 - README 重写「手机远程全流程」：官方免费版 / 自建 headscale / 局域网三路径 + WebAPK HTTPS 前提说明
 - README 新增「标准集成链路」章节（真机实测跑通的默认集成方式）：官方 Tailscale 四步流程 + 实测踩坑表（macOS GUI 桥失效的 sudo 绕行、WebAPK 与 HTTP 源、证书开关、手机超时）
 - 开源门面：中英双语 README（README.md / README.en.md）+ 真机实拍截图与演示 GIF（工作台 / chat / 多子代理面板 / 双模式 / 应用锁）
+- 开源就绪批：GitHub Actions CI（Node 20/22 矩阵，build+lint+test）、issue/PR 模板、测试与证据文件真实域名/用户名脱敏（→ example.com / <user>）
 
 ### 开发体验（DX 一键化）
 - 新增 `pnpm dev`（cli/dev.js）：一条命令并行起 server tsc --watch + node --watch 热重启 + web Vite HMR，输出按进程加行前缀，Ctrl+C 一次杀全部
