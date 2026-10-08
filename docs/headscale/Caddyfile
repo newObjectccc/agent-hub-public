@@ -1,0 +1,9 @@
+# Caddy 自动 HTTPS：把 headscale.example.com 换成你的域名（DNS A 记录指向服务器 IP）。
+# email 用于 Let's Encrypt 证书过期提醒，可选。
+{
+	email you@example.com
+}
+
+headscale.example.com {
+	reverse_proxy headscale:8080
+}

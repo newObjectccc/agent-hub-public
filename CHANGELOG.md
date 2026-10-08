@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### 手机远程方案（headscale / PWA 双路径）
+- `--tailscale` 自动识别控制面（`tailscale debug prefs` ControlURL）：官方 → serve HTTPS 自动证书（真 WebAPK）；自建 headscale → tailnet 内 HTTP 回退（headscale 不支持 tailscale cert）并说明 PWA 限制
+- Tailscale 状态诊断强化：CLI 崩溃（Trace/BPT trap 等）/ 未登录 / 已停止 分别给出可操作指引，不再误导用户执行 `tailscale up`
+- macOS GUI 桥失效（CLIError error 3）时提示 `sudo tailscale serve` 绕行方案（root 直连守护进程，实测有效）
+- 新增 docs/HEADSCALE.md + docs/headscale/（docker compose + Caddy）：任意 VPS 半小时自建控制面，含设备接入、排障与真 PWA 三方案
+- README 重写「手机远程全流程」：官方免费版 / 自建 headscale / 局域网三路径 + WebAPK HTTPS 前提说明
+- README 新增「标准集成链路」章节（真机实测跑通的默认集成方式）：官方 Tailscale 四步流程 + 实测踩坑表（macOS GUI 桥失效的 sudo 绕行、WebAPK 与 HTTP 源、证书开关、手机超时）
+- 开源门面：中英双语 README（README.md / README.en.md）+ 真机实拍截图与演示 GIF（工作台 / chat / 多子代理面板 / 双模式 / 应用锁）
+
+### 开发体验（DX 一键化）
+- 新增 `pnpm dev`（cli/dev.js）：一条命令并行起 server tsc --watch + node --watch 热重启 + web Vite HMR，输出按进程加行前缀，Ctrl+C 一次杀全部
+- 配置自愈：`dev` / `start` 配置缺失时自动从模板生成 hub.config.json，不再报「配置不存在」退出
+- 规避 pnpm 内置 `pnpm setup` 顶掉项目 script 的陷阱（README 注明用 npm run setup），Vite 端口支持 AGENT_HUB_WEB_PORT 指定
+- 新增 ecosystem.config.js（pm2 部署：pnpm build && pm2 start）；README 补开发/部署双流程
+
 ### 性能（二次 OOM 风险拆除）
 - 会话 tail 增量解析：字节偏移 + 完整行边界 + UTF-8 安全，活跃长会话不再每 2s 全量重解析（不丢不重有专项测试）
 - claude 适配层清单 TTL 缓存 + inflight 去重：单请求全语料扫描 2→0

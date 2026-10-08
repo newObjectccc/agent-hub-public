@@ -1,0 +1,160 @@
+# Agent Hub
+
+English | [简体中文](README.md)
+
+![License: MIT](https://img.shields.io/badge/license-MIT-blue) ![Node.js ≥ 20](https://img.shields.io/badge/node-%3E%3D20-brightgreen) ![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen) ![PWA](https://img.shields.io/badge/PWA-ready-orange)
+
+> Your phone is a remote control **and** a standalone workstation for your computer. A cross-platform (macOS / Linux / Windows) **session hub for pi / Claude Code**.
+
+Open the PWA panel in any device's browser → see every agent session and its working status at a glance → tap into the chat view to continue conversations, dispatch tasks, and spectate live. Sessions are fully interoperable with the terminal CLI (the same `~/.pi/agent/sessions/`).
+
+## Screenshots
+
+<p align="center">
+  <img src="docs/screenshots/demo.gif" alt="Agent Hub demo: workbench → dual-mode drive → chat → multi-subagent panel" width="330">
+</p>
+
+| 🗂 Workbench | 💬 Chat workspace |
+|---|---|
+| ![Workbench: today's overview and active sessions](docs/screenshots/workbench.png) | ![Chat workspace: thinking process and tool calls](docs/screenshots/chat.png) |
+| **🤖 Multi-subagent panel** | **📱 Dual-mode drive / 🔐 App lock** |
+| ![Multi-subagent panel: live tools and runtimes](docs/screenshots/subagent-panel.png) | ![Dual-mode session drive picker](docs/screenshots/feature-dual-mode.png) |
+
+## Features
+
+- **📱 Dual-mode session drive**: 🖥 Take over the terminal (messages are injected into the terminal pi process, shown live on screen) / 📱 Parallel continue (a separate worker line sharing the same context) — your call
+- **🤖 Sub-agent activity panel**: sub-agents spawned by pi shown live (current tool / output summary / runtime), like a terminal multi-agent panel
+- 🔴 **Live spectating**: watch the thinking chain, streaming replies, and tool calls of terminal pi sessions from your phone (token-level)
+- 🗂 **Workbench home**: organized by attention (🔥 working / ⚠️ needs you / today's overview), real data only
+- 📈 **Token usage**: today / 7-day / all-time token & cost rollups, per-session usage badges
+- 💬 **Chat workspace**: staged waiting feedback, slash commands, quick-prompt templates, @ file references, image uploads, quoted replies, code highlighting & copy
+- 📊 **Session management**: priority ordering, sub-agent parent–child tree, global search, branch tree, session forking
+- 🌿 **Git integration**: repo status, diff viewer, tool-call ↔ file linking (read-only, safe)
+- ⚡ **Performance**: WS batching, message memoization, windowed long sessions (12–15× streaming render, 21× DOM slim-down)
+- 🔔 **Notification center**: session-completion banners / vibration / sound, unread aggregation, tap-to-read
+- 🔐 **App lock + offline queue**: PIN / WebAuthn passkey unlock, queued messages auto-resend when back online
+- 🖥 **Web terminal** (ttyd optional): a real terminal right inside the panel
+
+## Quick Start
+
+Option 1: npm package (npx / global install) — or just git clone (see Option 2):
+
+```bash
+npx agent-hub remote        # one-command remote: auto setup → build → start + Tailscale
+# or install for the full subcommands (dev / setup / start / remote / check / open)
+npm install -g agent-hub
+agent-hub setup             # detect environment, generate config
+agent-hub remote            # = start --tailscale, idempotent
+```
+
+Option 2: git clone (repo development / self-hosted from source):
+
+```bash
+git clone https://github.com/newObjectccc/agent-hub.git
+cd agent-hub
+npm run dev          # one-command dev: server hot reload + web Vite HMR (frontend at http://localhost:5173)
+npm run start        # production start: install deps → build → serve, defaults to http://127.0.0.1:7700
+npm run remote       # one-command remote: auto setup + build + start --tailscale (idempotent)
+```
+
+> ⚠️ With pnpm, **do not run `pnpm setup`** — that is pnpm's built-in command (for configuring the pnpm shell env) and will NOT run this project's setup. Use `npm run setup` or `node cli/setup.js` instead. Also, `dev` / `start` auto-generate a default config when missing; setup is only for environment checks, pi extension install, and autostart registration.
+
+See [docs/PLATFORM.md](docs/PLATFORM.md) for per-platform installation details.
+
+## Standard Integration Path: remote-control pi from your phone (battle-tested)
+
+> This is the recommended default integration, verified end-to-end on real devices (macOS + Android): **install Tailscale → one command → install the real PWA (no address bar) → dispatch tasks to the pi on your computer from anywhere**.
+
+### Steps (~10 minutes)
+
+1. **Install [Tailscale](https://tailscale.com/download) on both computer and phone, log in with the same account**
+   The free Personal plan (3 users / 100 devices) is enough. Find Tailscale in your phone's app store, log in, and turn the connection on.
+2. **Enable HTTPS certificates**: [Tailscale Admin Console](https://login.tailscale.com/admin) → HTTPS Certificates → Enable (one-time; used to issue the panel's domain certificate).
+3. **One command on the computer**:
+
+```bash
+npm run remote        # = setup + build + start --tailscale, idempotent
+# equivalent: node cli/start.js --tailscale; use --lan for LAN-only
+```
+
+   Successful output looks like:
+
+```
+Tailscale Serve enabled (HTTPS): https://<node>.<tailnet>.ts.net
+Open it on your phone's browser → menu → "Install app" = a real PWA without an address bar (WebAPK).
+```
+
+4. **Install the PWA on your phone**: open the printed `https://…` URL in Chrome → menu → **"Install app"** (NOT "Add to Home screen") → verify: no address bar, standalone window, its own task entry
+5. From then on, when your computer isn't around: open the PWA on your phone → workbench → dispatch tasks / spectate live / continue chats
+
+### Known issues (from real-world testing)
+
+| Symptom | Fix |
+|---|---|
+| macOS `serve` fails with `GUI failed to start` / `CLIError error 3` | The GUI bridge is broken; root talks to the daemon directly: `sudo tailscale serve --bg --https=443 http://127.0.0.1:7700` (verified working; the CLI also suggests this command when diagnosis fails) |
+| The installed PWA shows an address bar / is just a shortcut | You installed from an HTTP origin (e.g. self-hosted headscale); Chrome only creates a home-screen shortcut there. Reinstall from an HTTPS origin |
+| `serve` reports a certificate error | HTTPS Certificates is not enabled in the Admin Console (see step 2) |
+| The phone times out opening the URL | Phone's Tailscale is disconnected, or the two devices are logged into different accounts |
+
+> 💡 PWA fact: only an **HTTPS origin** can be installed as a real WebAPK (standalone window without an address bar) — this is unrelated to manifest configuration. Tailscale serve's automatic certificates exist precisely for this.
+
+**Alternatives**: self-hosted headscale control plane in [docs/HEADSCALE.md](docs/HEADSCALE.md) (tailnet-internal HTTP, degraded PWA); LAN-only via `--lan`. See [docs/PLATFORM.md](docs/PLATFORM.md) for platform details.
+
+## Architecture
+
+```
+Mobile PWA ──HTTP/WS──▶ server (Fastify) ──▶ pi SDK / claude CLI
+                          │                    │
+                     terminal layer         ~/.pi/agent/sessions
+                  (tmux/ttyd/Tailscale)    (single source of truth)
+```
+
+| Directory | Description |
+|---|---|
+| `server/` | REST + WS, pi/claude dual-source adapters, KPI / notifications / git / terminal integration |
+| `web/` | PWA (React + Vite + Tailwind v4, brutalist compact UI) |
+| `cli/` | Cross-platform dev/setup/start/check/open (pure Node, zero bash dependency) |
+| `integrations/` | pi extensions (live-feed streaming / pi-command reverse control) |
+| `docs/` | API contract, architecture, platform details, headscale guide (HEADSCALE.md), roadmap |
+| `docs/headscale/` | Self-hosted headscale control-plane deployment files (docker compose + Caddy auto-HTTPS) |
+
+## Development
+
+```bash
+pnpm install
+pnpm dev                           # one-command dev (recommended)
+#   server:tsc  tsc --watch incremental build
+#   server      node --watch hot restart (backend edits apply automatically)
+#   web         Vite HMR (frontend edits apply instantly)
+pnpm build && pnpm lint && pnpm test   # full verification (900+ tests, CI-guarded)
+```
+
+Note: the dev entry is Vite (default `http://localhost:5173`) with `/api` and `/ws` proxied to the server (default 7700) — not 7700 directly.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution workflow and [CHANGELOG.md](CHANGELOG.md) for release history.
+
+## Deployment
+
+Always-on on your own machine (platform-native autostart recommended):
+
+```bash
+npm run setup -- --autostart   # macOS launchd / Linux systemd / Windows Task Scheduler
+npm run start                  # foreground production start (build + serve; config auto-generated if missing)
+```
+
+On a server (pm2, self-healing + start on boot):
+
+```bash
+pnpm build
+pm2 start ecosystem.config.js
+pm2 save && pm2 startup        # start on boot
+```
+
+## Configuration
+
+- `config/hub.config.json`: ports / directories (generated by setup)
+- `config/kpi-sources.json`: optional metric-card data sources (`${ENV_VAR}` for secrets)
+
+## License
+
+[MIT](LICENSE) © 2026 newObjectccc

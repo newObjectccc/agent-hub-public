@@ -1,0 +1,30 @@
+# headscale 自建控制面（单机 Docker：headscale + Caddy 自动 HTTPS）
+# 部署步骤见 docs/HEADSCALE.md；先生成并修改 config.yaml 再 `docker compose up -d`。
+services:
+  headscale:
+    image: headscale/headscale:0.26
+    container_name: headscale
+    restart: unless-stopped
+    command: serve
+    volumes:
+      - ./config.yaml:/etc/headscale/config.yaml
+      - headscale-data:/var/lib/headscale
+    expose:
+      - "8080"
+
+  caddy:
+    image: caddy:2
+    container_name: headscale-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  headscale-data:
+  caddy-data:
+  caddy-config:
