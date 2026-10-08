@@ -6,6 +6,8 @@
 - fix(server)：会话状态推断「显式 idle 优先」——新建会话/刚 settled 的会话不再被 60s 时间窗口误判 running（实测现象：刚创建的会话进 chat 页即显示「思考中」+ 停止按钮，非默认发送消息，纯状态误判）；hub / claude 双源同口径，sweep 不再秒清 idle 条目（防复现）
 - fix(server)：hub.createSession 写盘后失效清单缓存——新建会话立即可见（TTL 窗口内 findSession 查不到新会话的隐患）
 - fix(web)：代码块复制按钮移入独立标题栏（.code-head），不再遮挡代码内容（水平滚动/长首行均不被盖）；触屏 44px 热区 + 双主题变量
+- fix(server)：forkSession 同口径显式 idle——复制出的新会话进 chat 页误显「思考中」同类缺口（hub/claude 双源）；ChatPage +3 空闲态契约回归（含「不默认发送任何消息」断言）
+- feat(web)：顶部提示手动关闭——NoticeBanner/ToastHost/chat-notice 均补 ✕（44px 热区）+ 横向滑动关闭（≥64px，与下拉刷新零冲突）；已读/已关持久化（localStorage），同条通知刷新不重复弹（含震动/声音）
 
 ### Markdown 表格渲染（GFM）
 - 轻量渲染器新增 GFM 表格支持（此前裸语法原样输出）：表头/表体、:---: 对齐、\| 转义管道、缺格补空、行内标记；移动端横向滚动容器（页面不横向溢出）

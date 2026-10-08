@@ -1451,7 +1451,14 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
         </div>
       </header>
 
-      {notice && <div className="chat-notice">{notice}</div>}
+      {notice && (
+        <div className="chat-notice">
+          <span className="chat-notice-text">{notice}</span>
+          <button type="button" className="chat-notice-close" onClick={() => setNotice(null)} aria-label="关闭提示">
+            ✕
+          </button>
+        </div>
+      )}
 
       {/* 预期提示条（心理预期管理）：面板驱动过的会话首次进入提醒两条工作流，可一键分叉（i1 紧凑单行） */}
       {driverHint && (

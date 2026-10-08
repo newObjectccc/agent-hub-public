@@ -1040,12 +1040,52 @@ button.syschip.terminal-entry:hover {
 }
 
 .chat-notice {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   padding: 6px 10px;
   font-size: 12.5px;
   font-weight: 600;
   background: var(--info);
   color: var(--info-foreground);
   border-bottom: var(--bw) solid var(--border);
+}
+
+.chat-notice-text {
+  flex: 1;
+  min-width: 0;
+}
+
+/* 提示行 ✕：视觉 28px，热区 ::after 外扩 44px（触控达标不撑高提示条） */
+.chat-notice-close {
+  position: relative;
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  background: transparent;
+  color: inherit;
+  border: none;
+  cursor: pointer;
+}
+
+.chat-notice-close::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 44px;
+  height: 44px;
+  transform: translate(-50%, -50%);
+}
+
+@media (pointer: coarse) {
+  .chat-notice-close {
+    min-height: 0;
+  }
 }
 
 .chat-messages {
@@ -1914,7 +1954,7 @@ button.syschip.terminal-entry:hover {
   gap: 6px;
 }
 
-/* ---------- 会话完结提醒横幅 ---------- */
+/* ---------- 会话完结提醒横幅（✕ 手动关闭 + 横向滑动关闭） ---------- */
 .notice-banner {
   position: fixed;
   top: calc(8px + var(--safe-top));
@@ -1925,14 +1965,40 @@ button.syschip.terminal-entry:hover {
   align-items: center;
   gap: 8px;
   padding: 8px 9px;
-  text-align: left;
   background: var(--primary);
   color: var(--primary-foreground);
   border: var(--bw) solid var(--border);
   border-radius: var(--nb-radius);
   box-shadow: var(--shadow-lg);
-  cursor: pointer;
   animation: nb-banner-in 220ms ease-out;
+  /* 横向留给滑动关闭手势；纵向平移不被吞（与页面滚动 / PullToRefresh 不冲突） */
+  touch-action: pan-y;
+}
+
+/* 主体点击进入会话（原整条 button 的点击语义收拢到这里，与 ✕ 分离） */
+.notice-banner-hit {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.notice-banner-hit:focus-visible {
+  outline: 2px solid var(--primary-foreground);
+  outline-offset: 2px;
+}
+
+/* ✕ 关闭：复用 .icon-btn token（44×44 实心盒，触控达标即视觉盒） */
+.notice-banner-close {
+  align-self: center;
 }
 
 @keyframes nb-banner-in {
@@ -3453,11 +3519,17 @@ button.git-bar:active {  transform: translate(2px, 2px);
   border: 2px solid var(--border);
   box-shadow: var(--shadow-card);
   animation: nb-fade-up 180ms ease-out;
+  /* 横向滑动关闭要落在 toast 上的触摸事件（宿主仍 pointer-events: none 不挡底下的 UI）；
+     纵向平移不被吞 */
+  pointer-events: auto;
+  touch-action: pan-y;
 }
 
-/* toast 手动关闭：宿主 pointer-events:none 下按钮需可点（≥40px 触控热区） */
+/* toast 手动关闭：宿主 pointer-events:none 下按钮需可点；
+   视觉 40px 盒 + ::after 热区外扩到 ≥44px（触控达标不撑高 toast） */
 .toast-close {
   appearance: none;
+  position: relative;
   border: 0;
   background: transparent;
   color: inherit;
@@ -3471,6 +3543,16 @@ button.git-bar:active {  transform: translate(2px, 2px);
   align-items: center;
   justify-content: center;
   pointer-events: auto;
+}
+
+.toast-close::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 44px;
+  height: 44px;
+  transform: translate(-50%, -50%);
 }
 
 @media (prefers-color-scheme: dark) {

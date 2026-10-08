@@ -389,3 +389,20 @@ describe("键盘避让（visualViewport）", () => {
     delete (window as unknown as Record<string, unknown>).visualViewport;
   });
 });
+
+describe("顶部提示行（chat-notice）可手动关闭", () => {
+  it("error 事件弹出提示行，✕（aria-label）点击后消失", async () => {
+    const el = await render();
+    act(() => {
+      wsEvent?.({ type: "error", message: "运行期炸了" } as unknown as WsEvent);
+    });
+    const notice = el.querySelector(".chat-notice");
+    expect(notice).not.toBeNull();
+    expect(notice!.textContent).toContain("运行期炸了");
+    const close = el.querySelector<HTMLButtonElement>(".chat-notice-close");
+    expect(close).not.toBeNull();
+    expect(close!.getAttribute("aria-label")).toBe("关闭提示");
+    click(close);
+    expect(el.querySelector(".chat-notice")).toBeNull();
+  });
+});

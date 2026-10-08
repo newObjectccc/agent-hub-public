@@ -83,6 +83,34 @@ describe("会话页 flex 布局回归（tab 组不被压缩）", () => {
   });
 });
 
+describe("顶部提示手动关闭契约（横幅/toast/提示行热区）", () => {
+  it("toast ✕ 热区 ≥44px（::after 外扩，视觉盒不撑高）且可点（宿主 pointer-events:none 下）", () => {
+    const hot = blockOf(".toast-close::after {");
+    expect(hot).toContain("width: 44px");
+    expect(hot).toContain("height: 44px");
+    const block = blockOf(".toast-close {");
+    expect(block).toContain("pointer-events: auto");
+    expect(block).toContain("position: relative");
+  });
+
+  it("toast 整条可接收滑动手势（pointer-events: auto + touch-action: pan-y）", () => {
+    const block = blockOf(".toast {");
+    expect(block).toContain("pointer-events: auto");
+    expect(block).toContain("touch-action: pan-y");
+  });
+
+  it("横幅 touch-action: pan-y（横向留给滑动关闭，纵向滚动不被吞）", () => {
+    expect(blockOf(".notice-banner {")).toContain("touch-action: pan-y");
+  });
+
+  it("提示行 ✕ 热区 ≥44px（::after 外扩）且触控不被全局 min-height 撑高", () => {
+    const hot = blockOf(".chat-notice-close::after {");
+    expect(hot).toContain("width: 44px");
+    expect(hot).toContain("height: 44px");
+    expect(blockOf(".chat-notice-close {")).toContain("position: relative");
+  });
+});
+
 describe("REV-I1 防回归：触控热区定位上下文", () => {
   it(".attach-trigger 必须保持 position: relative（::after 不得逃逸到 chat-header）", () => {
     const css = readFileSync(join(process.cwd(), "src", "i1-layout.css"), "utf8");
