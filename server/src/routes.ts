@@ -24,7 +24,8 @@ import { createPanelDrivenStore, drivenByOf, type PanelDrivenStoreLike } from ".
 import { dataDir } from "./paths.js";
 import type { PromptResult } from "./sessions/hub.js";
 import { fullPage, paginateMessages, parseLimit } from "./sessions/paginate.js";
-import { buildSubAgentActivity } from "./subagents.js";
+import { buildSubAgentActivity, buildClaudeSubAgentActivity } from "./subagents.js";
+import { loadClaudeSubAgents } from "./adapters/claude-transcript.js";
 import type { TerminalServiceLike } from "./terminal.js";
 import { parseDaysParam, UsageService, type UsageServiceLike } from "./usage.js";
 import {
@@ -243,7 +244,13 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   app.get<{ Params: { id: string } }>("/api/sessions/:id/agents", async (req, reply) => {
     try {
       const all = await hub.listSessions();
-      // 只聚合 pi-subagents 派生子代理（fork 分支虽带 parentSessionId 但不是“子代理在干活”）
+      // claude：Task 子代理（sidechain）与主会话同存一个 transcript → 直接从解析产物聚合
+      const parent = all.find((s) => s.id === req.params.id);
+      if (parent?.source === "claude") {
+        const subs = await loadClaudeSubAgents(parent.sessionFile);
+        return reply.send({ agents: buildClaudeSubAgentActivity(parent.id, subs) });
+      }
+      // pi：只聚合 pi-subagents 派生子代理（fork 分支虽带 parentSessionId 但不是“子代理在干活”）
       const children = all.filter((s) => s.isSubAgent && s.parentSessionId === req.params.id);
       // 分批解析（6 并发）：长会话几十个子代理时避免一次性 40+ 个文件流排队拖慢首屏
       const agents = [];

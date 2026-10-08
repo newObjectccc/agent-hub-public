@@ -85,6 +85,31 @@ export interface ParsedClaudeTranscript {
   updatedAtMs: number | null;
   /** 前 10 条 system/attachment 行文本（子代理结构标记检测用） */
   preamble: string;
+  /** Task 子代理（sidechain）活动记录，按开启顺序排列 */
+  subAgents: ParsedClaudeSubAgent[];
+}
+
+/** claude Task 子代理（sidechain）活动记录：子代理面板聚合用（解析副产物） */
+export interface ParsedClaudeSubAgent {
+  /** Task tool_use.id（call_…/toolu…） */
+  id: string;
+  /** 子代理类型（subagent_type），如 Explore / general-purpose */
+  type: string;
+  /** 任务描述（description，缺省取 prompt 首行） */
+  description: string;
+  /** sidechain 内当前/最近工具 summary（无则 null） */
+  currentTool: string | null;
+  /** currentTool 是否仍在执行（tool_use 后未见对应 tool_result） */
+  toolRunning: boolean;
+  /** sidechain 最新 assistant 文本（截断交给聚合层） */
+  lastOutput: string | null;
+  /** Task tool_result 结果文本（完成态） */
+  resultSummary: string | null;
+  /** Task tool_result 是否报错 */
+  error: boolean;
+  startedAtMs: number | null;
+  updatedAtMs: number | null;
+  done: boolean;
 }
 
 /**
@@ -106,6 +131,10 @@ export function parseClaudeTranscript(
   // message.id → 聚合中的 assistant DTO（同一条 API 消息的多个 block 行）
   const assistantAgg = new Map<string, MessageDto>();
   let autoId = 0;
+  // Task 子代理（sidechain）活动记录：Task tool_use 开、tool_result 关；sidechain 行归属最近 open 的记录
+  const subAgents: ParsedClaudeSubAgent[] = [];
+  const subAgentByToolId = new Map<string, ParsedClaudeSubAgent>();
+  let openSubAgent: ParsedClaudeSubAgent | null = null;
 
   const nextId = (prefix: string): string => {
     autoId += 1;
@@ -158,11 +187,16 @@ export function parseClaudeTranscript(
         break;
       }
       case "user": {
-        if (row.isMeta === true || row.turnCompanion === true || row.isSidechain === true) break;
+        if (row.isMeta === true || row.turnCompanion === true) break;
         const message = row.message;
         if (!isRecord(message)) break;
         const contentBlocks = message.content;
         const timestamp = typeof row.timestamp === "string" ? Date.parse(row.timestamp) || 0 : 0;
+        if (row.isSidechain === true) {
+          // sidechain 行（Task 子代理内部）：喂给当前子代理记录，不进主消息流
+          if (Array.isArray(contentBlocks)) feedSubAgentUser(openSubAgent, contentBlocks, timestamp);
+          break;
+        }
 
         if (typeof contentBlocks === "string") {
           const text = contentBlocks.trim();
@@ -201,6 +235,15 @@ export function parseClaudeTranscript(
                 toolCalls: [],
               });
             }
+            // Task 子代理结果：同为一条 tool_result，随手关闭对应活动记录
+            const sub = subAgentByToolId.get(toolCallId);
+            if (sub) {
+              sub.done = true;
+              sub.error = isError;
+              sub.resultSummary = preview === "" ? null : preview;
+              sub.toolRunning = false;
+              if (timestamp > 0) sub.updatedAtMs = timestamp;
+            }
             continue;
           }
           if (block.type === "text" && typeof block.text === "string") {
@@ -233,9 +276,14 @@ export function parseClaudeTranscript(
         break;
       }
       case "assistant": {
-        if (row.isSidechain === true) break;
         const message = row.message;
         if (!isRecord(message)) break;
+        const timestamp = typeof row.timestamp === "string" ? Date.parse(row.timestamp) || 0 : 0;
+        if (row.isSidechain === true) {
+          // sidechain 行（Task 子代理内部）：喂给当前子代理记录，不进主消息流
+          if (Array.isArray(message.content)) feedSubAgentAssistant(openSubAgent, message.content, timestamp);
+          break;
+        }
         const blocks = Array.isArray(message.content) ? message.content : [];
         const apiMessageId = typeof message.id === "string" && message.id !== "" ? message.id : typeof row.uuid === "string" ? row.uuid : nextId("asst");
         let dto = assistantAgg.get(apiMessageId);
@@ -243,7 +291,7 @@ export function parseClaudeTranscript(
           dto = {
             id: apiMessageId,
             role: "assistant",
-            timestamp: typeof row.timestamp === "string" ? Date.parse(row.timestamp) || 0 : 0,
+            timestamp,
             text: "",
             toolCalls: [],
           };
@@ -266,6 +314,13 @@ export function parseClaudeTranscript(
             };
             dto.toolCalls.push(call);
             if (typeof block.id === "string") toolCallOwners.set(block.id, call);
+            // Task/Agent 工具 = 开启一个子代理活动记录（sidechain 行随后归入）
+            if (/^(task|agent)$/i.test(toolName)) {
+              const record = createSubAgentRecord(block, dto.timestamp);
+              subAgents.push(record);
+              if (record.id !== "") subAgentByToolId.set(record.id, record);
+              openSubAgent = record;
+            }
           }
           // thinking 等其它 block：跳过（契约 MessageDto 不承载 thinking）
         }
@@ -279,7 +334,76 @@ export function parseClaudeTranscript(
     }
   }
 
-  return { sessionId, cwd, name, messages, updatedAtMs, preamble: preambleParts.join("\n") };
+  return { sessionId, cwd, name, messages, updatedAtMs, preamble: preambleParts.join("\n"), subAgents };
+}
+
+/** Task/Agent tool_use → 子代理活动记录 */
+function createSubAgentRecord(block: Record<string, unknown>, timestampMs: number): ParsedClaudeSubAgent {
+  const input = isRecord(block.input) ? block.input : {};
+  const prompt = typeof input.prompt === "string" ? input.prompt : "";
+  const desc = typeof input.description === "string" && input.description.trim() !== ""
+    ? input.description.trim()
+    : prompt.trim().split("\n")[0] ?? "";
+  return {
+    id: typeof block.id === "string" ? block.id : "",
+    type: typeof input.subagent_type === "string" && input.subagent_type !== "" ? input.subagent_type : "agent",
+    description: desc,
+    currentTool: null,
+    toolRunning: false,
+    lastOutput: null,
+    resultSummary: null,
+    error: false,
+    startedAtMs: timestampMs > 0 ? timestampMs : null,
+    updatedAtMs: timestampMs > 0 ? timestampMs : null,
+    done: false,
+  };
+}
+
+/** sidechain assistant 行 → 子代理的当前工具 / 最新输出 */
+function feedSubAgentAssistant(
+  sub: ParsedClaudeSubAgent | null,
+  blocks: unknown[],
+  timestampMs: number,
+): void {
+  if (sub === null) return;
+  if (timestampMs > 0) sub.updatedAtMs = timestampMs;
+  for (const block of blocks) {
+    if (!isRecord(block)) continue;
+    if (block.type === "text" && typeof block.text === "string" && block.text.trim() !== "") {
+      sub.lastOutput = block.text;
+    } else if (block.type === "tool_use") {
+      const name = typeof block.name === "string" && block.name !== "" ? block.name : "unknown";
+      const summary = summarizeToolCall(name, block.input);
+      sub.currentTool = summary !== "" ? summary : name;
+      sub.toolRunning = true;
+    }
+  }
+}
+
+/** sidechain user 行 → 子代理工具结果（保守口径：见 tool_result 即视为当前工具已结束） */
+function feedSubAgentUser(
+  sub: ParsedClaudeSubAgent | null,
+  blocks: unknown[],
+  timestampMs: number,
+): void {
+  if (sub === null) return;
+  if (timestampMs > 0) sub.updatedAtMs = timestampMs;
+  for (const block of blocks) {
+    if (!isRecord(block)) continue;
+    if (block.type === "tool_result" || typeof block.tool_use_id === "string") {
+      sub.toolRunning = false;
+    }
+  }
+}
+
+/** transcript 文件 → 子代理活动记录（子代理面板；文件缺失/解析失败回空数组） */
+export async function loadClaudeSubAgents(file: string): Promise<ParsedClaudeSubAgent[]> {
+  try {
+    const content = await readFileText(file);
+    return parseClaudeTranscript(content).subAgents;
+  } catch {
+    return [];
+  }
 }
 
 /** 与 pi 口径一致的列表摘要：lastUser/lastAssistant 从映射后消息取，截断 120 字符 */

@@ -72,10 +72,19 @@
 
 ## 批次 3 之后的候选（⬜ 未排期）
 - ⬜ Web Push 锁屏通知（HTTPS 依赖解除后）
-- ⏸ claude 会话终端接管（双模式对称补全，用户明确延后）
+- ⏸ claude 会话终端接管（双模式对称补全，用户明确延后）→ 已立项见「claude 完整接入」
 - ⬜ 树上 fork/clone 操作（T3 预留）
 - ⬜ 通知规则细化（按会话/按项目静音）
 - ⬜ 会话归档/清理
+
+## claude 完整接入（v0.2 批）
+
+- ✅ 会话六契约（列表/详情/prompt/abort/create/fork）+ stream-json 流式 + 安全约束（manual 权限、不落凭据）
+- ✅ 消息级实时旁观：WS tail 按 source 注入 transcript 解析器（终端跑的 claude 会话同样实时）
+- ✅ 子代理面板：Task/Agent sidechain 解析 → SubAgentActivityDto（当前工具/输出摘要/运行时长/结果），同 pi 口径
+- ⬜ 终端接管模式：tmux send-keys 通用注入通道（做好后 pi/claude/其他 CLI agent 通吃）
+- ⏸ token 级 delta（终端 TUI 会话拿不到流式事件，架构限制；server 驱动的 claude 会话已是 stream-json 级）
+- ⬜ slash 命令清单 / 上传图片等细节对齐
 
 ## 全局验收基线（每个功能都要过）
 1. 移动优先视口无横向溢出、触控目标 ≥40px

@@ -17,6 +17,7 @@ import type {
   SubAgentActivityUpdate,
   SubAgentsResponse,
 } from "./types.js";
+import type { ParsedClaudeSubAgent } from "./adapters/claude-transcript.js";
 
 export type { SubAgentActivityDto, SubAgentActivityUpdate, SubAgentsResponse };
 
@@ -33,6 +34,29 @@ export function truncateSummary(text: string | null, limit = SUMMARY_LIMIT): str
 /** 活动是否已结束（status 离开 running；error 也算结束但保留状态展示） */
 export function isDone(status: SessionStatus): boolean {
   return status !== "running";
+}
+
+/**
+ * claude Task 子代理（sidechain 解析产物）→ 面板活动卡。
+ * claude 子代理无独立会话文件：sessionId 指向父会话（前端「查看」回跳父会话，结果摘要已内联展示）。
+ * 并行 Task 的 sidechain 行归属最近开启的记录（transcript 无显式归属标记，保守启发式）。
+ */
+export function buildClaudeSubAgentActivity(
+  parentSessionId: string,
+  subs: ParsedClaudeSubAgent[],
+): SubAgentActivityDto[] {
+  return subs.map((s) => ({
+    sessionId: parentSessionId,
+    name: `${s.type}#${s.id === "" ? "unknown" : s.id.slice(-8)}`,
+    status: s.done ? (s.error ? "error" : "idle") : "running",
+    currentTool: s.currentTool,
+    toolRunning: s.toolRunning,
+    lastOutput: truncateSummary(s.lastOutput),
+    startedAt: s.startedAtMs,
+    updatedAt: s.updatedAtMs ?? s.startedAtMs ?? 0,
+    done: s.done,
+    resultSummary: truncateSummary(s.resultSummary),
+  }));
 }
 
 /**

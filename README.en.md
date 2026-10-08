@@ -23,7 +23,7 @@ Open the PWA panel in any device's browser → see every agent session and its w
 ## Features
 
 - **📱 Dual-mode session drive**: 🖥 Take over the terminal (messages are injected into the terminal pi process, shown live on screen) / 📱 Parallel continue (a separate worker line sharing the same context) — your call
-- **🤖 Sub-agent activity panel**: sub-agents spawned by pi shown live (current tool / output summary / runtime), like a terminal multi-agent panel
+- **🤖 Sub-agent activity panel**: sub-agents from pi **and claude** shown live (current tool / output summary / runtime), like a terminal multi-agent panel
 - 🔴 **Live spectating**: watch the thinking chain, streaming replies, and tool calls of terminal pi sessions from your phone (token-level)
 - 🗂 **Workbench home**: organized by attention (🔥 working / ⚠️ needs you / today's overview), real data only
 - 📈 **Token usage**: today / 7-day / all-time token & cost rollups, per-session usage badges

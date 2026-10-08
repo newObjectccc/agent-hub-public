@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### claude 完整接入批
+- 子代理面板双源化：claude Task/Agent sidechain 解析（parseClaudeTranscript 副产物 subAgents）→ 与 pi 同口径的 SubAgentActivityDto（当前工具/输出摘要/运行时长/结果摘要），GET /api/sessions/:id/agents 自动按 source 分发
+- ROADMAP 立项 claude v0.2 批：终端接管（tmux send-keys 通用通道）待做，token 级 delta 标注为架构限制
+
 ### 性能与体验（弱网优化批）
 - server：@fastify/compress 响应压缩（brotli 优先，体积约 -70%）+ /assets 内容 hash 产物长缓存 immutable（二次打开零请求）
 - web：新建会话 ?new=1 深链修复——跨页保留 query（如 ?tab=）+ popstate 同步弹出表单（只开不关），新增 newSessionPath 路由助手与回归测试
