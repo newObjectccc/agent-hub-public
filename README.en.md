@@ -176,7 +176,7 @@ npm run setup -- --autostart   # macOS launchd / Linux systemd / Windows Task Sc
 npm run start                  # foreground production start (build + serve; config auto-generated if missing)
 ```
 
-Once registered it starts on boot with no manual steps. Day-to-day operations:
+Once registered it starts on boot with no manual steps. When tailscale is detected the autostart command automatically carries `--tailscale` (Tailscale Serve is re-provisioned idempotently on every boot, so the phone remote channel is always ready; override with `setup -- --autostart --lan` for LAN-only). Day-to-day operations:
 
 | Task | macOS (launchd) | Linux (systemd --user) |
 |---|---|---|

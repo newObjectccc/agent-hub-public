@@ -174,7 +174,7 @@ npm run setup -- --autostart   # macOS launchd / Linux systemd / Windows 任务�
 npm run start                  # 前台正式启动（构建 + 启动，配置缺失自动生成）
 ```
 
-注册后开机自动启动，无需手动操作。日常运维：
+注册后开机自动启动，无需手动操作。检测到 tailscale 时自启命令自动携带 `--tailscale`（开机自动确保 Tailscale Serve，手机远程开箱即连；纯局域网用 `setup -- --autostart --lan` 覆盖）。日常运维：
 
 | 操作 | macOS（launchd） | Linux（systemd --user） |
 |---|---|---|

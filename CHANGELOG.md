@@ -12,6 +12,7 @@
 - cli：`check` 新增「链路延迟体检」（parseNetcheck/latencyAdvice）：解析 tailscale netcheck 四因子（IPv6 / 对称 NAT / 端口映射 / DERP 绕路）并按优先级给可操作建议；修复跨行空白正则吃掉 PortMapping 空值行的解析 bug
 - README（中英）新增「⚠️ 延迟警告」：P2P 直连 vs DERP 中继体验对比 + 三指标健康值表 + `tailscale ping` 直连验证（手机远程慢的根因与自检指引）
 - 自启修复：launchd plist / systemd unit 注入 PATH（node 同目录 + homebrew）——nvm/brew 环境下服务内找不到 npm/pnpm 导致自启即失败的通用修复
+- 常驻即远程：`setup -- --autostart` 检测到 tailscale 时自启命令自动携带 `--tailscale`（开机幂等重配 Serve，手机通道开箱即连；`--lan` 可覆盖）
 
 ### 手机远程方案（headscale / PWA 双路径）
 - `--tailscale` 自动识别控制面（`tailscale debug prefs` ControlURL）：官方 → serve HTTPS 自动证书（真 WebAPK）；自建 headscale → tailnet 内 HTTP 回退（headscale 不支持 tailscale cert）并说明 PWA 限制

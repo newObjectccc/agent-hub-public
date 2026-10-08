@@ -10,7 +10,7 @@ import { defaultConfigPath, defaultConfigTemplatePath, repoRoot } from './lib/pa
 import { ensureConfig } from './lib/config.js';
 import { installAutostart } from './lib/autostart.js';
 import { installExtensions } from './lib/extensions.js';
-import { installDeps, isWindows, resolvePackageManager } from './lib/process.js';
+import { installDeps, isWindows, resolvePackageManager, findCommand, runCapture } from './lib/process.js';
 import { depsInstalled } from './start.js';
 import { printReport } from './check.js';
 
@@ -18,7 +18,7 @@ export async function main(argv = [], deps = {}) {
   let parsed;
   try {
     parsed = parseCliArgs(argv, {
-      booleans: ['autostart', 'skip-deps', 'extensions', 'dry-run', 'help', 'color'],
+      booleans: ['autostart', 'skip-deps', 'extensions', 'dry-run', 'help', 'color', 'lan', 'tailscale'],
       values: ['port', 'session-dir', 'workspace-root'],
     });
   } catch (e) {
@@ -129,11 +129,22 @@ export async function main(argv = [], deps = {}) {
   if (options.autostart) {
     log('');
     log(colors.bold('== 开机自启 / Autostart =='));
+    // 常驻即远程：检测到 tailscale 时自启自动带 --tailscale（启动时幂等重配 serve，手机通道开箱即连）；
+    // 显式 --lan（纯局域网）/ --tailscale 优先；未装 tailscale 则纯本地启动（零影响）
+    const extraArgs = options.lan
+      ? ['--lan']
+      : options.tailscale
+        ? ['--tailscale']
+        : (findCommand('tailscale', { platform, env, run: runCapture }).found ? ['--tailscale'] : []);
+    if (extraArgs.includes('--tailscale')) {
+      log(`${colors.info} 自启命令携带 --tailscale：开机自动确保 Tailscale Serve（手机远程开箱即连）`);
+    }
     const res = installAutostart({
       platform,
       home: deps.home,
       repoRoot: root,
       dryRun,
+      extraArgs,
     });
     if (res.ok) {
       log(`${colors.ok} [${res.method}] ${res.detail.split('\n')[0]}`);

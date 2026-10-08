@@ -155,7 +155,9 @@ export function setupHelpText() {
                            force install pi extensions (default: only when pi found)
   --no-extensions          跳过 pi 扩展安装 / skip pi extension installation
   --autostart              注册开机自启（macOS launchd / Linux systemd / Windows 任务计划）
-                           register autostart, platform-adapted
+                           register autostart, platform-adapted; auto-adds --tailscale when tailscale is found
+  --lan                    autostart 纯局域网模式（覆盖自动 --tailscale）/ LAN-only autostart
+  --tailscale              autostart 显式带 --tailscale / explicitly add --tailscale to autostart
   --dry-run                只打印将写入内容，不落盘 / print only, write nothing
   --no-color               禁用彩色 / disable colors
   -h, --help               显示帮助 / show help
