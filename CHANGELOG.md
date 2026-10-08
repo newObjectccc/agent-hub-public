@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Markdown 表格渲染（GFM）
+- 轻量渲染器新增 GFM 表格支持（此前裸语法原样输出）：表头/表体、:---: 对齐、\| 转义管道、缺格补空、行内标记；移动端横向滚动容器（页面不横向溢出）
+- 流式块级缓存修复：表格块在输入末尾仍可续行，末行检查点会把未定稿表格当定稿块复用（增量与全量不一致）——压掉该检查点，+6 测试含逐字符流式一致性
+
 ### claude 完整接入批
 - 子代理面板双源化：claude Task/Agent sidechain 解析（parseClaudeTranscript 副产物 subAgents）→ 与 pi 同口径的 SubAgentActivityDto（当前工具/输出摘要/运行时长/结果摘要），GET /api/sessions/:id/agents 自动按 source 分发
 - ROADMAP 立项 claude v0.2 批：终端接管（tmux send-keys 通用通道）待做，token 级 delta 标注为架构限制

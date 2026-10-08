@@ -646,18 +646,86 @@
   }
 }
 
-/* 代码块：右上角「复制」+ 轻量三色语法高亮 */
+/* 代码块：独立标题栏承载「复制」（按钮不叠在代码上，水平滚动/长首行均不遮挡）+ 轻量三色语法高亮 */
 .code-block {
-  position: relative;
+  margin: 8px 0;
+  border: 2px solid var(--border);
+  border-radius: var(--nb-radius);
+  background: var(--muted);
+  overflow: hidden;
+}
+
+/* GFM 表格：移动端横向滚动容器（页面不溢出）+ 野兽派边框；单元格紧凑可扫读 */
+.md-table-wrap {
+  margin: 8px 0;
+  overflow-x: auto;
+  border: 2px solid var(--border);
+  border-radius: var(--nb-radius);
+  background: var(--card);
+}
+
+.md-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.md-table th,
+.md-table td {
+  padding: 6px 8px;
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.md-table th {
+  background: var(--muted);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.md-table tr:last-child td {
+  border-bottom: none;
+}
+
+.md-table th:last-child,
+.md-table td:last-child {
+  border-right: none;
+}
+
+/* 标题栏：min-height 44px 吸收按钮 ::after 触控热区，不侵占代码区；触屏常驻可见 */
+.code-head {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  min-height: 44px;
+  padding: 2px 6px;
+  border-bottom: 2px solid var(--border);
+  background: var(--card);
+}
+
+.code-lang {
+  margin-right: auto;
+  padding-left: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--muted-foreground);
+}
+
+/* 标题栏内的 pre 归 .code-block 外框管（覆盖 .md pre 的独立边框/圆角/外边距） */
+.md .code-block pre {
+  margin: 0;
+  border: none;
+  border-radius: 0;
 }
 
 .code-copy {
-  position: absolute;
-  top: 6px;
-  right: 6px;
-  z-index: 1;
-  min-height: 28px;
-  padding: 0 8px;
+  position: relative; /* 仅作 ::after 44px 热区锚点，不再绝对定位浮在代码上 */
+  min-height: 32px;
+  padding: 0 10px;
   font-size: 11px;
   font-weight: 800;
   background: var(--card);

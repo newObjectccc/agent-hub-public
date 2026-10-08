@@ -1,7 +1,7 @@
 /**
  * 轻量 Markdown 渲染（不引入 marked 等外部依赖，控制包体积）。
  * 支持：代码块（复制按钮 + 轻量三色语法高亮）、行内代码、粗体、斜体、链接、图片、标题、
- * 引用块、无序/有序列表、段落/换行。
+ * 引用块、无序/有序列表、GFM 表格（对齐 / \\| 转义管道 / 移动端横向滚动）、段落/换行。
  * 安全：先整体 HTML 转义，再做标记替换；链接仅放行 http(s)/mailto；
  * 图片仅放行 http(s)/data:image/相对路径（拒绝 javascript: 等其它 scheme）。
  *
@@ -72,6 +72,68 @@ interface ParseState {
   quote: string[];
 }
 
+type TableAlign = "left" | "center" | "right" | null;
+
+/** GFM 表格分隔行：`|---|:--:|` —— 仅含 - : | 空格且至少一个 - */
+function isTableSeparator(line: string): boolean {
+  const core = line.trim().replace(/[|:\s]/g, "");
+  return core.length > 0 && /^-+$/.test(core);
+}
+
+/** 表格行 = 含 | 的非空行（宽松口径：行尾可无管道） */
+function isTableRow(line: string): boolean {
+  return line.trim() !== "" && line.includes("|");
+}
+
+/** 按 | 切分单元格：忽略 \\| 转义，剥首尾空管道，转义管道还原为字面 | */
+function splitTableRow(line: string): string[] {
+  let t = line.trim();
+  if (t.startsWith("|")) t = t.slice(1);
+  if (t.endsWith("|") && !t.endsWith("\\|")) t = t.slice(0, -1);
+  const cells: string[] = [];
+  let cur = "";
+  for (let i = 0; i < t.length; i += 1) {
+    const ch = t[i];
+    if (ch === "\\" && t[i + 1] === "|") {
+      cur += "\\|";
+      i += 1;
+      continue;
+    }
+    if (ch === "|") {
+      cells.push(cur.trim());
+      cur = "";
+      continue;
+    }
+    cur += ch;
+  }
+  cells.push(cur.trim());
+  return cells.map((c) => c.replace(/\\\|/g, "|"));
+}
+
+/** 分隔行 →每列对齐（列数以表头为准，缺列补 null） */
+function parseTableAligns(sep: string, count: number): TableAlign[] {
+  const aligns: TableAlign[] = splitTableRow(sep).map((c) => {
+    const left = c.startsWith(":");
+    const right = c.endsWith(":");
+    if (left && right) return "center";
+    if (right) return "right";
+    if (left) return "left";
+    return null;
+  });
+  while (aligns.length < count) aligns.push(null);
+  return aligns.slice(0, count);
+}
+
+/** 表格 → HTML（单元格内容过 renderInline；列数以表头为准，缺格补空） */
+function renderTable(header: string[], aligns: TableAlign[], rows: string[][]): string {
+  const alignAttr = (a: TableAlign): string => (a ? ` style="text-align:${a}"` : "");
+  const th = header.map((c, idx) => `<th${alignAttr(aligns[idx])}>${renderInline(c)}</th>`).join("");
+  const body = rows
+    .map((r) => `<tr>${header.map((_, idx) => `<td${alignAttr(aligns[idx])}>${renderInline(r[idx] ?? "")}</td>`).join("")}</tr>`)
+    .join("");
+  return `<div class="md-table-wrap"><table class="md-table"><thead><tr>${th}</tr></thead><tbody>${body}</tbody></table></div>`;
+}
+
 /**
  * 解析 lines[start..] 并把输出块追加到 out（核心循环，全量/增量唯一实现）。
  *
@@ -80,6 +142,9 @@ interface ParseState {
  */
 function parseLinesInto(lines: string[], start: number, out: string[], onCheckpoint?: (lineIdx: number) => void): void {
   const state: ParseState = { paragraph: [], list: null, quote: [] };
+  // 表格块刚结束的标记：表格在 EOF 处仍可续行（追加的行会并入表格），
+  // 紧随其后的「末行检查点」不安全（会把未定稿表格当定稿块复用），压掉
+  let tableJustEmitted = false;
 
   const flushParagraph = () => {
     if (state.paragraph.length) {
@@ -109,7 +174,9 @@ function parseLinesInto(lines: string[], start: number, out: string[], onCheckpo
   const stateEmpty = () => state.paragraph.length === 0 && state.list === null && state.quote.length === 0;
 
   for (let i = start; i < lines.length; i++) {
-    if (stateEmpty()) onCheckpoint?.(i);
+    const skipCheckpoint = tableJustEmitted && i === lines.length - 1;
+    tableJustEmitted = false;
+    if (stateEmpty() && !skipCheckpoint) onCheckpoint?.(i);
     const line = lines[i];
 
     // 代码块 ``` … ```（右上角复制按钮；标注语言才做轻量高亮，纯块保持纯色）
@@ -123,9 +190,12 @@ function parseLinesInto(lines: string[], start: number, out: string[], onCheckpo
         i++;
       }
       const raw = code.join("\n");
-      const body = fence[1] !== "" ? highlightCode(raw) : raw;
+      const lang = fence[1];
+      const body = lang !== "" ? highlightCode(raw) : raw;
+      // 独立标题栏承载复制按钮：按钮不浮在代码上（水平滚动/长首行均不遮挡），触屏常驻易点
+      const langTag = lang !== "" ? `<span class="code-lang">${escapeHtml(lang)}</span>` : "";
       out.push(
-        `<div class="code-block"><button type="button" class="code-copy" aria-label="复制代码">复制</button><pre><code>${body}</code></pre></div>`,
+        `<div class="code-block"><div class="code-head">${langTag}<button type="button" class="code-copy" aria-label="复制代码">复制</button></div><pre><code>${body}</code></pre></div>`,
       );
       continue;
     }
@@ -136,6 +206,23 @@ function parseLinesInto(lines: string[], start: number, out: string[], onCheckpo
       flushAll();
       const level = heading[1].length;
       out.push(`<h${level}>${renderInline(heading[2])}</h${level}>`);
+      continue;
+    }
+
+    // GFM 表格：首行含 | + 次行分隔行（|---|:--:|），到非表格行为止（原子块，块级缓存安全）
+    if (isTableRow(line) && i + 1 < lines.length && isTableSeparator(lines[i + 1])) {
+      flushAll();
+      const headerCells = splitTableRow(line);
+      const aligns = parseTableAligns(lines[i + 1], headerCells.length);
+      i += 2;
+      const rows: string[][] = [];
+      while (i < lines.length && isTableRow(lines[i])) {
+        rows.push(splitTableRow(lines[i]));
+        i += 1;
+      }
+      out.push(renderTable(headerCells, aligns, rows));
+      tableJustEmitted = true;
+      i -= 1; // 行尾（或首个非表格行）交回主循环
       continue;
     }
 

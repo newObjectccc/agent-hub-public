@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { escapeHtml, renderMarkdown } from "./markdown";
+import { escapeHtml, renderMarkdown, MarkdownRenderCache } from "./markdown";
 
 describe("renderMarkdown（轻量渲染）", () => {
   it("转义 HTML，防止注入", () => {
@@ -60,5 +60,57 @@ describe("renderMarkdown: 引用块（引用回复）", () => {
   it("空 `>` 行保留换行；嵌套引用也可渲染", () => {
     const html = renderMarkdown("> a\n>\n> b");
     expect(html).toBe("<blockquote>a<br/><br/>b</blockquote>");
+  });
+});
+
+describe("renderMarkdown: GFM 表格", () => {
+  it("渲染表头/表体，不再吐裸语法", () => {
+    const html = renderMarkdown("| 名称 | 状态 |\n|---|---|\n| pi | ✅ |\n| claude | ✅ |");
+    expect(html).toContain('<table class="md-table">');
+    expect(html).toContain("<th>名称</th>");
+    expect(html).toContain("<td>pi</td>");
+    expect(html).not.toContain("|---|");
+    expect(html).not.toContain("| 名称 |");
+  });
+
+  it("对齐修饰：:---: 居中 / ---: 右对齐 / --- 不写样式", () => {
+    const html = renderMarkdown("| A | B | C |\n|:---:|---:|---|\n| 1 | 2 | 3 |");
+    expect(html).toContain('<th style="text-align:center">A</th>');
+    expect(html).toContain('<th style="text-align:right">B</th>');
+    expect(html).toContain("<th>C</th>");
+    expect(html).toContain('<td style="text-align:right">2</td>');
+  });
+
+  it("\\| 转义管道留在单元格内；缺格行补空 td 不崩", () => {
+    const html = renderMarkdown("| a | b |\n|---|---|\n| x \\| y |");
+    expect(html).toContain("x | y");
+    expect(html).toContain("<td></td>");
+  });
+
+  it("单元格内行内标记可渲染", () => {
+    const html = renderMarkdown("| k | v |\n|---|---|\n| **加粗** | `code` |");
+    expect(html).toContain("<strong>加粗</strong>");
+    expect(html).toContain("<code>code</code>");
+  });
+
+  it("含 | 但无分隔行 = 普通段落（不误判）", () => {
+    const html = renderMarkdown("a | b 不是表格\n只是一句话");
+    expect(html).not.toContain("<table");
+    expect(html).toContain("a | b 不是表格");
+  });
+
+  it("流式增长：逐增量渲染与全量逐字符一致（块级缓存兼容）", () => {
+    const full = "| 名称 | 状态 |\n|---|---|\n| pi | ✅ |\n| claude | ✅ |\n\n后续段落";
+    for (let cut = 1; cut <= full.length; cut += 7) {
+      const part = full.slice(0, cut);
+      expect(renderMarkdown(part)).toBe(renderMarkdown(part)); // 同输入幂等
+    }
+    const cache = new MarkdownRenderCache();
+    let acc = "";
+    for (const ch of full) {
+      acc += ch;
+      const cached = cache.render(acc);
+      expect(cached).toBe(renderMarkdown(acc));
+    }
   });
 });
