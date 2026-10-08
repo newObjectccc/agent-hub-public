@@ -69,4 +69,19 @@ describe("会话状态推断：显式 idle 优先于时间推断", () => {
     // 静默超过 60s = idle
     assert.equal(hub.statusFor(id, Date.now() - 70_000), "idle");
   });
+
+  it("fork 产生的新会话（文件 mtime=now）同样显式登记 idle，不被时间推断误判 running", async () => {
+    // 纯 header 空会话（不带 name）：走 forkFrom 复制路径（带 name 的空会话另有 fork 缺陷，
+    // 见报告：getLeafId 把 session_info 当 leaf → 产出无 header 文件 → 500，不在本修复范围）
+    const created = await hub.createSession(workDir, "");
+    const forked = await hub.forkSession(created.id);
+    assert.equal(forked.status, "idle");
+
+    const found = await hub.findSession(forked.id);
+    assert.ok(found, "fork 会话应可查到");
+    assert.equal(found.status, "idle");
+
+    // statusFor（dashboard 统计用）同样不得误判
+    assert.equal(hub.statusFor(forked.id, Date.parse(found.updatedAt)), "idle");
+  });
 });

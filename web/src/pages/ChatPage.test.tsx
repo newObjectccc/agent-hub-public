@@ -4,6 +4,9 @@
  * 2. 连续两条相同文本消息各自独立显示，不重复不误合并
  * 3. 回复完成后中止按钮消失（message_end 后无事件 → 待定收尾翻转 idle；
  *    期间有流事件则不误翻转）
+ * 4. 新建空会话进入 chat 页必须是空闲态（用户反馈：新建后即显示「思考中」+ 中止按钮，
+ *    疑似默认发送消息——实为 server 状态误判；本文件锁定 UI 契约：不默认发送任何消息、
+ *    空闲态无等待提示/无中止按钮，且 server 报 running 时既有行为不破坏）
  */
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -281,5 +284,54 @@ describe("ChatPage 中止按钮生命周期（回复完成即消失）", () => {
       wsEvent?.({ type: "agent_settled" });
     });
     expect(abortButton(el)).toBeNull();
+  });
+});
+
+describe("ChatPage 新建空会话进入（空闲态，不默认发送消息）", () => {
+  function waitBar(el: HTMLElement): HTMLElement | null {
+    return el.querySelector<HTMLElement>(".wait-stage-bar");
+  }
+
+  it("空会话加载完：无「思考中」等待提示、无中止按钮、发送按钮正常", async () => {
+    const el = await render();
+    // 无任何阶段化等待反馈（发送中/思考中/工具执行中/回复中均不出现）
+    expect(waitBar(el)).toBeNull();
+    // 无中止按钮（不是「可以停止」的运行态）
+    expect(abortButton(el)).toBeNull();
+    // 正常发送按钮（空闲态渲染「发送」而非「发送中…」加载态）
+    const sendBtn = el.querySelector<HTMLButtonElement>(".composer-send");
+    expect(sendBtn).not.toBeNull();
+    expect(sendBtn!.textContent).toContain("发送");
+    expect(sendBtn!.querySelector(".spinner")).toBeNull();
+    // 输入内容后即可发送（非禁用/中止态）
+    typeInput(el, "你好");
+    expect(el.querySelector<HTMLButtonElement>(".composer-send")!.disabled).toBe(false);
+  });
+
+  it("进入页面不默认发送任何消息（用户疑问：会默认发送吗？→ 不会）", async () => {
+    const el = await render();
+    await act(async () => {
+      await Promise.resolve();
+    });
+    // 只发生会话拉取（loadSession 对账），不产生任何发送/中止请求
+    expect(mocks.getSession).toHaveBeenCalled();
+    expect(mocks.sendPromptWithMode).not.toHaveBeenCalled();
+    expect(mocks.sendPrompt).not.toHaveBeenCalled();
+    expect(mocks.abortSession).not.toHaveBeenCalled();
+    // 也没有任何本地用户消息占位（空会话消息列表为空）
+    expect(userRows(el)).toHaveLength(0);
+  });
+
+  it("server 报 running（外部/别处运行中）→ 进入即显示「思考中」+ 中止按钮（既有行为不破坏）", async () => {
+    mocks.getSession.mockResolvedValue({
+      session: { ...session, status: "running" },
+      messages: [],
+      hasMore: false,
+      nextBefore: null,
+    });
+    const el = await render();
+    expect(waitBar(el)).not.toBeNull();
+    expect(waitBar(el)!.textContent).toContain("思考中");
+    expect(abortButton(el)).not.toBeNull();
   });
 });

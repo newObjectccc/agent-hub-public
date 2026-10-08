@@ -290,6 +290,9 @@ export class ClaudeAdapter implements SessionAdapter {
     }
     const file = join(dirname(found.sessionFile), `${newId}.jsonl`);
     await writeFile(file, `${outLines.join("\n")}\n`, { flag: "wx" });
+    // 显式登记 idle：fork 新文件 mtime=now，不登记会被时间推断误判 running 60s
+    // （与 createSession 同根因：fork 后进 chat 页即显示「思考中」+ 停止按钮）
+    this.statuses.set(newId, "idle");
     this.invalidateList();
     const created = await this.findSession(newId);
     if (!created) {

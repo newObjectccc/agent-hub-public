@@ -353,6 +353,21 @@ describe("claude adapter: createSession 空白 transcript + forkSession 复制�
     }
   });
 
+  it("forkSession 新会话（文件 mtime=now）显式登记 idle，不被时间推断误判 running", async () => {
+    const adapter = makeAdapter(() => undefined);
+    try {
+      const created = await adapter.createSession(root, "待 fork 空会话");
+      const forked = await adapter.forkSession(created.id);
+      // 状态推断回归：fork 新文件 mtime=now，不登记 idle 会被 60s 时间窗口误判 running
+      assert.equal(forked.status, "idle");
+      const found = await adapter.findSession(forked.id);
+      assert.ok(found);
+      assert.equal(found.status, "idle");
+    } finally {
+      adapter.disposeAll();
+    }
+  });
+
   it("forkSession 会话不存在 → SESSION_NOT_FOUND", async () => {
     const adapter = makeAdapter(() => undefined);
     try {

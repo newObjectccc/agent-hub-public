@@ -396,6 +396,9 @@ export class SessionHub {
         500,
       );
     }
+    // 显式登记 idle：fork 新文件 mtime=now（历史新鲜时 updatedAt 也新鲜），不登记会被
+    // 时间推断误判 running 60s（与 createSession 同根因：fork 后进 chat 页即显示「思考中」）
+    this.statuses.set(manager.getSessionId(), { status: "idle", at: Date.now() });
     const created = await this.findSession(manager.getSessionId());
     if (!created) {
       throw new HubError(ErrorCodes.INTERNAL, "会话复制后未能读回新会话", 500);
