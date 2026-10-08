@@ -1,7 +1,7 @@
 /**
  * 会话管理页（/sessions）：承载现有全部会话列表能力——tab 过滤 + 滑块、优先级排序
  * （等你处理 > 工作中 > 其他，含"全部"tab）、虚拟列表、子代理树形/兜底折叠、
- * 搜索入口、➕新建会话、下拉刷新、滚动记忆、seenIds 进场动画纪律。
+ * ➕新建会话、下拉刷新、滚动记忆、seenIds 进场动画纪律（搜索统一走 header 全局入口，不重复设工具栏入口）。
  * 深链：?tab=working|attention|done|all 指定分类；?new=1 直接打开新建表单（drawer 入口）。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -14,11 +14,10 @@ import type {
 } from "../api/types";
 import { NewSessionForm } from "../components/NewSessionForm";
 import { PullToRefresh } from "../components/PullToRefresh";
-import { SearchPanel } from "../components/SearchPanel";
 import { SessionList } from "../components/SessionList";
 import { SessionTabs } from "../components/SessionTabs";
 import { SessionListSkeleton } from "../components/Skeletons";
-import { RefreshIcon, SearchIcon, PlusIcon } from "../components/icons";
+import { RefreshIcon, PlusIcon } from "../components/icons";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { SESSION_TABS, filterSessionsByTab, type SessionTab } from "../utils/sessionTabs";
@@ -47,7 +46,6 @@ export function SessionsPage() {
   const [tab, setTab] = useState<SessionTab>(() =>
     typeof window === "undefined" ? "all" : tabFromSearch(window.location.search),
   );
-  const [searchOpen, setSearchOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(
     () => typeof window !== "undefined" && new URLSearchParams(window.location.search).get("new") === "1",
   );
@@ -192,16 +190,6 @@ export function SessionsPage() {
           variant="secondary"
           size="icon"
           className="min-h-[44px] min-w-[44px]"
-          onClick={() => setSearchOpen(true)}
-          aria-label="搜索"
-        >
-          <SearchIcon />
-        </Button>
-        <Button
-          type="button"
-          variant="secondary"
-          size="icon"
-          className="min-h-[44px] min-w-[44px]"
           onClick={() => void refresh()}
           aria-label="刷新"
           disabled={refreshing}
@@ -264,7 +252,6 @@ export function SessionsPage() {
         }}
       />
 
-      <SearchPanel open={searchOpen} onClose={() => setSearchOpen(false)} />
     </div>
   );
 }
