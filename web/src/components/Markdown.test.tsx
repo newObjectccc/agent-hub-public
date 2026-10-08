@@ -90,4 +90,30 @@ describe("Markdown 代码块复制", () => {
     });
     expect(writeText).toHaveBeenCalledWith("BBB");
   });
+
+  it("按钮在 .code-head 标题栏内、与 pre 平级（不叠在代码上，水平滚动不遮挡）", () => {
+    const el = render(<Markdown text={'```js\nconst s = "hi";\n```'} />);
+    const btn = el.querySelector<HTMLButtonElement>("button.code-copy")!;
+    const head = btn.closest(".code-head");
+    expect(head).not.toBeNull();
+    const block = btn.closest(".code-block");
+    expect(block).not.toBeNull();
+    // 按钮不在 pre 内，且 pre 与 .code-head 同属 .code-block
+    expect(btn.closest("pre")).toBeNull();
+    expect(head?.parentElement).toBe(block);
+    expect(block!.querySelector(":scope > pre > code")).not.toBeNull();
+  });
+
+  it("点击 .code-head 内按钮复制标题栏结构下的 pre>code 原文", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { clipboard: { writeText } });
+    const el = render(<Markdown text={"```\nfoo(1)\n```"} />);
+    const btn = el.querySelector<HTMLButtonElement>("button.code-copy")!;
+    await act(async () => {
+      btn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(writeText).toHaveBeenCalledWith("foo(1)");
+    expect(getToasts().some((t) => t.text === CODE_COPY_SUCCESS_TOAST)).toBe(true);
+  });
 });

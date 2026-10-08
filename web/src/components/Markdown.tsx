@@ -12,7 +12,7 @@ export const CODE_COPY_FAIL_TOAST = "复制失败，请手动选择代码";
  * 渲染性能：memo + 按 text 的 useMemo（历史消息不重复 parse）；
  * 流式增量（UX 审查 AC5）：每实例一个块级缓存，尾部增长只重解析尾块，未变块复用渲染结果
  * （输出与全量解析逐字符一致）。
- * 代码块右上角「复制」：事件委托 + toast（HTML 由 dangerouslySetInnerHTML 生成）。
+ * 代码块标题栏「复制」：事件委托 + toast（HTML 由 dangerouslySetInnerHTML 生成）；
  * 图片宽高比占位：load 打 .img-loaded、error 打 .img-error（捕获委托防跳动）。
  */
 export const Markdown = memo(function Markdown({ text }: { text: string }) {
@@ -48,7 +48,9 @@ export const Markdown = memo(function Markdown({ text }: { text: string }) {
   const handleClick = (e: ReactMouseEvent<HTMLDivElement>) => {
     const btn = (e.target as HTMLElement | null)?.closest?.("button.code-copy");
     if (!btn || !e.currentTarget.contains(btn)) return;
-    const code = btn.parentElement?.querySelector("pre code")?.textContent ?? "";
+    // 按钮位于 .code-head 标题栏内：经最近的 .code-block 定位 pre>code（回退 parentElement 兼容旧结构）
+    const block = btn.closest(".code-block") ?? btn.parentElement;
+    const code = block?.querySelector("pre code")?.textContent ?? "";
     void copyText(code).then((ok) => showToast(ok ? CODE_COPY_SUCCESS_TOAST : CODE_COPY_FAIL_TOAST));
   };
 
