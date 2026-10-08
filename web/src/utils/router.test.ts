@@ -11,6 +11,7 @@ import {
   chatReturnPath,
   listPathOf,
   navigate,
+  newSessionPath,
   parseRoute,
   treePath,
 } from "./router";
@@ -46,6 +47,26 @@ describe("chat/tree 路径与定位参数", () => {
     expect(chatPath("s1", { q: "KPI" })).toBe("/s/s1?q=KPI");
     expect(chatPath("s1", { messageId: "e5" })).toBe("/s/s1?m=e5");
     expect(treePath("s1")).toBe("/s/s1/tree");
+  });
+});
+
+describe("newSessionPath：侧边栏新建会话深链", () => {
+  it("非会话页（home/system/chat…）→ /sessions?new=1", () => {
+    window.history.replaceState({}, "", "/");
+    expect(newSessionPath()).toBe("/sessions?new=1");
+    window.history.replaceState({}, "", "/system");
+    expect(newSessionPath()).toBe("/sessions?new=1");
+    window.history.replaceState({}, "", "/s/abc");
+    expect(newSessionPath()).toBe("/sessions?new=1");
+  });
+
+  it("会话页内保留现有 query（如 ?tab=）仅追加 new=1（不丢分类）", () => {
+    window.history.replaceState({}, "", "/sessions");
+    expect(newSessionPath()).toBe("/sessions?new=1");
+    window.history.replaceState({}, "", "/sessions?tab=working");
+    expect(newSessionPath()).toBe("/sessions?tab=working&new=1");
+    window.history.replaceState({}, "", "/sessions?tab=working&new=1");
+    expect(newSessionPath()).toBe("/sessions?tab=working&new=1");
   });
 });
 

@@ -74,6 +74,18 @@ export function chatPath(id: string, locate?: ChatLocate): string {
   return qs === "" ? base : `${base}?${qs}`;
 }
 
+/**
+ * 新建会话入口路径（sidebar/drawer 的 ?new=1 深链）：
+ * 会话页内保留当前 query（如 ?tab=）仅追加 new=1；其他页直接 /sessions?new=1。
+ */
+export function newSessionPath(): string {
+  const { pathname, search } = window.location;
+  if (parseRoute(pathname).name !== "sessions") return `${SESSIONS_PATH}?new=1`;
+  const params = new URLSearchParams(search);
+  params.set("new", "1");
+  return `${SESSIONS_PATH}?${params.toString()}`;
+}
+
 export function treePath(id: string): string {
   return `/s/${encodeURIComponent(id)}/tree`;
 }

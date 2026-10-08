@@ -24,7 +24,7 @@ import { Card } from "../components/ui/card";
 import { SESSION_TABS, filterSessionsByTab, type SessionTab } from "../utils/sessionTabs";
 import { peekListScrollTop, saveListScrollTop } from "../utils/scrollMemory";
 import { usageBySession } from "../utils/usage";
-import { chatPath, navigate } from "../utils/router";
+import { chatPath, navigate, onRouteChange } from "../utils/router";
 
 /** 刷新超过此时长才显示顶部进度条（快速静默刷新保持视觉安静） */
 const PROGRESS_REVEAL_MS = 400;
@@ -56,6 +56,26 @@ export function SessionsPage() {
   const listScrollRef = useRef<HTMLDivElement | null>(null);
   /** 进场动画 seen：提升到页面层（跨 tab 卸载/重挂持久）——空分类往返零动画（AC3-b） */
   const seenIdsRef = useRef<Set<string>>(new Set());
+
+  // 侧边栏/抽屉 ?new=1 深链：已在会话页时组件不重挂载，挂载初值不再重算，
+  // 靠 popstate 同步弹出新建表单（浏览器前进/后退到带 new=1 的历史条目同样生效）。
+  // 只开不关：工具栏 ➕ 手动打开的表单不因 URL 无 new=1 被强制关闭。
+  useEffect(
+    () =>
+      onRouteChange(() => {
+        if (new URLSearchParams(window.location.search).get("new") === "1") setCreateOpen(true);
+      }),
+    [],
+  );
+
+  /** 清掉 URL ?new=1（表单关闭/创建后，刷新或后退不再自动弹出） */
+  const clearNewParam = useCallback(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (!params.has("new")) return;
+    params.delete("new");
+    const qs = params.toString();
+    window.history.replaceState({}, "", qs === "" ? window.location.pathname : `${window.location.pathname}?${qs}`);
+  }, []);
 
   const refresh = useCallback(async () => {
     setRefreshing(true);
@@ -233,17 +253,12 @@ export function SessionsPage() {
         open={createOpen}
         onClose={() => {
           setCreateOpen(false);
-          // 清掉 ?new=1（关闭后刷新不再自动弹出）
-          const params = new URLSearchParams(window.location.search);
-          if (params.has("new")) {
-            params.delete("new");
-            const qs = params.toString();
-            window.history.replaceState({}, "", qs === "" ? window.location.pathname : `${window.location.pathname}?${qs}`);
-          }
+          clearNewParam();
         }}
         recentCwds={recentCwds}
         onCreated={(session) => {
           setCreateOpen(false);
+          clearNewParam();
           void refresh();
           navigate(chatPath(session.id));
         }}

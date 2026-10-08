@@ -20,6 +20,7 @@ import {
   SYSTEM_PATH,
   TERMINAL_PATH,
   navigate,
+  newSessionPath,
   type Route,
 } from "../utils/router";
 import { NotificationCenter } from "./NotificationCenter";
@@ -200,7 +201,7 @@ export function AppShell({ route, children }: AppShellProps) {
             </li>
           ))}
         </ul>
-        <Button type="button" className="sidebar-create" onClick={() => go(`${SESSIONS_PATH}?new=1`)}>
+        <Button type="button" className="sidebar-create" onClick={() => go(newSessionPath())}>
           <PlusIcon />
           <span>新建会话</span>
         </Button>
@@ -248,7 +249,7 @@ export function AppShell({ route, children }: AppShellProps) {
                 </li>
               ))}
             </ul>
-            <Button type="button" className="drawer-create" onClick={() => go(`${SESSIONS_PATH}?new=1`)}>
+            <Button type="button" className="drawer-create" onClick={() => go(newSessionPath())}>
               <PlusIcon />
               <span>新建会话</span>
             </Button>

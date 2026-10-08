@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### 性能与体验（弱网优化批）
+- server：@fastify/compress 响应压缩（brotli 优先，体积约 -70%）+ /assets 内容 hash 产物长缓存 immutable（二次打开零请求）
+- web：新建会话 ?new=1 深链修复——跨页保留 query（如 ?tab=）+ popstate 同步弹出表单（只开不关），新增 newSessionPath 路由助手与回归测试
+
 ### 手机远程方案（headscale / PWA 双路径）
 - `--tailscale` 自动识别控制面（`tailscale debug prefs` ControlURL）：官方 → serve HTTPS 自动证书（真 WebAPK）；自建 headscale → tailnet 内 HTTP 回退（headscale 不支持 tailscale cert）并说明 PWA 限制
 - Tailscale 状态诊断强化：CLI 崩溃（Trace/BPT trap 等）/ 未登录 / 已停止 分别给出可操作指引，不再误导用户执行 `tailscale up`
