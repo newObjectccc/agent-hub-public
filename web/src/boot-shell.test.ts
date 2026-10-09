@@ -137,7 +137,7 @@ describe("index.html JS 加载失败兜底（纯 inline，外部 JS 挂了也能
     vi.useFakeTimers();
     boot();
 
-    vi.advanceTimersByTime(30_000);
+    vi.advanceTimersByTime(60_000);
 
     const alert = document.querySelector('#root [role="alert"]');
     expect(alert).not.toBeNull();
@@ -149,7 +149,7 @@ describe("index.html JS 加载失败兜底（纯 inline，外部 JS 挂了也能
     boot();
     bootWin().__APP_BOOTED__ = true;
 
-    vi.advanceTimersByTime(30_000);
+    vi.advanceTimersByTime(60_000);
 
     expect(document.querySelector('#root [role="alert"]')).toBeNull();
   });

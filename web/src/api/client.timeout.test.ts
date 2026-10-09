@@ -1,6 +1,6 @@
 /**
  * request() 默认超时（P2）：弱网挂起 Promise 永不落定 → UI 永久 loading。
- * - 未传 signal 默认 AbortSignal.timeout(30_000)（AbortController mock 验证）
+ * - 未传 signal 默认 AbortSignal.timeout(60_000)（AbortController mock 验证）
  * - 超时（TimeoutError，含 fetch 阶段与读 body 阶段）→ 友好文案「网络请求超时」
  * - 调用方自带 signal 完全兼容：不叠加超时、主动 abort（AbortError）不伪装成超时
  */
@@ -21,15 +21,15 @@ afterEach(() => {
 });
 
 describe("request 默认超时（P2）", () => {
-  it("未传 signal：默认 AbortSignal.timeout(30_000) 并透传给 fetch", async () => {
+  it("未传 signal：默认 AbortSignal.timeout(60_000) 并透传给 fetch", async () => {
     const fakeSignal = new AbortController().signal;
     const timeoutSpy = vi.spyOn(AbortSignal, "timeout").mockReturnValue(fakeSignal);
 
     await request("/api/ping");
 
-    expect(DEFAULT_REQUEST_TIMEOUT_MS).toBe(30_000);
+    expect(DEFAULT_REQUEST_TIMEOUT_MS).toBe(60_000);
     expect(timeoutSpy).toHaveBeenCalledTimes(1);
-    expect(timeoutSpy).toHaveBeenCalledWith(30_000);
+    expect(timeoutSpy).toHaveBeenCalledWith(60_000);
     const init = fetchMock.mock.calls[0][1] as RequestInit;
     expect(init.signal).toBe(fakeSignal);
   });
@@ -104,6 +104,6 @@ describe("request 默认超时（P2）", () => {
   it("api 层方法（getSystem 等）同样走默认超时兜底", async () => {
     const timeoutSpy = vi.spyOn(AbortSignal, "timeout").mockReturnValue(new AbortController().signal);
     await api.getSystem();
-    expect(timeoutSpy).toHaveBeenCalledWith(30_000);
+    expect(timeoutSpy).toHaveBeenCalledWith(60_000);
   });
 });

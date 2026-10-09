@@ -1,13 +1,16 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { AppShell } from "./components/AppShell";
-import { HomePage } from "./pages/HomePage";
-import { SessionsPage } from "./pages/SessionsPage";
-import { SystemPage } from "./pages/SystemPage";
-import { TerminalPage } from "./pages/TerminalPage";
-import { SettingsPage } from "./pages/SettingsPage";
-import { ChatPage } from "./pages/ChatPage";
-import { TreePage } from "./pages/TreePage";
 import { LockScreen } from "./components/LockScreen";
+import { PageSkeleton } from "./components/Skeletons";
+
+// 路由级代码分割（弱网首屏传输量）：页面各自懒加载，公共层（AppShell/锁屏/骨架/路由）留主 bundle
+const HomePage = lazy(() => import("./pages/HomePage").then((m) => ({ default: m.HomePage })));
+const SessionsPage = lazy(() => import("./pages/SessionsPage").then((m) => ({ default: m.SessionsPage })));
+const SystemPage = lazy(() => import("./pages/SystemPage").then((m) => ({ default: m.SystemPage })));
+const TerminalPage = lazy(() => import("./pages/TerminalPage").then((m) => ({ default: m.TerminalPage })));
+const SettingsPage = lazy(() => import("./pages/SettingsPage").then((m) => ({ default: m.SettingsPage })));
+const ChatPage = lazy(() => import("./pages/ChatPage").then((m) => ({ default: m.ChatPage })));
+const TreePage = lazy(() => import("./pages/TreePage").then((m) => ({ default: m.TreePage })));
 import { ToastHost } from "./components/ToastHost";
 import { NoticeBanner } from "./components/NoticeBanner";
 import { flushOfflineQueue } from "./chat/offlineFlush";
@@ -67,16 +70,19 @@ export function App() {
     );
   }
 
-  // chat/树页保持全屏原布局（顶栏返回/复制菜单/子代理标记），不套导航框架
+  // chat/树页保持全屏原布局（顶栏返回/复制菜单/子代理标记），不套导航框架；
+  // key={route.id} 保持原行为：换会话即重挂页面（不复用滚动/草稿等内部状态）
   if (route.name === "chat" || route.name === "tree") {
     return (
       <>
         <NoticeBanner />
-        {route.name === "chat" ? (
-          <ChatPage key={route.id} sessionId={route.id} />
-        ) : (
-          <TreePage key={route.id} sessionId={route.id} />
-        )}
+        <Suspense fallback={<PageSkeleton label="会话页面加载中" />}>
+          {route.name === "chat" ? (
+            <ChatPage key={route.id} sessionId={route.id} />
+          ) : (
+            <TreePage key={route.id} sessionId={route.id} />
+          )}
+        </Suspense>
         <ToastHost />
       </>
     );
@@ -87,17 +93,19 @@ export function App() {
       {/* 会话完结提醒横幅（应用内全局，含震动/提示音逻辑） */}
       <NoticeBanner />
       <AppShell route={route}>
-        {route.name === "sessions" ? (
-          <SessionsPage />
-        ) : route.name === "system" ? (
-          <SystemPage />
-        ) : route.name === "terminal" ? (
-          <TerminalPage />
-        ) : route.name === "settings" ? (
-          <SettingsPage />
-        ) : (
-          <HomePage />
-        )}
+        <Suspense fallback={<PageSkeleton />}>
+          {route.name === "sessions" ? (
+            <SessionsPage />
+          ) : route.name === "system" ? (
+            <SystemPage />
+          ) : route.name === "terminal" ? (
+            <TerminalPage />
+          ) : route.name === "settings" ? (
+            <SettingsPage />
+          ) : (
+            <HomePage />
+          )}
+        </Suspense>
       </AppShell>
       <ToastHost />
     </>

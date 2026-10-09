@@ -94,6 +94,14 @@ async function renderApp(pathname: string): Promise<HTMLElement> {
     await Promise.resolve();
     await Promise.resolve();
   });
+  // 页面已改为 React.lazy 懒加载（代码分割）：动态 import resolve 后的 Suspense 恢复渲染
+  // 需在后续 act 周期 flush（vite-node 下 import 跨多轮事件循环），逐轮推进直到骨架被真实页面替换
+  for (let i = 0; i < 20; i++) {
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    if (container && !container.querySelector(".skeleton-list")) break;
+  }
   return container;
 }
 

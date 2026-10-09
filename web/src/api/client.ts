@@ -43,8 +43,8 @@ export class ApiError extends Error {
   }
 }
 
-/** 默认请求超时（P2）：弱网挂起时 fetch 永不落定 → UI 永久 loading，30s 兜底中止 */
-export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+/** 默认请求超时（P2）：弱网挂起时 fetch 永不落定 → UI 永久 loading，60s 兜底中止（DERP 中继慢网放宽） */
+export const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
 /** 超时统一友好文案（不裸露 DOMException） */
 export const TIMEOUT_MESSAGE = "网络请求超时，请检查网络后重试";
 
@@ -104,7 +104,7 @@ export function timeoutSignal(ms: number): TimeoutSignal {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  // P2：未自带 signal 时默认 30s 超时；调用方 signal 原样透传（保持兼容，不做二次兜底）
+  // P2：未自带 signal 时默认 60s 超时；调用方 signal 原样透传（保持兼容，不做二次兜底）
   const watchdog = init?.signal ? null : timeoutSignal(DEFAULT_REQUEST_TIMEOUT_MS);
   const signal = init?.signal ?? watchdog!.signal;
   try {
