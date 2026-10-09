@@ -171,7 +171,11 @@ export function parseClaudeTranscript(
 
     switch (row.type) {
       case "ai-title": {
-        if (typeof row.aiTitle === "string" && row.aiTitle.trim() !== "") name = row.aiTitle.trim();
+        // 最新一条为当前名；显式空串 = 清空名字（rename 清空时写入空 aiTitle 行）
+        if (typeof row.aiTitle === "string") {
+          const n = row.aiTitle.trim();
+          name = n === "" ? null : n;
+        }
         break;
       }
       case "summary": {

@@ -905,8 +905,10 @@ async function readSubAgentLineage(file: string): Promise<SubAgentLineage | null
       if (!isRecord(row)) continue;
       if (row.type === "session" && typeof row.id === "string") {
         id = row.id;
-      } else if (row.type === "session_info" && typeof row.name === "string" && row.name.trim() !== "") {
-        name = row.name.trim();
+      } else if (row.type === "session_info" && typeof row.name === "string") {
+        // 最新一条为当前名；显式清空视为 null（与 sessionName 口径一致）
+        const n = row.name.trim();
+        name = n === "" ? null : n;
       }
       // header 行内 parentSession（路径或裸 id，统一归一化为父会话 id）
       if (parentSessionId === null) {

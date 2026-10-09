@@ -416,6 +416,38 @@ export class SessionHub {
     return created;
   }
 
+  /**
+   * 重命名会话（pi）：SDK `SessionManager.appendSessionInfo` 追加 session_info entry
+   * （append-only 与 pi CLI 互通，最新一条为当前名；空名显式清空）。
+   *
+   * ⚠️ mtime 陷阱（与 createSession/forkSession 同根因）：改名写盘会把文件 mtime 刷成
+   * now，不登记会被 inferExternalStatus 的 60s 时间窗误判 running（改名后会话卡片/聊天页
+   * 误显示「工作中/思考中」）。这里把**改名瞬间的推断状态快照**显式登记进 statuses
+   * （不改变真实状态）：快照为 running 且本进程无记录时不落登记——那是外部活动的
+   * 真实推断，登记反而会让外部停止后无法随 mtime 老化自愈回落 idle。
+   */
+  async renameSession(id: string, name: string): Promise<SessionListItem> {
+    const found = await this.findSession(id);
+    if (!found) {
+      throw new HubError(ErrorCodes.SESSION_NOT_FOUND, `会话不存在: ${id}`, 404);
+    }
+    // 快照必须在写盘前取：写盘后 mtime=now 必然推断成 running，快照就失去意义
+    const hadOwn = this.statuses.has(id);
+    const snapshot = this.statusWithInference(id, Date.parse(found.updatedAt));
+    const manager = SessionManager.open(found.sessionFile);
+    manager.appendSessionInfo(typeof name === "string" ? name : "");
+    if (hadOwn || snapshot !== "running") {
+      this.statuses.set(id, { status: snapshot, at: Date.now() });
+    }
+    // 失效清单缓存：改名立即可见（否则 TTL 窗口内列表/详情还是旧名）
+    this.invalidateList();
+    const updated = await this.findSession(id);
+    if (!updated) {
+      throw new HubError(ErrorCodes.INTERNAL, "改名后未能读回会话", 500);
+    }
+    return updated;
+  }
+
   /** 取得（或创建）该会话的 AgentSession 实例 */
   async ensureLive(id: string): Promise<AgentSession> {
     const existing = this.live.get(id);

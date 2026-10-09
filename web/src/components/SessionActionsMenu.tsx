@@ -7,13 +7,15 @@
 import { useRef, useState } from "react";
 import { useDismissable } from "../hooks/useDismissable";
 import type { SessionSummary } from "../api/types";
-import { CopyIcon, MoreIcon } from "./icons";
+import { CopyIcon, EditIcon, MoreIcon } from "./icons";
 import { DrivenBadge } from "./DrivenBadge";
 import { SourceBadge } from "./SourceBadge";
 
 export interface SessionActionsMenuProps {
   onFork: () => void;
   forkBusy?: boolean;
+  /** 重命名入口（弹出 RenameSessionSheet 由调用方负责）；缺省不显示菜单项 */
+  onRename?: () => void;
   /** 顶栏收纳的会话信息（i1）：cwd / 来源 / 驱动方式 / 子代理标记 */
   info?: {
     cwd?: string | null;
@@ -23,7 +25,7 @@ export interface SessionActionsMenuProps {
   };
 }
 
-export function SessionActionsMenu({ onFork, forkBusy = false, info }: SessionActionsMenuProps) {
+export function SessionActionsMenu({ onFork, forkBusy = false, onRename, info }: SessionActionsMenuProps) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement | null>(null);
 
@@ -81,6 +83,21 @@ export function SessionActionsMenu({ onFork, forkBusy = false, info }: SessionAc
             <CopyIcon />
             <span>{forkBusy ? "复制中…" : "复制为新会话"}</span>
           </button>
+          {onRename && (
+            <button
+              type="button"
+              role="menuitem"
+              className="action-menu-item"
+              title="修改会话名字：列表里一眼找到，比看最后一条消息快且准"
+              onClick={() => {
+                setOpen(false);
+                onRename();
+              }}
+            >
+              <EditIcon />
+              <span>重命名</span>
+            </button>
+          )}
           <p className="action-menu-hint">
             手机独立干活推荐：分叉后互不影响。复制完整上下文到全新会话，手机面板与电脑端 pi
             各自继续、互不干扰（手机发消息是 server 的 pi 在驱动同一会话，电脑终端需 pi --resume 才能看到）。

@@ -11,7 +11,8 @@ export interface SessionSummary {
   id: string;
   /** 会话来源徽章（pi | claude） */
   source: SessionSource;
-  name: string;
+  /** 会话名（server 口径：无名/显式清空为 null，契约 §1） */
+  name: string | null;
   cwd: string;
   updatedAt: string; // ISO 8601 UTC
   messageCount: number;

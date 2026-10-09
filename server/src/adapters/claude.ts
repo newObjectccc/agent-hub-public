@@ -7,6 +7,7 @@
  * - abort：杀掉本进程 spawn 的子进程（SIGTERM → 宽限后 SIGKILL），幂等
  * - createSession：写空白 transcript 会话文件（调研结论见方法注释）
  * - forkSession：复制 transcript 为新 UUID 会话文件（行内 sessionId 同步替换，原文件只读）
+ * - renameSession：追加 `ai-title` 行（transcript 的会话名栏位，与 claude 自身写名同格式）
  *
  * ── 安全约束（硬规则）─────────────────────────────────────────────────────
  * 1. 只走本地 spawn，不引入任何远程 SDK / 网络驱动；不读取、不记录、不回显任何凭据
@@ -19,7 +20,7 @@
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, appendFile, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { ErrorCodes, HubError } from "../errors.js";
 import type { PromptResult } from "../sessions/hub.js";
@@ -299,6 +300,43 @@ export class ClaudeAdapter implements SessionAdapter {
       throw new HubError(ErrorCodes.INTERNAL, "会话复制后未能读回新会话", 500);
     }
     return created;
+  }
+
+  /**
+   * 重命名会话（claude）：transcript 的 `ai-title` 行（aiTitle 字段）是会话名栏位
+   * （claude-transcript.ts 解析口径：最新一条为当前名，显式空串 = 清空），这里追加一行
+   * 同格式记录（append-only，与 claude 自身写名行为一致，原行不改不删）。
+   *
+   * ⚠️ mtime 陷阱（与 createSession/forkSession 同根因）：写盘会把文件 mtime 刷成 now，
+   * 不登记会被 inferExternalStatus 的 60s 时间窗误判 running（改名后卡片/聊天页显示
+   * 「工作中」）。这里把**改名瞬间的推断状态快照**显式登记进 statuses（不改变真实状态）；
+   * 快照为 running 且本进程无记录时不落登记（外部活动真实推断，保留 mtime 老化自愈）。
+   */
+  async renameSession(id: string, name: string): Promise<SessionListItem> {
+    const found = await this.findSession(id);
+    if (!found) {
+      throw new HubError(ErrorCodes.SESSION_NOT_FOUND, `会话不存在: ${id}`, 404);
+    }
+    // 快照必须在写盘前取：写盘后 mtime=now 必然推断成 running，快照就失去意义
+    const hadOwn = this.statuses.has(id);
+    const snapshot = this.statusWithInference(id, Date.parse(found.updatedAt));
+    const trimmed = typeof name === "string" ? name.replace(/[\r\n]+/g, " ").trim() : "";
+    const timestamp = new Date().toISOString();
+    await appendFile(
+      found.sessionFile,
+      JSON.stringify({ type: "ai-title", aiTitle: trimmed, sessionId: id, cwd: found.cwd, timestamp }) + "\n",
+      "utf8",
+    );
+    if (hadOwn || snapshot !== "running") {
+      this.statuses.set(id, snapshot);
+    }
+    // 失效清单缓存：改名立即可见（否则 TTL 窗口内列表/详情还是旧名）
+    this.invalidateList();
+    const updated = await this.findSession(id);
+    if (!updated) {
+      throw new HubError(ErrorCodes.INTERNAL, "改名后未能读回会话", 500);
+    }
+    return updated;
   }
 
   /**

@@ -129,6 +129,51 @@ describe("registry: createSession 按 source 分发 / forkSession 按归属分�
   });
 });
 
+describe("registry: renameSession 按归属分发", () => {
+  it("分发到归属 adapter，name 原样透传（空串 = 清空）", async () => {
+    const piAdapter = makeFakeAdapter("pi", [makeItem("pi-1", "pi", "2026-02-18T12:00:00.000Z")]);
+    const claudeAdapter = makeFakeAdapter("claude", [makeItem("claude-1", "claude", "2026-02-18T11:00:00.000Z")]);
+    const renamed: Array<{ id: string; name: string }> = [];
+    Object.assign(claudeAdapter, {
+      renameSession: async (id: string, name: string) => {
+        renamed.push({ id, name });
+        return { ...makeItem(id, "claude", "2026-02-18T11:00:00.000Z"), name: name === "" ? null : name };
+      },
+    });
+    const registry = new SessionRegistry(piAdapter, claudeAdapter);
+
+    const out = await registry.renameSession("claude-1", "新名");
+    assert.equal(out.name, "新名");
+    const cleared = await registry.renameSession("claude-1", "");
+    assert.equal(cleared.name, null);
+    assert.deepEqual(renamed, [
+      { id: "claude-1", name: "新名" },
+      { id: "claude-1", name: "" },
+    ]);
+    assert.equal(piAdapter.calls.filter((c) => c.method === "renameSession").length, 0);
+  });
+
+  it("适配器未实现 renameSession（如 codex）→ INVALID_REQUEST(400)，不静默成功", async () => {
+    const piAdapter = makeFakeAdapter("pi", [makeItem("pi-1", "pi", "2026-02-18T12:00:00.000Z")]);
+    const claudeAdapter = makeFakeAdapter("claude", [makeItem("claude-1", "claude", "2026-02-18T11:00:00.000Z")]);
+    const registry = new SessionRegistry(piAdapter, claudeAdapter);
+    await assert.rejects(
+      () => registry.renameSession("claude-1", "x"),
+      (err: unknown) => (err as { code?: string }).code === "INVALID_REQUEST",
+    );
+  });
+
+  it("renameSession 会话不存在 → SESSION_NOT_FOUND", async () => {
+    const piAdapter = makeFakeAdapter("pi", [makeItem("pi-1", "pi", "2026-02-18T12:00:00.000Z")]);
+    const claudeAdapter = makeFakeAdapter("claude", [makeItem("claude-1", "claude", "2026-02-18T11:00:00.000Z")]);
+    const registry = new SessionRegistry(piAdapter, claudeAdapter);
+    await assert.rejects(
+      () => registry.renameSession("nope", "x"),
+      (err: unknown) => (err as { code?: string }).code === "SESSION_NOT_FOUND",
+    );
+  });
+});
+
 describe("registry: 合并两个 source 的会话列表", () => {
   it("pi + claude 合并且按 updatedAt 倒序（同刻按 id 稳定排序）", async () => {
     const pi = makeFakeAdapter("pi", [

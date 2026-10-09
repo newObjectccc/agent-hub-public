@@ -62,6 +62,7 @@ function makeFakeHub(promptResult: PromptResult, overrides: Partial<SessionHubLi
     loadTree: async (): Promise<SessionTreeDto | null> => ({ entries: [], activePath: [] }),
     createSession: async () => sessionFixture,
     forkSession: async () => sessionFixture,
+    renameSession: async () => sessionFixture,
     prompt: async () => promptResult,
     abort: async () => undefined,
     compact: async () => undefined,
@@ -329,6 +330,108 @@ describe("contract: POST /api/sessions（source 分发）与 POST /api/sessions/
     const res = await app.inject({ method: "POST", url: "/api/sessions/nope/fork" });
     assert.equal(res.statusCode, 404);
     assert.equal((res.json() as { error: { code: string } }).error.code, "SESSION_NOT_FOUND");
+    await app.close();
+  });
+});
+
+describe("contract: POST /api/sessions/:id/rename（body.name 空串=清空）", () => {
+  async function makeApp(hub: SessionHubLike): Promise<Awaited<ReturnType<typeof createApp>>> {
+    return createApp({
+      hub,
+      dashboard: makeFakeDashboard(),
+      kpi: { getCards: () => [] },
+      config: { ...DEFAULT_CONFIG },
+      systemInfo: async () => systemFixture,
+      webRoot: null,
+    });
+  }
+
+  it("POST /api/sessions/:id/rename → 200 {session}，name 原样透传", async () => {
+    const calls: Array<{ id: string; name: string }> = [];
+    const app = await makeApp(
+      makeFakeHub(
+        { accepted: true, mode: "prompt" },
+        {
+          renameSession: async (id: string, name: string) => {
+            calls.push({ id, name });
+            return { ...sessionFixture, name };
+          },
+        },
+      ),
+    );
+    const res = await app.inject({ method: "POST", url: "/api/sessions/sess-1/rename", payload: { name: "新名字" } });
+    assert.equal(res.statusCode, 200);
+    assert.deepEqual((res.json() as { session: SessionListItem }).session.name, "新名字");
+    assert.deepEqual(calls, [{ id: "sess-1", name: "新名字" }]);
+    await app.close();
+  });
+
+  it("name 空串 = 清空名字（原样透传，不当缺省）", async () => {
+    const calls: string[] = [];
+    const app = await makeApp(
+      makeFakeHub(
+        { accepted: true, mode: "prompt" },
+        {
+          renameSession: async (id: string, name: string) => {
+            calls.push(name);
+            return { ...sessionFixture, name: null };
+          },
+        },
+      ),
+    );
+    const res = await app.inject({ method: "POST", url: "/api/sessions/sess-1/rename", payload: { name: "" } });
+    assert.equal(res.statusCode, 200);
+    assert.deepEqual(calls, [""]);
+    assert.equal((res.json() as { session: SessionListItem }).session.name, null);
+    await app.close();
+  });
+
+  it("name 非字符串 / 缺失 / 超长 → 400 INVALID_REQUEST（不调 rename）", async () => {
+    const calls: unknown[] = [];
+    const app = await makeApp(
+      makeFakeHub(
+        { accepted: true, mode: "prompt" },
+        {
+          renameSession: async (id: string, name: string) => {
+            calls.push({ id, name });
+            return sessionFixture;
+          },
+        },
+      ),
+    );
+    for (const payload of [{}, { name: 42 }, { name: "x".repeat(201) }]) {
+      const res = await app.inject({ method: "POST", url: "/api/sessions/sess-1/rename", payload });
+      assert.equal(res.statusCode, 400, JSON.stringify(payload));
+      assert.equal((res.json() as { error: { code: string } }).error.code, "INVALID_REQUEST");
+    }
+    assert.equal(calls.length, 0);
+    await app.close();
+  });
+
+  it("rename 会话不存在 → 404 SESSION_NOT_FOUND", async () => {
+    const app = await makeApp(
+      makeFakeHub(
+        { accepted: true, mode: "prompt" },
+        {
+          renameSession: async (id: string) => {
+            throw new HubError(ErrorCodes.SESSION_NOT_FOUND, `会话不存在: ${id}`, 404);
+          },
+        },
+      ),
+    );
+    const res = await app.inject({ method: "POST", url: "/api/sessions/nope/rename", payload: { name: "x" } });
+    assert.equal(res.statusCode, 404);
+    assert.equal((res.json() as { error: { code: string } }).error.code, "SESSION_NOT_FOUND");
+    await app.close();
+  });
+
+  it("hub 不支持 renameSession → 501（明确报错，不静默假装成功）", async () => {
+    const fake = makeFakeHub({ accepted: true, mode: "prompt" });
+    delete (fake as Partial<SessionHubLike>).renameSession;
+    const app = await makeApp(fake);
+    const res = await app.inject({ method: "POST", url: "/api/sessions/sess-1/rename", payload: { name: "x" } });
+    assert.equal(res.statusCode, 501);
+    assert.equal((res.json() as { error: { code: string } }).error.code, "INVALID_REQUEST");
     await app.close();
   });
 });

@@ -29,6 +29,8 @@ export interface SessionAdapter {
   createSession?(cwd: string, name?: string): Promise<SessionListItem>;
   /** 复制会话（fork）：基于完整上下文生成独立新会话文件，原会话只读不受影响 */
   forkSession(id: string): Promise<SessionListItem>;
+  /** 重命名会话（pi：session_info entry；claude：ai-title 行）；不支持的源不实现，registry 报 400 */
+  renameSession?(id: string, name: string): Promise<SessionListItem>;
   /** 手动压缩上下文（仅 pi 支持；claude 由其自身 autocompact 管理） */
   compact?(id: string): Promise<void>;
   /** 跨会话搜索（目前仅 pi 实现；claude 留待后续） */

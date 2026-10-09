@@ -60,6 +60,8 @@ export interface SessionHubLike {
   loadTree(id: string): Promise<SessionTreeDto | null>;
   createSession(cwd: string, name?: string, source?: SessionSource): Promise<SessionListItem>;
   forkSession(id: string): Promise<SessionListItem>;
+  /** 重命名会话（body.name 空串 = 清空名字）；实现方不支持时路由返回 501 */
+  renameSession?(id: string, name: string): Promise<SessionListItem>;
   prompt(id: string, text: unknown, modeRaw: unknown, images?: PromptImageAttachment[]): Promise<PromptResult>;
   abort(id: string): Promise<void>;
   /** 手动压缩上下文（pi 专用；instructions 透传 SDK session.compact()） */
@@ -295,6 +297,29 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
     try {
       const session = await hub.forkSession(req.params.id);
       return reply.status(201).send({ session });
+    } catch (err) {
+      return handle(reply, err);
+    }
+  });
+
+  // POST /api/sessions/:id/rename（body.name：新名字，空串=清空名字）：pi 追加 session_info entry、
+  // claude 追加 ai-title 行（最新一条为当前名）；两源均快照登记改名瞬间的推断状态，防写盘刷新
+  // mtime 后被 60s 时间窗误判 running（契约 §1）
+  app.post<{ Params: { id: string } }>("/api/sessions/:id/rename", async (req, reply) => {
+    try {
+      const body = (typeof req.body === "object" && req.body !== null ? req.body : {}) as { name?: unknown };
+      const name = body.name;
+      if (typeof name !== "string") {
+        throw new HubError(ErrorCodes.INVALID_REQUEST, "name 必须是字符串（空串 = 清空名字）");
+      }
+      if (name.length > 200) {
+        throw new HubError(ErrorCodes.INVALID_REQUEST, "name 最长 200 字符");
+      }
+      if (!hub.renameSession) {
+        throw new HubError(ErrorCodes.INVALID_REQUEST, "该服务不支持重命名会话", 501);
+      }
+      const session = await hub.renameSession(req.params.id, name);
+      return reply.status(200).send({ session });
     } catch (err) {
       return handle(reply, err);
     }

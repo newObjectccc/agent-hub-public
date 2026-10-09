@@ -207,6 +207,18 @@ export class SessionRegistry {
     return adapter.forkSession(id);
   }
 
+  /** 重命名会话按 id 归属分发（pi：session_info entry；claude：ai-title 行；不支持的源报 400） */
+  async renameSession(id: string, name: string): Promise<SessionListItem> {
+    const adapter = await this.resolve(id);
+    if (!adapter) {
+      throw new HubError(ErrorCodes.SESSION_NOT_FOUND, `会话不存在: ${id}`, 404);
+    }
+    if (!adapter.renameSession) {
+      throw new HubError(ErrorCodes.INVALID_REQUEST, `来源 ${adapter.source} 暂不支持重命名会话`, 400);
+    }
+    return adapter.renameSession(id, name);
+  }
+
   async prompt(
     id: string,
     text: unknown,

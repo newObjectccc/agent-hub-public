@@ -76,4 +76,24 @@ describe("SessionActionsMenu", () => {
     expect(item.disabled).toBe(true);
     expect(item.textContent).toContain("复制中");
   });
+
+  it("传 onRename 时菜单含「重命名」项：点击触发 onRename 且菜单关闭", () => {
+    const onRename = vi.fn();
+    const el = render(<SessionActionsMenu onFork={() => undefined} onRename={onRename} />);
+    click(el.querySelector('button[aria-label="会话操作"]'));
+    const items = [...el.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')];
+    const renameItem = items.find((i) => i.textContent?.includes("重命名"));
+    expect(renameItem).toBeDefined();
+    expect(renameItem!.getAttribute("title")).toContain("名字");
+    click(renameItem!);
+    expect(onRename).toHaveBeenCalledTimes(1);
+    expect(el.querySelector(".action-menu")).toBeNull();
+  });
+
+  it("未传 onRename 时不显示「重命名」项（向后兼容）", () => {
+    const el = render(<SessionActionsMenu onFork={() => undefined} />);
+    click(el.querySelector('button[aria-label="会话操作"]'));
+    const items = [...el.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')];
+    expect(items.some((i) => i.textContent?.includes("重命名"))).toBe(false);
+  });
 });

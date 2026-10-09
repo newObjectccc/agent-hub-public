@@ -55,6 +55,10 @@ export class PiAdapter implements SessionAdapter {
     return this.hub.forkSession(id);
   }
 
+  renameSession(id: string, name: string): Promise<SessionListItem> {
+    return this.hub.renameSession(id, name);
+  }
+
   compact(id: string, instructions?: string): Promise<void> {
     return this.hub.compact(id, instructions);
   }

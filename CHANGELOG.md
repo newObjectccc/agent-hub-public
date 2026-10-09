@@ -63,6 +63,7 @@
 - 血缘扫描 TTL 快照（原每 10s/连接全目录 readdir）；coalesceDeltas 分片 join；usage spread 循环化
 
 ### 体验（UI/UX 改进批）
+- 新功能：会话改名（手机可维护）——`POST /api/sessions/:id/rename`（空串清名）+ chat 顶栏 ⋯「重命名」Sheet 表单；pi（appendSessionInfo）/ claude（ai-title）双源，codex 明确 400；改名写盘前快照状态防 60s 时间窗误判 running
 - 会话页默认 tab 动态回落：等你处理 > 工作中 > 全部（只自动选一次；URL 深链与手动选择永远优先，选中后同步 ?tab= 保持分享一致）
 - 会话卡片最近消息预览 2→3 行（虚拟列表行高估算同步 clamp）
 - 草稿持久化：按会话存 localStorage，刷新/切回自动恢复，30 天清理

@@ -109,6 +109,14 @@ export const api = {
     });
   },
 
+  /** 重命名会话（POST /api/sessions/:id/rename）：name 空串 = 清空名字（契约 §1） */
+  renameSession(id: string, name: string): Promise<{ session: SessionSummary }> {
+    return request(`/api/sessions/${encodeURIComponent(id)}/rename`, {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    });
+  },
+
   /** 发送消息（契约 §1）；images 为上传图片引用路径（pi 直接附图，契约 §11）；signal 可选超时/中止 */
   sendPrompt(id: string, text: string, mode: PromptMode = "prompt", images?: string[], signal?: AbortSignal): Promise<PromptResult> {
     return request(`/api/sessions/${encodeURIComponent(id)}/prompt`, {

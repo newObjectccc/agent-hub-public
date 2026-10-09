@@ -4,7 +4,7 @@
  */
 import { strict as assert } from "node:assert";
 import { EventEmitter } from "node:events";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, beforeEach, describe, it } from "node:test";
@@ -377,6 +377,98 @@ describe("claude adapter: createSession 空白 transcript + forkSession 复制�
       );
     } finally {
       adapter.disposeAll();
+    }
+  });
+});
+
+describe("claude adapter: renameSession 追加 ai-title 行（mtime 陷阱回归）", () => {
+  it("改名追加 ai-title 行（append-only）：name 立即更新（invalidateList）", async () => {
+    const adapter = makeAdapter(() => undefined);
+    try {
+      const created = await adapter.createSession(root, "旧名字");
+      const renamed = await adapter.renameSession(created.id, "新名字");
+      assert.equal(renamed.name, "新名字");
+      // invalidateList：findSession 立即读到新名，不等 TTL
+      assert.equal((await adapter.findSession(created.id))?.name, "新名字");
+      // 旧行保留（append-only），最新一条 ai-title 胜出
+      const raw = await readFile(created.sessionFile!, "utf8");
+      const rows = raw.trim().split("\n").map((l) => JSON.parse(l) as Record<string, unknown>);
+      assert.equal(rows.length, 3);
+      assert.equal(rows[1].type, "ai-title");
+      assert.equal(rows[1].aiTitle, "旧名字");
+      assert.equal(rows[2].type, "ai-title");
+      assert.equal(rows[2].aiTitle, "新名字");
+    } finally {
+      adapter.disposeAll();
+    }
+  });
+
+  it("空串清空名字（显式空 aiTitle 行 → name null）", async () => {
+    const adapter = makeAdapter(() => undefined);
+    try {
+      const created = await adapter.createSession(root, "要被清掉的名字");
+      const renamed = await adapter.renameSession(created.id, "");
+      assert.equal(renamed.name, null);
+      assert.equal((await adapter.findSession(created.id))?.name, null);
+    } finally {
+      adapter.disposeAll();
+    }
+  });
+
+  it("改名会话不存在 → SESSION_NOT_FOUND", async () => {
+    const adapter = makeAdapter(() => undefined);
+    try {
+      await assert.rejects(
+        () => adapter.renameSession("11111111-2222-3333-4444-555555555555", "x"),
+        (err: unknown) => (err as { code?: string }).code === "SESSION_NOT_FOUND",
+      );
+    } finally {
+      adapter.disposeAll();
+    }
+  });
+
+  it("mtime 陷阱回归：改名写盘刷新 mtime 后不被 60s 时间窗误判 running", async () => {
+    const adapter = makeAdapter(() => undefined);
+    try {
+      const created = await adapter.createSession(root, "待改名");
+      const renamed = await adapter.renameSession(created.id, "改名后的会话");
+      assert.equal(renamed.status, "idle", "改名后不得误判 running");
+      const found = await adapter.findSession(created.id);
+      assert.ok(found);
+      assert.equal(found.status, "idle");
+    } finally {
+      adapter.disposeAll();
+    }
+  });
+
+  it("mtime 陷阱回归：外部静默会话（无本进程记录、文件老）改名后仍 idle", async () => {
+    const adapter = makeAdapter(() => undefined);
+    const id = "22222222-3333-4444-5555-666666666666";
+    const projDir = join(projectsDir, "-Users-me-Workspace-demo");
+    const file = join(projDir, `${id}.jsonl`);
+    try {
+      const oldIso = new Date(Date.now() - 70_000).toISOString();
+      await writeFile(
+        file,
+        JSON.stringify({
+          type: "user",
+          message: { role: "user", content: "hi" },
+          uuid: "u-rename-1",
+          parentUuid: null,
+          sessionId: id,
+          timestamp: oldIso,
+          cwd: CWD,
+        }) + "\n",
+        "utf8",
+      );
+      const old = new Date(Date.now() - 70_000);
+      await utimes(file, old, old); // mtime 同步拨老：改名前推断必须是 idle
+      const renamed = await adapter.renameSession(id, "外部会话改名");
+      assert.equal(renamed.name, "外部会话改名");
+      assert.equal(renamed.status, "idle", "改名前推断 idle，写盘刷新 mtime 后不得翻成 running");
+    } finally {
+      adapter.disposeAll();
+      await rm(file, { force: true });
     }
   });
 });

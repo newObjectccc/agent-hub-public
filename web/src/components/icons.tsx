@@ -133,6 +133,21 @@ export function CopyIcon() {
   );
 }
 
+export function EditIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden>
+      <path
+        d="M4 20h4L20 8l-4-4L4 16v4z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.2"
+        strokeLinejoin="round"
+      />
+      <path d="M14 6l4 4" fill="none" stroke="currentColor" strokeWidth="2.2" />
+    </svg>
+  );
+}
+
 export function TreeIcon() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden>

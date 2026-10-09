@@ -41,6 +41,7 @@ import { ChannelEcho } from "../components/ChannelEcho";
 import { UploadButton } from "../components/UploadButton";
 import { SendModeMenu } from "../components/SendModeMenu";
 import { SessionActionsMenu } from "../components/SessionActionsMenu";
+import { RenameSessionSheet } from "../components/RenameSessionSheet";
 import { SlashCommandPanel } from "../components/SlashCommandPanel";
 import { QuickCommandPanel } from "../components/QuickCommandPanel";
 import { StatusBadge } from "../components/StatusBadge";
@@ -235,6 +236,8 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
     return storage ? loadRecentRefs(storage) : [];
   });
   const [forkBusy, setForkBusy] = useState(false);
+  // 重命名会话（SessionActionsMenu「重命名」→ RenameSessionSheet）
+  const [renameOpen, setRenameOpen] = useState(false);
   // slash 命令面板：输入 `/` 触发（光标前 token），继续输入即过滤
   const [slashSpan, setSlashSpan] = useState<TokenSpan | null>(null);
   const [slashOpen, setSlashOpen] = useState(false);
@@ -1441,6 +1444,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
           <SessionActionsMenu
             onFork={() => void doFork()}
             forkBusy={forkBusy}
+            onRename={() => setRenameOpen(true)}
             info={{
               cwd: session?.cwd ?? null,
               source: session?.source ?? null,
@@ -1794,6 +1798,18 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
           </div>
         </div>
       </footer>
+
+      {/* 重命名会话：保存后 setSession 刷新页头名字（列表页重挂载时拉到新名） */}
+      <RenameSessionSheet
+        open={renameOpen}
+        sessionId={sessionId}
+        currentName={session?.name ?? null}
+        onClose={() => setRenameOpen(false)}
+        onRenamed={(s) => {
+          setSession(s);
+          setRenameOpen(false);
+        }}
+      />
 
       {introOpen && (
         <AttachIntroSheet
