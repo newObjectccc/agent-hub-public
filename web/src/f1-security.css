@@ -158,7 +158,8 @@
   min-height: 48px;
   border: 3px solid var(--color-foreground, #111);
   background: var(--color-secondary, #eee);
-  color: var(--color-foreground, #111);
+  /* 前景随 secondary 底配对（深色主题下 secondary 为米白，错用 foreground 会米白字米白底隐形） */
+  color: var(--color-secondary-foreground, #111);
   font-size: 15px;
   font-weight: 700;
   cursor: pointer;
@@ -284,7 +285,8 @@
   font-weight: 700;
   border: 2px solid var(--color-foreground, #111);
   background: var(--color-secondary, #eee);
-  color: var(--color-foreground, #111);
+  /* 同 .lock-bio：前景随 secondary 底配对，深色主题不隐形 */
+  color: var(--color-secondary-foreground, #111);
   cursor: pointer;
   border-radius: 0;
   touch-action: manipulation;
