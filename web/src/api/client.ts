@@ -59,9 +59,54 @@ function isTimeoutError(e: unknown, signal: AbortSignal): boolean {
   return signal.aborted === true && reason?.name === "TimeoutError";
 }
 
+/** 超时信号 + 生命周期句柄（降级路径需清理定时器，且旧 API 无 signal.reason 需自报超时） */
+interface TimeoutSignal {
+  signal: AbortSignal;
+  /** 是否由本看门狗触发的中止（旧 WebView 无 signal.reason，isTimeoutError 判不出来） */
+  didTimeout: () => boolean;
+  /** 请求落定后调用：清定时器，不遗留挂起的 setTimeout */
+  cancel: () => void;
+}
+
+/** feature detect：旧 WebView（iOS Safari < 15.4 等）没有 AbortSignal.timeout */
+function hasNativeTimeoutSignal(): boolean {
+  return (
+    typeof AbortSignal !== "undefined" &&
+    typeof (AbortSignal as { timeout?: unknown }).timeout === "function"
+  );
+}
+
+/**
+ * 超时信号（兼容降级）：AbortSignal.timeout 可用则直接用；
+ * 否则降级 AbortController + setTimeout（旧 WebView 不因缺 API 崩溃）。
+ * 降级路径 abort 不带 reason（旧 API 也读不到 signal.reason），
+ * 超时判定由 didTimeout() 兑底，与原生路径同样映射友好文案。
+ */
+export function timeoutSignal(ms: number): TimeoutSignal {
+  if (hasNativeTimeoutSignal()) {
+    return {
+      signal: AbortSignal.timeout(ms),
+      didTimeout: () => false, // 原生路径交给 isTimeoutError（TimeoutError reason）判定
+      cancel: () => {},
+    };
+  }
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, ms);
+  return {
+    signal: controller.signal,
+    didTimeout: () => timedOut,
+    cancel: () => clearTimeout(timer),
+  };
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   // P2：未自带 signal 时默认 30s 超时；调用方 signal 原样透传（保持兼容，不做二次兜底）
-  const signal = init?.signal ?? AbortSignal.timeout(DEFAULT_REQUEST_TIMEOUT_MS);
+  const watchdog = init?.signal ? null : timeoutSignal(DEFAULT_REQUEST_TIMEOUT_MS);
+  const signal = init?.signal ?? watchdog!.signal;
   try {
     const res = await fetch(path, {
       headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
@@ -83,8 +128,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     return body as T;
   } catch (e) {
     if (e instanceof ApiError) throw e;
-    if (isTimeoutError(e, signal)) throw new ApiError(0, "TIMEOUT", TIMEOUT_MESSAGE);
+    if (isTimeoutError(e, signal) || watchdog?.didTimeout() === true) {
+      throw new ApiError(0, "TIMEOUT", TIMEOUT_MESSAGE);
+    }
     throw e;
+  } finally {
+    watchdog?.cancel();
   }
 }
 

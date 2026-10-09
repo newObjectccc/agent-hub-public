@@ -139,6 +139,16 @@ async function fireActivate(handlers: Record<string, Handler>): Promise<void> {
   await Promise.all(waits);
 }
 
+async function fireInstall(handlers: Record<string, Handler>): Promise<void> {
+  const waits: Array<Promise<unknown>> = [];
+  handlers["install"]({
+    waitUntil: (p: Promise<unknown>) => {
+      waits.push(p);
+    },
+  });
+  await Promise.all(waits);
+}
+
 function has(cache: FakeCache, path: string): boolean {
   return cache.entries.has(new URL(path, ORIGIN).href);
 }
@@ -227,5 +237,62 @@ describe("sw.js hash 资产治理（P2-7）", () => {
     expect(has(cache, "/assets/v2.js")).toBe(true); // 无 hash 形态 → 不按组清理
     expect(has(cache, "/vendor/lib.js")).toBe(true);
     expect(has(cache, "/assets/v1.js")).toBe(true); // 自身正常入缓存
+  });
+});
+
+describe("sw.js 入口资产预缓存（发版后首访即预热）", () => {
+  const INDEX_HTML =
+    '<script type="module" crossorigin src="/assets/index-CURRHASH.js"></script>' +
+    '<link rel="stylesheet" crossorigin href="/assets/index-CURRHASH.css">';
+
+  it("install 时 index.html 引用的 /assets/*.js|css 入预缓存（连同 SHELL）", async () => {
+    const caches = new FakeCaches();
+    const cache = await caches.open(CACHE);
+    const fetchFn = async (req: unknown): Promise<FakeResponse> => {
+      const url = String(req);
+      if (url === "/index.html") return fakeResponse(INDEX_HTML);
+      return fakeResponse(`// ${url}`);
+    };
+    const handlers = loadSw(caches, fetchFn);
+
+    await fireInstall(handlers);
+
+    expect(has(cache, "/assets/index-CURRHASH.js")).toBe(true); // 入口 JS 预热
+    expect(has(cache, "/assets/index-CURRHASH.css")).toBe(true); // 入口 CSS 预热
+    expect(has(cache, "/index.html")).toBe(true); // SHELL 同时入缓存
+    expect(has(cache, "/manifest.json")).toBe(true);
+    expect(has(cache, "/icons/icon-192.png")).toBe(true);
+    expect(has(cache, "/fonts/space-grotesk-latin.woff2")).toBe(true);
+  });
+
+  it("单个资产 fetch 失败不阻塞安装（allSettled 容错，运行时 cache-first 再回填）", async () => {
+    const caches = new FakeCaches();
+    const cache = await caches.open(CACHE);
+    const fetchFn = async (req: unknown): Promise<FakeResponse> => {
+      const url = String(req);
+      if (url === "/index.html") return fakeResponse(INDEX_HTML);
+      throw new TypeError("Failed to fetch"); // 资产拉取失败
+    };
+    const handlers = loadSw(caches, fetchFn);
+
+    await expect(fireInstall(handlers)).resolves.toBeUndefined(); // install 不失败
+
+    expect(has(cache, "/index.html")).toBe(true);
+    expect(has(cache, "/assets/index-CURRHASH.js")).toBe(false); // 失败项跳过
+  });
+
+  it("index.html 不可得时跳过预缓存，SHELL 仍入缓存（不阻塞安装）", async () => {
+    const caches = new FakeCaches();
+    const cache = await caches.open(CACHE);
+    const fetchFn = async (): Promise<FakeResponse> => {
+      throw new TypeError("Failed to fetch");
+    };
+    const handlers = loadSw(caches, fetchFn);
+
+    await expect(fireInstall(handlers)).resolves.toBeUndefined();
+
+    expect(has(cache, "/index.html")).toBe(true);
+    expect(has(cache, "/manifest.json")).toBe(true);
+    expect(has(cache, "/assets/index-CURRHASH.js")).toBe(false);
   });
 });

@@ -3,6 +3,9 @@
  *
  * 策略：
  * - 应用壳（HTML/manifest/图标）预缓存，离线可启动；
+ * - 入口 JS/CSS 预缓存（发版后首访即预热，二次打开零网络）：install 时解析
+ *   index.html 引用的 /assets/*（index-*.js|css 及 modulepreload）一并入缓存，
+ *   与旧 hash 清理逻辑（P2-7）同口径白名单；单个资产失败不阻塞安装；
  * - JS/CSS 等静态资源：cache-first（运行时回填缓存，Vite 带 hash 天然安全）；
  * - hash 资产治理（P2-7）：同 CACHE 内旧 hash chunk 不清会随每次发版无限增长——
  *   put 时清同组（同名同扩展）旧 hash，activate 时按 index.html 引用清同 CACHE 内残留旧 assets；
@@ -24,6 +27,15 @@ const SHELL = [
 
 /** Vite hash 产物形态：/assets/<name>-<hash>.<ext>（hash ≥ 8 位）；同名同扩展视为同组 */
 const HASHED_ASSET_RE = /^\/assets\/(.+)-[A-Za-z0-9_-]{8,}(\.[A-Za-z0-9]+)$/;
+
+/** 解析 HTML 中引用的 /assets/ 绝对路径（install 预缓存与 activate 白名单同口径） */
+function extractAssetPaths(html) {
+  const out = new Set();
+  for (const m of html.matchAll(/\/assets\/[^"'\s)>]+/g)) {
+    out.add(new URL(m[0], self.location.origin).pathname);
+  }
+  return [...out];
+}
 
 /** 归属组（name+ext）；非 hash 资产（壳/字体/图标）返回 null，永不参与清理 */
 function hashedAssetGroup(pathname) {
@@ -60,9 +72,7 @@ async function purgeStaleAssets(cache) {
     const index = await cache.match("/index.html");
     if (index) {
       const html = await index.text();
-      for (const m of html.matchAll(/\/assets\/[^"'\s)>]+/g)) {
-        keep.add(new URL(m[0], self.location.origin).pathname);
-      }
+      for (const p of extractAssetPaths(html)) keep.add(p);
     }
   } catch {
     /* 索引不可读：保守全清 hashed assets */
@@ -78,11 +88,49 @@ async function purgeStaleAssets(cache) {
   );
 }
 
+/** 取当前 index.html 文本：优先读已缓存壳（addAll 刚下好，零额外请求），空/异常回退网络 */
+async function indexHtmlText(cache) {
+  try {
+    const cached = await cache.match("/index.html");
+    if (cached) {
+      const text = await cached.text();
+      if (text) return text;
+    }
+  } catch {
+    /* 回退网络 */
+  }
+  try {
+    const res = await fetch("/index.html");
+    if (res.ok) return await res.text();
+  } catch {
+    /* 都拿不到：跳过预缓存，不阻塞安装 */
+  }
+  return "";
+}
+
+/**
+ * install 时预缓存 index.html 引用的入口 JS/CSS（含 modulepreload chunks）：
+ * 发版后首访即预热缓存，二次打开零网络。逐个 fetch+put（allSettled），
+ * 单个资产失败不阻塞安装（运行时 cache-first 再回填）。
+ */
+async function precacheEntryAssets(cache) {
+  const html = await indexHtmlText(cache);
+  if (!html) return;
+  await Promise.allSettled(
+    extractAssetPaths(html).map(async (path) => {
+      const res = await fetch(path);
+      if (res.ok) await cache.put(path, res);
+    }),
+  );
+}
+
 self.addEventListener("install", (event) => {
   event.waitUntil(
     caches
       .open(CACHE)
-      .then((cache) => cache.addAll(SHELL))
+      .then((cache) =>
+        cache.addAll(SHELL).then(() => precacheEntryAssets(cache)),
+      )
       .then(() => self.skipWaiting()),
   );
 });

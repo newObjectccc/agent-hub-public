@@ -22,9 +22,223 @@
     <!-- 图标 -->
     <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
     <link rel="icon" type="image/png" sizes="512x512" href="/icons/icon-512.png" />
+
+    <!--
+      首屏加载骨架（可靠性 #1）：纯 CSS，不依赖任何外部 CSS/JS。
+      弱网（DERP 中继 1s RTT）下外部 JS 长时间未到达时，用户看到的是加载态而非黑屏；
+      React 挂载后由 #root 内容自然覆盖。深浅主题/手动主题均可见，尊重 prefers-reduced-motion。
+      样式自包含（inline <style>）：外部 CSS 挂了它必须还能工作。无用户输入，无 XSS 面。
+    -->
+    <style>
+      .boot-shell {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 24px 16px;
+        background: #fff7e8;
+        color: #000000;
+        font-family: "Space Grotesk", -apple-system, BlinkMacSystemFont,
+          "PingFang SC", "Noto Sans SC", "Hiragino Sans GB", "Microsoft YaHei",
+          "Segoe UI", Roboto, sans-serif;
+      }
+      .boot-card {
+        width: 100%;
+        max-width: 340px;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        padding: 20px 16px;
+        border: 3px solid #000000;
+        background: #ffffff;
+        color: #000000;
+        box-shadow: 6px 6px 0 #000000;
+      }
+      .boot-title {
+        font-size: 18px;
+        font-weight: 800;
+        letter-spacing: 0.02em;
+      }
+      .boot-msg {
+        font-size: 13px;
+        line-height: 1.6;
+        color: #57503f;
+      }
+      .boot-bar {
+        width: 100%;
+        height: 14px;
+        border: 2px solid #000000;
+        background: #efe7d6;
+        overflow: hidden;
+      }
+      .boot-bar-fill {
+        height: 100%;
+        width: 40%;
+        background: #ffdc58;
+        animation: boot-slide 1.2s ease-in-out infinite;
+      }
+      @keyframes boot-slide {
+        0% {
+          transform: translateX(-110%);
+        }
+        100% {
+          transform: translateX(280%);
+        }
+      }
+      /* 无障碍：减弱动态效果时不跑动画，改为静态进度条 */
+      @media (prefers-reduced-motion: reduce) {
+        .boot-bar-fill {
+          animation: none;
+          width: 100%;
+        }
+      }
+      .boot-retry {
+        align-self: flex-start;
+        min-height: 44px;
+        padding: 8px 18px;
+        border: 2px solid #000000;
+        background: #ffdc58;
+        color: #000000;
+        font-family: inherit;
+        font-size: 15px;
+        font-weight: 800;
+        cursor: pointer;
+        box-shadow: 3px 3px 0 #000000;
+      }
+      .boot-retry:active {
+        transform: translate(3px, 3px);
+        box-shadow: none;
+      }
+      /* 深色：系统深色（无手动浅色）+ 手动深色；与 styles.css palette 同值 */
+      @media (prefers-color-scheme: dark) {
+        :root:not([data-theme="light"]) .boot-shell {
+          background: #17140d;
+          color: #f5f0e6;
+        }
+        :root:not([data-theme="light"]) .boot-card {
+          border-color: #f0e9d8;
+          background: #24211b;
+          color: #f5f0e6;
+          box-shadow: 6px 6px 0 #f0e9d8;
+        }
+        :root:not([data-theme="light"]) .boot-msg {
+          color: #b3ac9e;
+        }
+        :root:not([data-theme="light"]) .boot-bar {
+          border-color: #f0e9d8;
+          background: #2e2a24;
+        }
+        :root:not([data-theme="light"]) .boot-retry {
+          border-color: #f0e9d8;
+          box-shadow: 3px 3px 0 #f0e9d8;
+        }
+      }
+      :root[data-theme="dark"] .boot-shell {
+        background: #17140d;
+        color: #f5f0e6;
+      }
+      :root[data-theme="dark"] .boot-card {
+        border-color: #f0e9d8;
+        background: #24211b;
+        color: #f5f0e6;
+        box-shadow: 6px 6px 0 #f0e9d8;
+      }
+      :root[data-theme="dark"] .boot-msg {
+        color: #b3ac9e;
+      }
+      :root[data-theme="dark"] .boot-bar {
+        border-color: #f0e9d8;
+        background: #2e2a24;
+      }
+      :root[data-theme="dark"] .boot-retry {
+        border-color: #f0e9d8;
+        box-shadow: 3px 3px 0 #f0e9d8;
+      }
+      /* 手动浅色压过系统深色 */
+      :root[data-theme="light"] .boot-shell {
+        background: #fff7e8;
+        color: #000000;
+      }
+      :root[data-theme="light"] .boot-card {
+        border-color: #000000;
+        background: #ffffff;
+        color: #000000;
+        box-shadow: 6px 6px 0 #000000;
+      }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
+    <!-- 骨架在 #root 内：React 首次提交时整体替换，无残留 -->
+    <div id="root">
+      <div class="boot-shell" role="status" aria-live="polite">
+        <div class="boot-card">
+          <div class="boot-title">Agent Hub 加载中…</div>
+          <div class="boot-bar" aria-hidden="true"><div class="boot-bar-fill"></div></div>
+          <div class="boot-msg">网络较慢时首屏可能需要一点时间</div>
+        </div>
+      </div>
+    </div>
+    <script>
+      /*
+       * 首屏兜底（可靠性 #2）：主资源加载失败 / 超时未启动 → 友好错误卡 + 重试。
+       * 纯 inline 脚本（普通 script，不走模块加载器），外部 JS/CSS 全挂时它仍能工作。
+       * 安全：全部 createElement/textContent 构建，无 HTML 字符串注入、无用户输入拼接（零 XSS 面）。
+       */
+      window.__APP_BOOTED__ = false;
+      (function () {
+        var BOOT_TIMEOUT_MS = 20000;
+        var bootErrorShown = false;
+
+        function showBootError() {
+          if (bootErrorShown || window.__APP_BOOTED__ === true) return;
+          bootErrorShown = true;
+          var root = document.getElementById("root");
+          if (!root) return;
+          var shell = document.createElement("div");
+          shell.className = "boot-shell";
+          shell.setAttribute("role", "alert");
+          var card = document.createElement("div");
+          card.className = "boot-card";
+          var title = document.createElement("div");
+          title.className = "boot-title";
+          title.textContent = "加载失败";
+          var msg = document.createElement("div");
+          msg.className = "boot-msg";
+          msg.textContent = "资源加载失败，请检查网络后重试";
+          var retry = document.createElement("button");
+          retry.className = "boot-retry";
+          retry.type = "button";
+          retry.textContent = "重试";
+          retry.addEventListener("click", function () {
+            window.__APP_BOOT_RETRY__();
+          });
+          card.appendChild(title);
+          card.appendChild(msg);
+          card.appendChild(retry);
+          shell.appendChild(card);
+          root.textContent = "";
+          root.appendChild(shell);
+        }
+
+        /* 重试 = 整页刷新（测试可替换此函数验证按钮接线） */
+        window.__APP_BOOT_RETRY__ = function () {
+          window.location.reload();
+        };
+        window.__APP_BOOT_FAIL__ = showBootError;
+
+        /* 主资源加载失败（404/断网/被劫持）→ 立即出错误卡 */
+        var entry = document.querySelector("script[data-app-entry]");
+        if (entry && typeof entry.addEventListener === "function") {
+          entry.addEventListener("error", showBootError);
+        }
+
+        /* 轮询兜底：JS 慢/挂起/部分执行失败，超时仍未启动 → 出错误卡 */
+        setTimeout(function () {
+          if (window.__APP_BOOTED__ !== true) showBootError();
+        }, BOOT_TIMEOUT_MS);
+      })();
+    </script>
+    <script type="module" src="/src/main.tsx" data-app-entry></script>
   </body>
 </html>

@@ -1,6 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { installUnhandledRejectionGuard } from "./utils/unhandledRejection";
 import "./styles.css";
 import "./d-polish.css";
@@ -11,9 +12,14 @@ import "./j1-header.css"; /* J1 顶栏图标按钮统一规范（后加载覆盖
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <App />
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
   </StrictMode>,
 );
+
+// 首屏兜底握手（index.html inline 脚本）：React 已启动，超时/失败检测不再出错误卡
+window.__APP_BOOTED__ = true;
 
 // 未处理 Promise 拒绝全局兜底（P2）：dev console.warn / 生产安静，toast 提示不裸吞
 installUnhandledRejectionGuard();
