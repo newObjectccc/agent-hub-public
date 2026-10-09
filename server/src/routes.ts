@@ -273,15 +273,15 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
     }
   });
 
-  // POST /api/sessions（body.source: "pi"|"claude"，缺省 pi）
+  // POST /api/sessions（body.source: "pi"|"claude"|"codex"，缺省 pi）
   app.post("/api/sessions", async (req, reply) => {
     try {
       const { cwd, name } = requireAbsoluteCwd(req.body);
       const body = (typeof req.body === "object" && req.body !== null ? req.body : {}) as { source?: unknown };
       const sourceRaw = body.source;
       const source = sourceRaw === undefined || sourceRaw === null || sourceRaw === "" ? "pi" : sourceRaw;
-      if (source !== "pi" && source !== "claude") {
-        throw new HubError(ErrorCodes.INVALID_REQUEST, "source 必须是 pi|claude 之一");
+      if (source !== "pi" && source !== "claude" && source !== "codex") {
+        throw new HubError(ErrorCodes.INVALID_REQUEST, "source 必须是 pi|claude|codex 之一");
       }
       const session = await hub.createSession(cwd, name, source);
       return reply.status(201).send({ session });
@@ -705,12 +705,12 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
     }
   });
 
-  // GET /api/commands?source=pi|claude（契约 §8：slash 命令清单，pi 内置 + claude 内置/自定义）
+  // GET /api/commands?source=pi|claude|codex（契约 §8：slash 命令清单，pi 内置 + claude 内置/自定义；codex 无可用命令）
   app.get<{ Querystring: { source?: string } }>("/api/commands", async (req, reply) => {
     try {
       const source = req.query.source;
-      if (source !== "pi" && source !== "claude") {
-        throw new HubError(ErrorCodes.INVALID_REQUEST, "source 必须是 pi|claude");
+      if (source !== "pi" && source !== "claude" && source !== "codex") {
+        throw new HubError(ErrorCodes.INVALID_REQUEST, "source 必须是 pi|claude|codex");
       }
       const list: CommandListDto = await commands.list(source);
       return reply.send(list);

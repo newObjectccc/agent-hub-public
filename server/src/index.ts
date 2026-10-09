@@ -13,6 +13,7 @@ import fastifyStatic from "@fastify/static";
 import { VERSION } from "@earendil-works/pi-coding-agent";
 import { AgentCommandHub } from "./agents.js";
 import { ClaudeAdapter } from "./adapters/claude.js";
+import { CodexAdapter } from "./adapters/codex.js";
 import { findClaudeSessionFiles } from "./adapters/claude-transcript.js";
 import { PiAdapter } from "./adapters/pi.js";
 import { SessionRegistry } from "./adapters/registry.js";
@@ -135,7 +136,11 @@ export async function startHub(): Promise<StartedHub> {
   const claudeProjectsDir = join(homedir(), ".claude", "projects");
   const claudeHistoryFile = join(homedir(), ".claude", "history.jsonl");
   const claudeAdapter = new ClaudeAdapter({ projectsDir: claudeProjectsDir, historyFile: claudeHistoryFile, emit });
-  const hub = new SessionRegistry(new PiAdapter(piHub), claudeAdapter, config.sessionDir);
+  // Codex 会话来源：~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl + session_index.jsonl（与桌面 app/CLI 共享）
+  const codexSessionsDir = join(homedir(), ".codex", "sessions");
+  const codexSessionIndexFile = join(homedir(), ".codex", "session_index.jsonl");
+  const codexAdapter = new CodexAdapter({ sessionsDir: codexSessionsDir, sessionIndexFile: codexSessionIndexFile, emit });
+  const hub = new SessionRegistry(new PiAdapter(piHub), claudeAdapter, config.sessionDir, codexAdapter);
   // 子代理血缘路由器（emit 闭包延迟引用：事件只可能在 startHub 装配完成后到达）
   const subAgentRouter = new SubAgentRouter(
     (id) => hub.findSession(id),

@@ -85,14 +85,16 @@ describe("isAbsoluteCwd", () => {
 });
 
 describe("NewSessionForm（新建会话 sheet）", () => {
-  it("渲染 source 分段单选（pi / claude），默认 pi", () => {
+  it("渲染 source 分段单选（pi / claude / Codex），默认 pi", () => {
     const el = render(<NewSessionForm open onClose={() => undefined} onCreated={() => undefined} />);
     const radios = el.querySelectorAll<HTMLButtonElement>(".segment-item");
-    expect(radios.length).toBe(2);
+    expect(radios.length).toBe(3);
     expect(radios[0].textContent).toContain("pi");
     expect(radios[1].textContent).toContain("claude");
+    expect(radios[2].textContent).toContain("Codex");
     expect(radios[0].getAttribute("aria-checked")).toBe("true");
     expect(radios[1].getAttribute("aria-checked")).toBe("false");
+    expect(radios[2].getAttribute("aria-checked")).toBe("false");
   });
 
   it("点选 claude 分段 → aria-checked 切换", () => {

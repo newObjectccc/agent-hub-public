@@ -50,4 +50,12 @@ describe("SourceBadge 来源徽章", () => {
     expect(fallback.querySelector(".badge.source-pi")).not.toBeNull();
     expect(fallback.textContent).toContain("pi");
   });
+
+  it('source="codex" 渲染 Codex 徽章（样式 class source-codex，文案 Codex）', () => {
+    const el = render(<SourceBadge source="codex" />);
+    expect(el.querySelector(".badge.source-codex")).not.toBeNull();
+    expect(el.textContent).toContain("Codex");
+    expect(el.querySelector(".badge.source-pi")).toBeNull();
+    expect(el.querySelector(".badge.source-claude")).toBeNull();
+  });
 });

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Codex 接入
+- feat(server)：Codex 会话源接入（第三个 source，与 pi/claude 平级）——rollout JSONL 解析（codex-rollout.ts：消息提取 / 工具调用折叠 / 注入包装剥离，损坏行优雅跳过）+ `codex exec resume <id> --json` 本地 spawn 流式驱动（codex-stream.ts：事件流 → 契约 WS 事件）+ abort（SIGTERM→SIGKILL 幂等）/ createSession（最小 rollout）/ forkSession（id 同步替换，原文件只读）
+- server：会话列表防全量读盘——TTL 清单缓存 + 文件级 mtime+size 快照缓存（数百 rollout 不重复 parse）+ 8 路并发解析；同一会话跨多个 rollout 分段文件（续写/压缩轮转）按 session_id 归并（计数求和/最新输出/最早命名，详情归并全量历史，tail 盯最新段）；会话名优先 `~/.codex/session_index.jsonl` 的 thread_name，缺失回退首条 user 文本
+- server：tail 解析器按 source 分发泛化（ws.ts：claude/codex 各自 loader）；SessionRegistry 三源合并/分发（含 createSession source 路由）
+- web：来源徽章 Codex（文案 "Codex"，样式与 pi/claude 同款）、新建会话支持 codex、slash 命令面板标题按 source 泛化
+- 测试 +28（codex-rollout 19 + codex-stream 9）：message/function_call/function_call_output/custom_tool_call/损坏行/未知行 fixture + 适配层纯函数（fork 重写 / 新建 rollout / 索引解析 / 分段归并）
+
 ### 会话页人体工学重设计（第一批）
 - 新建/刷新退出工具栏：➕收进 header 右上（肌肉记忆位，与 drawer/侧边栏同一 ?new=1 深链机制行为一致）；刷新靠下拉手势；h2 重复标题删除——列表净高 +~100px
 - 新增来源筛选（pi/claude/codex）：tab 管状态、筛选管来源，正交叠加；行业标准「筛选钮+底部 Sheet 计数 chips+条件条」模式，维度可扩展（工作区/时间预留），不用不占空间

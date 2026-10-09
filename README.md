@@ -4,7 +4,7 @@
 
 ![CI](https://github.com/newObjectccc/agent-hub/actions/workflows/ci.yml/badge.svg) ![License: MIT](https://img.shields.io/badge/license-MIT-blue) ![Node.js ≥ 20](https://img.shields.io/badge/node-%3E%3D20-brightgreen) ![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen) ![PWA](https://img.shields.io/badge/PWA-ready-orange)
 
-> 手机就是电脑的遥控器 + 独立工作台。跨平台（macOS / Linux / Windows）的 **pi / Claude Code 会话中枢**。
+> 手机就是电脑的遥控器 + 独立工作台。跨平台（macOS / Linux / Windows）的 **pi / Claude Code / Codex 会话中枢**。
 
 在任何设备的浏览器里打开 PWA 面板 → 一目了然看到全部 agent 会话与工作状态 → 点击进入 chat 界面继续对话、派发任务、实时旁观。会话与终端 CLI 完全互通（同一份 `~/.pi/agent/sessions/`）。
 
@@ -135,7 +135,7 @@ tailscale ping <手机的 Tailscale IP>    # 出现 direct（UDPv6）= P2P 直�
 ## 架构
 
 ```
-手机 PWA ──HTTP/WS──▶ server (Fastify) ──▶ pi SDK / claude CLI
+手机 PWA ──HTTP/WS──▶ server (Fastify) ──▶ pi SDK / claude CLI / codex CLI
                           │                    │
                      终端增强层              ~/.pi/agent/sessions
                   （tmux/ttyd/Tailscale）    （会话唯一事实源）
@@ -143,7 +143,7 @@ tailscale ping <手机的 Tailscale IP>    # 出现 direct（UDPv6）= P2P 直�
 
 | 目录 | 说明 |
 |---|---|
-| `server/` | REST + WS、pi/claude 双源适配、KPI/通知/git/终端集成 |
+| `server/` | REST + WS、pi/claude/codex 三源适配、KPI/通知/git/终端集成 |
 | `web/` | PWA（React + Vite + Tailwind v4，野兽派紧凑 UI） |
 | `cli/` | 跨平台 dev/setup/start/check/open（纯 Node 零 bash 依赖） |
 | `integrations/` | pi 扩展（live-feed 实时流出 / pi-command 反向指令） |
