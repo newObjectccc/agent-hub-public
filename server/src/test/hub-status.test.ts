@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { SessionHub } from "../sessions/hub.js";
+import { encodeCwdDirName, sessionFileName } from "../sessions/scan.js";
 import type { ServerEvent } from "../types.js";
 
 describe("会话状态推断：显式 idle 优先于时间推断", () => {
@@ -71,8 +72,7 @@ describe("会话状态推断：显式 idle 优先于时间推断", () => {
   });
 
   it("fork 产生的新会话（文件 mtime=now）同样显式登记 idle，不被时间推断误判 running", async () => {
-    // 纯 header 空会话（不带 name）：走 forkFrom 复制路径（带 name 的空会话另有 fork 缺陷，
-    // 见报告：getLeafId 把 session_info 当 leaf → 产出无 header 文件 → 500，不在本修复范围）
+    // 纯 header 空会话（不带 name）：走 forkFrom 复制路径（带 name 的空会话见下一条回归用例）
     const created = await hub.createSession(workDir, "");
     const forked = await hub.forkSession(created.id);
     assert.equal(forked.status, "idle");
@@ -83,5 +83,36 @@ describe("会话状态推断：显式 idle 优先于时间推断", () => {
 
     // statusFor（dashboard 统计用）同样不得误判
     assert.equal(hub.statusFor(forked.id, Date.parse(found.updatedAt)), "idle");
+  });
+
+  it("带 name 的空会话 fork 成功（回归：session_info 曾被当消息 leaf → 产出无 header 文件 → 500）", async () => {
+    const created = await hub.createSession(workDir, "带名字的空会话");
+    const forked = await hub.forkSession(created.id); // 修复前抛「会话复制后未能读回新会话」
+    assert.equal(forked.name, "带名字的空会话", "name 应随 fork 继承");
+
+    const found = await hub.findSession(forked.id);
+    assert.ok(found, "fork 出的新会话必须文件完整可读回");
+    assert.equal(found.status, "idle");
+    assert.equal(forked.messageCount, 0, "空会话 fork 后仍是 0 消息");
+  });
+
+  it("消息后改名（session_info 为最后一个 entry）fork 正常：meta 叶子沿 parentId 回溯，不丢消息", async () => {
+    const dir = join(sessionDir, encodeCwdDirName(workDir));
+    await mkdir(dir, { recursive: true });
+    const id = "c".repeat(32);
+    const now = new Date().toISOString();
+    await writeFile(
+      join(dir, sessionFileName(now, id)),
+      JSON.stringify({ type: "session", version: 3, id, timestamp: now, cwd: workDir }) + "\n"
+        + JSON.stringify({ type: "message", id: "d".repeat(8), parentId: null, timestamp: now, message: { role: "user", content: "hi" } }) + "\n"
+        + JSON.stringify({ type: "session_info", id: "e".repeat(8), parentId: null, timestamp: now, name: "改名后的会话" }) + "\n",
+      "utf8",
+    );
+    hub.invalidateList(); // 手写 fixture 后失效清单缓存，否则 findSession 走 TTL 缓存找不到
+    const forked = await hub.forkSession(id);
+    assert.equal(forked.name, "改名后的会话");
+    const found = await hub.findSession(forked.id);
+    assert.ok(found, "fork 出的新会话必须可读回");
+    assert.equal(forked.messageCount, 1, "原会话消息必须完整保留");
   });
 });

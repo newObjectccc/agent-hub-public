@@ -376,9 +376,19 @@ export class SessionHub {
     let manager: SessionManager;
     try {
       manager = SessionManager.open(found.sessionFile, targetDir, cwd);
-      const leafId = manager.getLeafId();
+      // 消息 leaf 判定（SDK getLeafId 的坑）：session_info（改名）等 meta 行也是树节点，会被算作叶子——
+      // 带 name 的空会话走 createBranchedSession(session_info) 会产出无 session header 的残缺文件 → 读回抛 500。
+      // 统一口径（同消息解析的 type 过滤）：只有真实消息（message/custom_message）才是有效 leaf；
+      // meta 叶子沿 parentId 回溯到最近的消息（消息后改名的会话同样安全）。
+      let leafId = manager.getLeafId();
+      while (leafId !== null) {
+        const entry = manager.getEntry(leafId);
+        if (!entry) break;
+        if (entry.type === "message" || entry.type === "custom_message") break;
+        leafId = entry.parentId;
+      }
       if (leafId === null) {
-        // 只有 header 的空会话：复制为新文件（同 forkFrom 语义，立即写盘）
+        // 无消息的空会话（含仅 header + session_info 改名）：复制为新文件（同 forkFrom 语义，立即写盘）
         manager = SessionManager.forkFrom(found.sessionFile, cwd, targetDir);
       } else {
         manager.createBranchedSession(leafId);

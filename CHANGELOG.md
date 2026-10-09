@@ -7,6 +7,7 @@
 - fix(server)：hub.createSession 写盘后失效清单缓存——新建会话立即可见（TTL 窗口内 findSession 查不到新会话的隐患）
 - fix(web)：代码块复制按钮移入独立标题栏（.code-head），不再遮挡代码内容（水平滚动/长首行均不被盖）；触屏 44px 热区 + 双主题变量
 - fix(server)：forkSession 同口径显式 idle——复制出的新会话进 chat 页误显「思考中」同类缺口（hub/claude 双源）；ChatPage +3 空闲态契约回归（含「不默认发送任何消息」断言）
+- fix(server)：带 name 的空会话 fork 500——SDK getLeafId 把 session_info（改名）当消息 leaf，产出无 header 的残缺文件；改为消息 leaf 判定（message/custom_message）+ meta 叶子沿 parentId 回溯，空会话/消息后改名 fork 均安全（+2 回归，修复前 2 红）
 - feat(web)：顶部提示手动关闭——NoticeBanner/ToastHost/chat-notice 均补 ✕（44px 热区）+ 横向滑动关闭（≥64px，与下拉刷新零冲突）；已读/已关持久化（localStorage），同条通知刷新不重复弹（含震动/声音）
 
 ### Markdown 表格渲染（GFM）
