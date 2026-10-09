@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### 性能（tailnet 慢链路优化批，真机体感问题）
+- 弱 ETag 协商缓存：GET JSON 响应带 W/ ETag + no-cache，重复打开命中 If-None-Match → 304 零字节体（二次打开关键优化）；identity 哈希，注册于压缩前
+- 会话列表出参瘦身：剥离内部路径 sessionFile（436 会话实测 -57KB 原始载荷；br 后仍 -15KB），create/fork 响应同口径
+- /api/system 工具探测 SWR 化：TTL 30s→5min，过期秒回陈旧值 + 后台刷新——CLI 冷探测 0.5~1s 永不阻塞请求（实测 ttfb 1.0s → 2ms）
+- 首页概览/用量并行拉取（原串行双往返）；+3 回归测试（ETag 304 / 出参剥离 / SWR 秒回）
+
 ### P2 加固批（开源审计清理：稳健/安全 + 资源/性能 + web/a11y）
 - [安全] 日志 URL 脱敏（token/secret → [REDACTED]）；uploads/git realpath 二次校验堵 symlink 逃逸；markdown 拒 `//` 协议相对 URL + `\u0000` 占位符伪造剥离；DNS rebinding 防护（Host 白名单，HTTP+WS 双把关）；PIN 锁定跨重启持久化；auth.token 写盘 0600
 - [性能] git diff 并发池 + 20s 总超时；tail 内存双窗口 + knownIds 环形去重；statusCache 过期即删 + LRU；codex statuses TTL sweep + fileCache LRU；ws pending 限容 100；hub toolResults 限容 200；SW 旧 hash assets 清理

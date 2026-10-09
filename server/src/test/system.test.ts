@@ -68,3 +68,32 @@ describe("system: 指标 30s 缓存（AC9）", () => {
     assert.deepEqual(a.metrics, b.metrics);
   });
 });
+
+describe("system: 工具探测 SWR（过期不阻塞请求）", () => {
+  it("TTL 过期立即返回陈旧值（不等冷探测），后台刷新随后完成", async () => {
+    let probes = 0;
+    const slowExec = ((_cmd: string, _args: string[], _opts: unknown, cb: (err: Error | null, stdout: string) => void) => {
+      probes += 1;
+      setTimeout(() => cb(new Error("not found"), ""), 120);
+    }) as unknown as typeof ExecFile;
+    const provider = createSystemInfoProvider({
+      sessionDir: "/tmp/sessions",
+      workspaceRoot: "/tmp/ws",
+      execFileFn: slowExec,
+      toolsTtlMs: 50,
+      metricsTtlMs: 60_000,
+      // 指标与本用例无关：注入假采集器（真实采集器配假 execFile 不是本测试的被测面）
+      collectMetrics: async () => fakeMetrics,
+    });
+    await provider(); // 首次：无陈旧值，必须等真实探测
+    const afterFirst = probes;
+    await sleep(80); // 过期
+    const t0 = Date.now();
+    await provider(); // SWR：应秒回旧值（CLI 冷探测不阻塞请求）
+    const elapsed = Date.now() - t0;
+    assert.ok(elapsed < 100, `过期请求应秒回（不等冷探测），实测 ${elapsed}ms`);
+    await sleep(250); // 等后台刷新
+    assert.ok(probes > afterFirst, "过期后后台已发生刷新探测");
+    await provider();
+  });
+});

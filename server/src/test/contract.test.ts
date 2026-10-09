@@ -890,3 +890,36 @@ describe("contract: GET /api/commands 与 GET /api/fs/tree（§8/§9）", () => 
     assert.equal((missing.json() as { error: { code: string } }).error.code, "FILE_NOT_FOUND");
   });
 });
+
+describe("perf: 弱 ETag 协商缓存（慢链路二次打开秒开）", () => {
+  async function makeApp(hub: SessionHubLike): Promise<Awaited<ReturnType<typeof createApp>>> {
+    return createApp({
+      hub,
+      dashboard: makeFakeDashboard(),
+      kpi: { getCards: () => [] },
+      config: { ...DEFAULT_CONFIG },
+      systemInfo: async () => systemFixture,
+      webRoot: null, appLock: fakeUnlockedAppLock(),
+    });
+  }
+
+  it("GET 首访发 ETag + no-cache；If-None-Match 命中 → 304 零字节体；列表出参剥离内部路径", async () => {
+    const app = await makeApp(makeFakeHub({ accepted: true, mode: "prompt" }));
+    const r1 = await app.inject({ method: "GET", url: "/api/sessions" });
+    assert.equal(r1.statusCode, 200);
+    const etag = r1.headers.etag;
+    assert.equal(typeof etag, "string", "JSON GET 响应带弱 ETag");
+    assert.equal(r1.headers["cache-control"], "no-cache", "可缓存但必须回源校验");
+    assert.equal("sessionFile" in (r1.json() as { sessions: Array<Record<string, unknown>> }).sessions[0], false,
+      "出参剥离服务端内部路径 sessionFile");
+
+    const r2 = await app.inject({
+      method: "GET",
+      url: "/api/sessions",
+      headers: { "if-none-match": String(etag) },
+    });
+    assert.equal(r2.statusCode, 304, "ETag 命中回 304");
+    assert.equal(r2.body, "", "304 无响应体");
+    await app.close();
+  });
+});
