@@ -179,6 +179,18 @@ export function AppShell({ route, children }: AppShellProps) {
           onMarkRead={(id) => void markRead(id)}
           onOpenSession={(id) => navigate(`/s/${encodeURIComponent(id)}`)}
         />
+        {/* 会话页专属：右上角 ➕ 新建（肌肉记忆位）；与 drawer/侧边栏同一 ?new=1 深链机制，行为一致 */}
+        {activeName === "sessions" && (
+          <Button
+            type="button"
+            size="icon"
+            className="min-h-[44px] min-w-[44px]"
+            onClick={() => go(newSessionPath())}
+            aria-label="新建会话"
+          >
+            <PlusIcon />
+          </Button>
+        )}
       </header>
 
       {/* 大屏常驻 sidebar（≥768px） */}

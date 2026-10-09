@@ -1,7 +1,11 @@
 /**
  * 会话管理页（/sessions）：承载现有全部会话列表能力——tab 过滤 + 滑块、优先级排序
  * （等你处理 > 工作中 > 其他，含"全部"tab）、虚拟列表、子代理树形/兜底折叠、
- * ➕新建会话、下拉刷新、滚动记忆、seenIds 进场动画纪律（搜索统一走 header 全局入口，不重复设工具栏入口）。
+ * 下拉刷新、滚动记忆、seenIds 进场动画纪律（搜索统一走 header 全局入口，不重复设工具栏入口）。
+ *
+ * 布局口径（人体工学）：新建/刷新不再占工具栏行——新建收进 header 右上 ➕（全平台肌肉记忆位，
+ * 与 drawer/侧边栏同一 ?new=1 深链机制）；刷新靠下拉手势（移动端本能）；筛选（来源等次维度）
+ * 收进 tab 行尾部的筛选钮 + 底部 Sheet（App Store/Linear 同款），不用不占空间。
  * 深链：?tab=working|attention|done|all 指定分类；?new=1 直接打开新建表单（drawer 入口）。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -14,16 +18,18 @@ import type {
 } from "../api/types";
 import { NewSessionForm } from "../components/NewSessionForm";
 import { PullToRefresh } from "../components/PullToRefresh";
+import { SessionFilterSheet } from "../components/SessionFilterSheet";
 import { SessionList } from "../components/SessionList";
 import { SessionTabs } from "../components/SessionTabs";
 import { SessionListSkeleton } from "../components/Skeletons";
-import { RefreshIcon, PlusIcon } from "../components/icons";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { SESSION_TABS, filterSessionsByTab, type SessionTab } from "../utils/sessionTabs";
+import { SOURCE_OPTIONS, filterSessionsBySource, sourceCounts } from "../utils/sessionFilter";
 import { peekListScrollTop, saveListScrollTop } from "../utils/scrollMemory";
 import { usageBySession } from "../utils/usage";
 import { chatPath, navigate, onRouteChange } from "../utils/router";
+import { cn } from "@/lib/utils";
 
 /** 刷新超过此时长才显示顶部进度条（快速静默刷新保持视觉安静） */
 const PROGRESS_REVEAL_MS = 400;
@@ -49,6 +55,17 @@ export function SessionsPage() {
   const [createOpen, setCreateOpen] = useState(
     () => typeof window !== "undefined" && new URLSearchParams(window.location.search).get("new") === "1",
   );
+  /** 来源筛选（pi/claude/codex 多选 = 并集；空 = 全部）+ 筛选面板开关 */
+  const [sourceFilter, setSourceFilter] = useState<ReadonlySet<string>>(() => new Set());
+  const [filterOpen, setFilterOpen] = useState(false);
+  const toggleSource = (value: string): void => {
+    setSourceFilter((prev) => {
+      const next = new Set(prev);
+      if (next.has(value)) next.delete(value);
+      else next.add(value);
+      return next;
+    });
+  };
   const progressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** 会话虚拟列表滚动容器（列表 scrollTop 记忆 + 下拉刷新到顶判定） */
   const listScrollRef = useRef<HTMLDivElement | null>(null);
@@ -142,10 +159,16 @@ export function SessionsPage() {
     }
     return map;
   }, [stats]);
-  const tabSessions = useMemo(
+  /** tab 过滤（状态）与来源筛选（agent）正交叠加；sheet 计数看 tab 内分布，不被自身筛选干扰 */
+  const tabFiltered = useMemo(
     () => filterSessionsByTab(sessions, tab, { attentionIds, doneIds }),
     [sessions, tab, attentionIds, doneIds],
   );
+  const tabSessions = useMemo(
+    () => filterSessionsBySource(tabFiltered, sourceFilter),
+    [tabFiltered, sourceFilter],
+  );
+  const sourceCountMap = useMemo(() => sourceCounts(tabFiltered), [tabFiltered]);
   /** 最近使用工作目录：按会话更新时间倒序去重（新建 sheet 的 cwd 下拉用） */
   const recentCwds = useMemo(() => {
     const sorted = [...sessions].sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
@@ -175,34 +198,36 @@ export function SessionsPage() {
     <div className="page sessions-page">
       {progressVisible && loaded && <div className="refresh-bar" role="progressbar" aria-label="刷新中" />}
 
-      <div className="sessions-toolbar">
-        <Button
+      <div className="sessions-filterbar">
+        <SessionTabs value={tab} counts={tabCounts} onChange={changeTab} />
+        <button
           type="button"
-          size="icon"
-          className="min-h-[44px] min-w-[44px]"
-          onClick={() => setCreateOpen(true)}
-          aria-label="新建会话"
+          className={cn("filter-btn", sourceFilter.size > 0 && "on")}
+          aria-label="筛选"
+          onClick={() => setFilterOpen(true)}
         >
-          <PlusIcon />
-        </Button>
-        <Button
-          type="button"
-          variant="secondary"
-          size="icon"
-          className="min-h-[44px] min-w-[44px]"
-          onClick={() => void refresh()}
-          aria-label="刷新"
-          disabled={refreshing}
-        >
-          <RefreshIcon />
-        </Button>
+          <span aria-hidden>⚙</span>筛选
+          {sourceFilter.size > 0 && <span className="filter-btn-count">{sourceFilter.size}</span>}
+        </button>
       </div>
-
-      <h2 className="section-title">
-        🕓 会话列表
-        <span className="hint-text">（{sessions.length}）</span>
-      </h2>
-      <SessionTabs value={tab} counts={tabCounts} onChange={changeTab} />
+      {sourceFilter.size > 0 && (
+        <div className="filter-chip-row" role="status" aria-label="已启用的筛选条件">
+          {SOURCE_OPTIONS.filter((o) => sourceFilter.has(o.value)).map((o) => (
+            <button
+              key={o.value}
+              type="button"
+              className="filter-chip on"
+              aria-label={`移除来源筛选 ${o.label}`}
+              onClick={() => toggleSource(o.value)}
+            >
+              {o.label} <span aria-hidden>✕</span>
+            </button>
+          ))}
+          <button type="button" className="filter-clear" onClick={() => setSourceFilter(new Set())}>
+            清空
+          </button>
+        </div>
+      )}
       <PullToRefresh onRefresh={refresh} refreshing={refreshing}>
         {listError ? (
           <div className="error-banner">
@@ -214,7 +239,7 @@ export function SessionsPage() {
         ) : tabSessions.length === 0 ? (
           loaded ? (
             <Card className="card empty">
-              {tab === "all" ? "暂无会话，点击上方新建" : "该分类下暂无会话"}
+              {tab === "all" ? "暂无会话，点右上角 ➕ 新建" : "该分类下暂无会话"}
             </Card>
           ) : (
             <SessionListSkeleton />
@@ -236,6 +261,17 @@ export function SessionsPage() {
           />
         )}
       </PullToRefresh>
+
+      {filterOpen && (
+        <SessionFilterSheet
+          counts={sourceCountMap}
+          active={sourceFilter}
+          resultCount={tabSessions.length}
+          onToggle={toggleSource}
+          onReset={() => setSourceFilter(new Set())}
+          onClose={() => setFilterOpen(false)}
+        />
+      )}
 
       <NewSessionForm
         open={createOpen}

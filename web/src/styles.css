@@ -5057,3 +5057,130 @@ button.git-bar:active {  transform: translate(2px, 2px);
     min-height: 40px;
   }
 }
+
+/* ---------- 会话筛选（tab 行尾筛选钮 + Sheet chips，App Store/Linear 同款交互） ---------- */
+.sessions-filterbar {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.sessions-filterbar .tab-scroll {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.filter-btn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 44px;
+  padding: 4px 10px;
+  font-family: var(--nb-font-head);
+  font-weight: 900;
+  font-size: 0.8rem;
+  background: var(--card);
+  color: var(--card-foreground);
+  border: 2px solid var(--border);
+  border-radius: var(--nb-radius);
+  box-shadow: var(--shadow-xs);
+  cursor: pointer;
+}
+.filter-btn.on {
+  background: var(--primary);
+  box-shadow: var(--shadow-sm);
+}
+.filter-btn-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  font-size: 0.7rem;
+  background: var(--card-foreground);
+  color: var(--card);
+  border-radius: 999px;
+}
+.filter-chip-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 32px;
+  padding: 2px 10px;
+  font-family: var(--nb-font-head);
+  font-weight: 900;
+  font-size: 0.75rem;
+  background: var(--card);
+  color: var(--card-foreground);
+  border: 2px solid var(--border);
+  border-radius: var(--nb-radius);
+  box-shadow: var(--shadow-xs);
+  cursor: pointer;
+}
+.filter-chip.on {
+  background: var(--primary);
+  box-shadow: var(--shadow-sm);
+}
+.filter-count {
+  opacity: 0.7;
+  font-size: 0.7rem;
+}
+.filter-clear {
+  min-height: 32px;
+  padding: 2px 8px;
+  font-size: 0.75rem;
+  font-family: var(--nb-font-head);
+  font-weight: 900;
+  background: transparent;
+  border: none;
+  text-decoration: underline;
+  cursor: pointer;
+  color: var(--card-foreground);
+}
+.filter-group {
+  margin-bottom: 12px;
+}
+.filter-group-label {
+  font-family: var(--nb-font-head);
+  font-weight: 900;
+  font-size: 0.85rem;
+  margin-bottom: 8px;
+}
+.filter-chipset {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.filter-reset,
+.filter-apply {
+  min-height: 44px;
+  padding: 8px 16px;
+  font-family: var(--nb-font-head);
+  font-weight: 900;
+  font-size: 0.9rem;
+  border: 2px solid var(--border);
+  border-radius: var(--nb-radius);
+  cursor: pointer;
+}
+.filter-reset {
+  background: var(--card);
+  color: var(--card-foreground);
+  box-shadow: var(--shadow-xs);
+}
+.filter-reset:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.filter-apply {
+  background: var(--primary);
+  box-shadow: var(--shadow-sm);
+  flex: 1 1 auto;
+}

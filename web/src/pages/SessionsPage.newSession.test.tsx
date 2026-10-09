@@ -108,13 +108,14 @@ describe("侧边栏「新建会话」?new=1 深链", () => {
     expect(formOpen(el)).toBe(true);
   });
 
-  it("URL 无 ?new=1 时点击工具栏 ➕（本地 state）打开的表单不受影响", async () => {
-    window.history.replaceState({}, "", "/sessions");
+  it("表单打开后 URL 失去 ?new=1 不强制关闭（只开不关）", async () => {
+    window.history.replaceState({}, "", "/sessions?new=1");
     const el = await render();
-    const plus = Array.from(el.querySelectorAll("button")).find((b) => b.getAttribute("aria-label") === "新建会话");
-    expect(plus).toBeTruthy();
+    expect(formOpen(el)).toBe(true);
+    // 清参后路由变化（不带 new=1）：表单保持打开（手动打开的表单不被 URL 强制关闭）
+    window.history.replaceState({}, "", "/sessions");
     await act(async () => {
-      (plus as HTMLElement).dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      window.dispatchEvent(new PopStateEvent("popstate"));
       await Promise.resolve();
     });
     expect(formOpen(el)).toBe(true);
