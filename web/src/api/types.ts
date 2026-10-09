@@ -4,8 +4,8 @@
 
 export type SessionStatus = "idle" | "running" | "error";
 
-/** 会话来源：pi（~/.pi/agent/sessions）或 claude（~/.claude/projects） */
-export type SessionSource = "pi" | "claude";
+/** 会话来源：pi（~/.pi/agent/sessions）、claude（~/.claude/projects）或 codex（~/.codex/sessions） */
+export type SessionSource = "pi" | "claude" | "codex";
 
 export interface SessionSummary {
   id: string;

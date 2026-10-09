@@ -1,6 +1,6 @@
 /**
  * 新建会话（移动端 bottom sheet / 大屏居中弹窗，容器样式由 Sheet + CSS 断点决定）：
- * - source 分段按钮：pi / claude（野兽派单选）
+ * - source 分段按钮：pi / claude / Codex（野兽派单选）
  * - cwd：手动输入（绝对路径校验）+ 最近使用目录下拉（点选填入）
  * - name 可选
  * 成功后由 onCreated 回调跳进新会话 chat 页。
@@ -23,6 +23,7 @@ export interface NewSessionFormProps {
 const SOURCES: Array<{ value: SessionSource; label: string; hint: string }> = [
   { value: "pi", label: "pi", hint: "Pi agent 会话" },
   { value: "claude", label: "claude", hint: "Claude Code 会话" },
+  { value: "codex", label: "Codex", hint: "Codex 会话" },
 ];
 
 /** 绝对路径校验（POSIX / Windows 盘符），与 server requireAbsoluteCwd 同口径 */
@@ -87,7 +88,7 @@ export function NewSessionForm({ open, onClose, onCreated, recentCwds = [] }: Ne
   return (
     <Sheet
       title="新建会话"
-      subtitle={source === "pi" ? "Pi agent 会话" : "Claude Code 会话"}
+      subtitle={SOURCES.find((s) => s.value === source)?.hint ?? "Pi agent 会话"}
       onClose={close}
       footer={
         <div className="form-row">

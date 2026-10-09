@@ -6,14 +6,25 @@ import type { IncomingMessage, Server as HttpServer } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocket, WebSocketServer } from "ws";
 import { loadClaudeSessionMessages } from "./adapters/claude-transcript.js";
+import { loadCodexSessionMessages } from "./adapters/codex-rollout.js";
 import { ErrorCodes } from "./errors.js";
 import type { PromptResult } from "./sessions/hub.js";
-import type { SessionTailManager } from "./sessions/tail.js";
+import type { MessageLoader, SessionTailManager } from "./sessions/tail.js";
 import { UPGRADE_HANDLED_MARK } from "./terminal.js";
 import type { ServerEvent, SessionListItem } from "./types.js";
 
 const WS_PATH_RE = /^\/ws\/sessions\/([^/]+)$/;
 const WS_EVENTS_PATH = "/ws/events";
+
+/**
+ * tail 解析器按 source 注入：pi 走默认 loader（session-format v3），
+ * claude/codex 各用自己的文件格式解析（只认新消息即可）。
+ */
+function tailLoaderFor(source: SessionListItem["source"]): MessageLoader | undefined {
+  if (source === "claude") return loadClaudeSessionMessages;
+  if (source === "codex") return loadCodexSessionMessages;
+  return undefined;
+}
 
 /** WS 层对 hub 的最小结构依赖（SessionHub / SessionRegistry 都满足） */
 export interface WsSessionHub {
@@ -212,9 +223,9 @@ export class WsHub {
       this.send(socket, { type: "session", id: session.id, cwd: session.cwd });
 
       // 非本进程会话：启动文件 tail 实时推送（本进程会话由 SDK/spawn 事件流推送，避免重复）。
-      // 解析器按 source 注入：pi 用 session-format v3，claude 用 transcript 格式（只认新消息即可）
+      // 解析器按 source 注入（tailLoaderFor）：pi 用 session-format v3，claude/codex 各自格式
       if (this.tails && !hub.isLive(sessionId) && socket.readyState === WebSocket.OPEN) {
-        const loader = session.source === "claude" ? loadClaudeSessionMessages : undefined;
+        const loader = tailLoaderFor(session.source);
         this.tails.acquire(sessionId, session.sessionFile, loader);
         acquired = true;
       }
@@ -232,7 +243,7 @@ export class WsHub {
             for (const child of children) {
               seen.add(child.id);
               if (childTails.has(child.id) || hub.isLive(child.id)) continue;
-              const childLoader = child.source === "claude" ? loadClaudeSessionMessages : undefined;
+              const childLoader = tailLoaderFor(child.source);
               this.tails?.acquire(child.id, child.sessionFile, childLoader);
               childTails.add(child.id);
               // 发现即推：静态子会话文件零 tail 事件，主动广播一条活动卡（面板 ≤10s 必现）

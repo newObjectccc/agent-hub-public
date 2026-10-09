@@ -206,6 +206,11 @@ export function createCommandsApi(fsLike: CommandFsLike = defaultFs, claudeDir =
       if (source === "pi") {
         return { source, commands: [...PI_BUILTIN_COMMANDS] };
       }
+      if (source === "codex") {
+        // codex 的 slash 命令是 TUI 功能，`codex exec` 通道不支持命令展开（与 claude
+        // 内置命令同理不可用）；自定义命令目录也未约定 → 空清单（UI 标注无可用命令）
+        return { source, commands: [] };
+      }
       const custom = await scanClaudeCustomCommands(commandsDir ?? claudeDir, fsLike);
       return { source, commands: [...CLAUDE_BUILTIN_COMMANDS, ...custom] };
     },

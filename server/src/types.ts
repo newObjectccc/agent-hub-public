@@ -11,8 +11,8 @@ export type SessionStatus = "idle" | "running" | "error";
  */
 export type SessionDrivenBy = "panel" | "terminal";
 
-/** 会话来源：pi（~/.pi/agent/sessions）或 claude（~/.claude/projects） */
-export type SessionSource = "pi" | "claude";
+/** 会话来源：pi（~/.pi/agent/sessions）、claude（~/.claude/projects）或 codex（~/.codex/sessions） */
+export type SessionSource = "pi" | "claude" | "codex";
 
 /** GET /api/sessions 列表项 */
 export interface SessionListItem {

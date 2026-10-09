@@ -4,7 +4,7 @@ English | [简体中文](README.md)
 
 ![CI](https://github.com/newObjectccc/agent-hub/actions/workflows/ci.yml/badge.svg) ![License: MIT](https://img.shields.io/badge/license-MIT-blue) ![Node.js ≥ 20](https://img.shields.io/badge/node-%3E%3D20-brightgreen) ![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen) ![PWA](https://img.shields.io/badge/PWA-ready-orange)
 
-> Your phone is a remote control **and** a standalone workstation for your computer. A cross-platform (macOS / Linux / Windows) **session hub for pi / Claude Code**.
+> Your phone is a remote control **and** a standalone workstation for your computer. A cross-platform (macOS / Linux / Windows) **session hub for pi / Claude Code / Codex**.
 
 Open the PWA panel in any device's browser → see every agent session and its working status at a glance → tap into the chat view to continue conversations, dispatch tasks, and spectate live. Sessions are fully interoperable with the terminal CLI (the same `~/.pi/agent/sessions/`).
 
@@ -137,7 +137,7 @@ tailscale ping <phone's Tailscale IP>    # seeing direct (UDPv6) = P2P is up
 ## Architecture
 
 ```
-Mobile PWA ──HTTP/WS──▶ server (Fastify) ──▶ pi SDK / claude CLI
+Mobile PWA ──HTTP/WS──▶ server (Fastify) ──▶ pi SDK / claude CLI / codex CLI
                           │                    │
                      terminal layer         ~/.pi/agent/sessions
                   (tmux/ttyd/Tailscale)    (single source of truth)
@@ -145,7 +145,7 @@ Mobile PWA ──HTTP/WS──▶ server (Fastify) ──▶ pi SDK / claude CLI
 
 | Directory | Description |
 |---|---|
-| `server/` | REST + WS, pi/claude dual-source adapters, KPI / notifications / git / terminal integration |
+| `server/` | REST + WS, pi/claude/codex adapters, KPI / notifications / git / terminal integration |
 | `web/` | PWA (React + Vite + Tailwind v4, brutalist compact UI) |
 | `cli/` | Cross-platform dev/setup/start/check/open (pure Node, zero bash dependency) |
 | `integrations/` | pi extensions (live-feed streaming / pi-command reverse control) |

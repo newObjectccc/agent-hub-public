@@ -72,7 +72,7 @@ export const SlashCommandPanel = forwardRef<PanelKeyHandle, SlashCommandPanelPro
         }}
       >
         <div className="slash-head">
-          <span className="slash-title">/ 命令 · {source === "pi" ? "pi" : "claude"}</span>
+          <span className="slash-title">/ 命令 · {source === "codex" ? "Codex" : source}</span>
           <span className="slash-hint-inline">↑↓ 选择 · Enter 插入 · Esc 关闭</span>
           <button type="button" className="slash-close" onClick={onClose} aria-label="关闭命令面板">
             ✕

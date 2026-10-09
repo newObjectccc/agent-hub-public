@@ -1,21 +1,23 @@
 /**
  * SessionRegistry：多 source 会话的合并与分发（实现 routes 的 SessionHubLike）。
  *
- * - GET /api/sessions：pi + claude 两源合并，按 updatedAt 倒序（同刻按 id 稳定排序）
- * - 其余操作按 id 归属分发：先查 claude（UUID 命名空间），未命中走 pi；
- *   两边都未命中 → SESSION_NOT_FOUND
- * - createSession 按 source 分发（缺省 pi）：pi 落盘 JSONL header；
- *   claude 写空白 transcript 会话文件（调研结论见 ClaudeAdapter.createSession）
- * - forkSession 按 id 归属分发（pi：SDK createBranchedSession；claude：复制 transcript）
- * - compact 仅支持 pi（claude 的上下文压缩由其自身 autocompact 管理）
+ * - GET /api/sessions：pi + claude + codex 三源合并，按 updatedAt 倒序（同刻按 id 稳定排序）
+ * - 其余操作按 id 归属分发：先查 claude/codex（UUID 命名空间），未命中走 pi；
+ *   全部未命中 → SESSION_NOT_FOUND
+ * - createSession 按 source 分发（缺省 pi）：pi 落盘 JSONL header；claude 写空白
+ *   transcript；codex 写最小 rollout（调研结论见 ClaudeAdapter/CodexAdapter.createSession）
+ * - forkSession 按 id 归属分发（pi：SDK createBranchedSession；claude/codex：复制会话文件）
+ * - compact 仅支持 pi（claude/codex 的上下文压缩由其自身管理）
  *
- * id 冲突（理论上不可能：pi 为 32-hex、claude 为 UUID v4）时 claude 优先，按源缓存消歧。
+ * id 冲突消歧按源缓存：pi 为 32-hex，claude/codex 均为 UUID（碰撞概率可忽略）；
+ * 探测顺序 claude → codex → pi。
  */
 import { ErrorCodes, HubError } from "../errors.js";
 import { scanSubAgentLineage } from "../sessions/scan.js";
 import type { PromptResult } from "../sessions/hub.js";
 import { loadSessionMessages } from "../sessions/scan.js";
 import { loadClaudeSessionMessages } from "./claude-transcript.js";
+import { loadCodexSessionMessages } from "./codex-rollout.js";
 import type { MessageDto, PromptImageAttachment, SessionListItem, SessionSource, SessionStatus } from "../types.js";
 import type { ClaudeAdapter } from "./claude.js";
 import type { SessionAdapter } from "./types.js";
@@ -23,20 +25,24 @@ import type { SessionAdapter } from "./types.js";
 export class SessionRegistry {
   private readonly pi: SessionAdapter;
   private readonly claude: SessionAdapter;
+  /** codex 源（可缺省：测试/渐进接入时只接 pi+claude） */
+  private readonly codex: SessionAdapter | null;
   /** id → source 记忆（getStatus/isLive 等同步路径消歧用） */
   private readonly sources = new Map<string, SessionSource>();
   /** 会话目录（轻量子代血缘扫描用） */
   private readonly sessionDir: string;
-  /** 会话转 live 时回调（停文件 tail）；同时挂到两个适配器 */
+  /** 会话转 live 时回调（停文件 tail）；同时挂到所有适配器 */
   onLive?: (id: string) => void;
 
-  constructor(pi: SessionAdapter, claude: SessionAdapter, sessionDir = "") {
+  constructor(pi: SessionAdapter, claude: SessionAdapter, sessionDir = "", codex?: SessionAdapter | null) {
     this.pi = pi;
     this.claude = claude;
+    this.codex = codex ?? null;
     this.sessionDir = sessionDir;
     const forward = (id: string): void => this.onLive?.(id);
     (this.pi as SessionAdapter & { onLive?: (id: string) => void }).onLive = forward;
     (this.claude as ClaudeAdapter).onLive = forward;
+    if (this.codex) (this.codex as SessionAdapter & { onLive?: (id: string) => void }).onLive = forward;
   }
 
   private remember(sessions: SessionListItem[]): SessionListItem[] {
@@ -44,15 +50,21 @@ export class SessionRegistry {
     return sessions;
   }
 
-  /** 按 id 解析归属 source（缓存优先；未命中才双源探测——避免每次查找两轮全量扫描） */
+  /** 按 id 解析归属 source（缓存优先；未命中才逐源探测——避免每次查找多轮全量扫描） */
   private async resolve(id: string): Promise<SessionAdapter | null> {
     const known = this.sources.get(id);
     if (known === "claude") return this.claude;
+    if (known === "codex") return this.codex;
     if (known === "pi") return this.pi;
     const claudeHit = await this.claude.findSession(id);
     if (claudeHit) {
       this.remember([claudeHit]);
       return this.claude;
+    }
+    const codexHit = this.codex ? await this.codex.findSession(id) : null;
+    if (codexHit && this.codex) {
+      this.remember([codexHit]);
+      return this.codex;
     }
     const piHit = await this.pi.findSession(id);
     if (piHit) {
@@ -63,14 +75,17 @@ export class SessionRegistry {
   }
 
   getStatus(id: string): SessionStatus {
-    return this.sources.get(id) === "claude" ? this.claude.getStatus(id) : this.pi.getStatus(id);
+    const source = this.sources.get(id);
+    if (source === "claude") return this.claude.getStatus(id);
+    if (source === "codex") return this.codex ? this.codex.getStatus(id) : "idle";
+    return this.pi.getStatus(id);
   }
 
   isLive(id: string): boolean {
-    return this.claude.isLive(id) || this.pi.isLive(id);
+    return this.claude.isLive(id) || this.pi.isLive(id) || (this.codex?.isLive(id) ?? false);
   }
 
-  /** 合并两源列表，按 updatedAt 倒序（契约排序），同刻按 id 稳定排序 */
+  /** 合并多源列表，按 updatedAt 倒序（契约排序），同刻按 id 稳定排序 */
   async listSessions(): Promise<SessionListItem[]> {
     const now = Date.now();
     if (this.cacheList && now - this.cacheListAt < SessionRegistry.LIST_CACHE_TTL_MS) return this.cacheList;
@@ -113,8 +128,12 @@ export class SessionRegistry {
   private refreshingList = false;
 
   private async loadSessions(): Promise<SessionListItem[]> {
-    const [piSessions, claudeSessions] = await Promise.all([this.pi.listSessions(), this.claude.listSessions()]);
-    const merged = this.remember([...piSessions, ...claudeSessions]);
+    const [piSessions, claudeSessions, codexSessions] = await Promise.all([
+      this.pi.listSessions(),
+      this.claude.listSessions(),
+      this.codex ? this.codex.listSessions() : Promise.resolve([]),
+    ]);
+    const merged = this.remember([...piSessions, ...claudeSessions, ...codexSessions]);
     merged.sort((a, b) => {
       const diff = Date.parse(b.updatedAt) - Date.parse(a.updatedAt);
       return diff !== 0 ? diff : a.id.localeCompare(b.id);
@@ -165,13 +184,15 @@ export class SessionRegistry {
    */
   async loadMessagesFast(id: string, sessionFile: string): Promise<MessageDto[]> {
     const source = this.sources.get(id);
-    return source === "claude" ? loadClaudeSessionMessages(sessionFile) : loadSessionMessages(sessionFile);
+    if (source === "claude") return loadClaudeSessionMessages(sessionFile);
+    if (source === "codex") return loadCodexSessionMessages(sessionFile);
+    return loadSessionMessages(sessionFile);
   }
 
   /** 新建会话按 source 分发（缺省 pi；非法 source 由 routes 层拦截） */
   createSession(cwd: string, name?: string, source: SessionSource = "pi"): Promise<SessionListItem> {
-    const adapter = source === "claude" ? this.claude : this.pi;
-    if (!adapter.createSession) {
+    const adapter = source === "claude" ? this.claude : source === "codex" ? this.codex : this.pi;
+    if (!adapter || !adapter.createSession) {
       throw new HubError(ErrorCodes.INVALID_REQUEST, `来源 ${source} 不支持新建会话`, 400);
     }
     return adapter.createSession(cwd, name);
@@ -205,7 +226,7 @@ export class SessionRegistry {
     await adapter.abort(id);
   }
 
-  /** 手动压缩仅支持 pi；claude 会话由其自身 autocompact 管理 */
+  /** 手动压缩仅支持 pi；claude/codex 会话由其自身上下文管理 */
   async compact(id: string): Promise<void> {
     const adapter = await this.resolve(id);
     if (!adapter) {
@@ -225,8 +246,10 @@ export class SessionRegistry {
 
   /** 跨会话搜索：聚合各 source（目前仅 pi 实现） */
   async search(query: string, limit?: number): Promise<import("../types.js").SearchResultDto[]> {
+    const adapters: SessionAdapter[] = [this.pi, this.claude];
+    if (this.codex) adapters.push(this.codex);
     const batches = await Promise.all(
-      [this.pi, this.claude]
+      adapters
         .filter((a) => typeof a.search === "function")
         .map((a) => a.search!(query, limit).catch(() => [])),
     );
@@ -245,6 +268,7 @@ export class SessionRegistry {
   invalidateSearch(): void {
     this.pi.invalidateSearch?.();
     this.claude.invalidateSearch?.();
+    this.codex?.invalidateSearch?.();
   }
 
   markLiveFeed(id: string): void {
@@ -252,11 +276,12 @@ export class SessionRegistry {
   }
 
   isSdkLive(id: string): boolean {
-    return this.pi.isSdkLive?.(id) === true || this.claude.isSdkLive?.(id) === true;
+    return this.pi.isSdkLive?.(id) === true || this.claude.isSdkLive?.(id) === true || this.codex?.isSdkLive?.(id) === true;
   }
 
   disposeAll(): void {
     this.pi.disposeAll();
     this.claude.disposeAll();
+    this.codex?.disposeAll();
   }
 }
