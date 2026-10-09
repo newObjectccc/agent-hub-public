@@ -32,14 +32,14 @@ export function SessionFilterSheet({
       subtitle="多选来源为并集；不选 = 全部"
       onClose={onClose}
       footer={
-        <>
+        <div className="filter-foot">
           <button type="button" className="filter-reset" onClick={onReset} disabled={active.size === 0}>
             重置
           </button>
           <button type="button" className="filter-apply" onClick={onClose}>
             查看 {resultCount} 个
           </button>
-        </>
+        </div>
       }
     >
       <div className="filter-group">

@@ -52,6 +52,12 @@ export function SessionsPage() {
   const [tab, setTab] = useState<SessionTab>(() =>
     typeof window === "undefined" ? "all" : tabFromSearch(window.location.search),
   );
+  /** tab 是否锁定（URL 深链指定 / 用户手动切换）：锁定后不做默认动态回落 */
+  const tabPinnedRef = useRef(
+    typeof window !== "undefined" && new URLSearchParams(window.location.search).has("tab"),
+  );
+  /** 动态默认已应用：只在首次加载后自动选一次，之后数据变化不打扰用户 */
+  const tabDefaultAppliedRef = useRef(false);
   const [createOpen, setCreateOpen] = useState(
     () => typeof window !== "undefined" && new URLSearchParams(window.location.search).get("new") === "1",
   );
@@ -186,6 +192,7 @@ export function SessionsPage() {
 
   /** 切换 tab 同步 ?tab=（深链可分享；all 不带参数保持 URL 干净） */
   const changeTab = (next: SessionTab): void => {
+    tabPinnedRef.current = true; // 用户手动选择：锁定，不再被默认回落覆盖
     setTab(next);
     const params = new URLSearchParams(window.location.search);
     if (next === "all") params.delete("tab");
@@ -194,21 +201,37 @@ export function SessionsPage() {
     window.history.replaceState({}, "", qs === "" ? window.location.pathname : `${window.location.pathname}?${qs}`);
   };
 
+  // 默认 tab 动态回落（只自动选一次）：等你处理 > 工作中 > 全部——打开会话页先看“要紧的”；
+  // URL 深链（?tab=）与用户手动选择永远优先（tabPinnedRef），自动选中后同步 URL 保持分享一致
+  useEffect(() => {
+    if (tabPinnedRef.current || tabDefaultAppliedRef.current || !loaded) return;
+    tabDefaultAppliedRef.current = true;
+    const preferred: SessionTab = tabCounts.attention > 0 ? "attention" : tabCounts.working > 0 ? "working" : "all";
+    if (preferred === "all") return; // 都没有 → 留在全部（URL 保持干净，不写 ?tab=）
+    tabPinnedRef.current = true;
+    setTab(preferred);
+    const params = new URLSearchParams(window.location.search);
+    params.set("tab", preferred);
+    window.history.replaceState({}, "", `${window.location.pathname}?${params.toString()}`);
+  }, [loaded, tabCounts]);
+
   return (
     <div className="page sessions-page">
       {progressVisible && loaded && <div className="refresh-bar" role="progressbar" aria-label="刷新中" />}
 
       <div className="sessions-filterbar">
         <SessionTabs value={tab} counts={tabCounts} onChange={changeTab} />
+      <div className="filter-btn-wrap">
         <button
           type="button"
-          className={cn("filter-btn", sourceFilter.size > 0 && "on")}
+          className={cn("tab-btn", "filter-btn", sourceFilter.size > 0 && "on")}
           aria-label="筛选"
           onClick={() => setFilterOpen(true)}
         >
           <span aria-hidden>⚙</span>筛选
           {sourceFilter.size > 0 && <span className="filter-btn-count">{sourceFilter.size}</span>}
         </button>
+      </div>
       </div>
       {sourceFilter.size > 0 && (
         <div className="filter-chip-row" role="status" aria-label="已启用的筛选条件">

@@ -866,7 +866,7 @@ button.syschip.terminal-entry:hover {
   border: 2px solid var(--border);
   padding: 4px 6px;
   display: -webkit-box;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
@@ -5070,22 +5070,14 @@ button.git-bar:active {  transform: translate(2px, 2px);
   flex: 1 1 auto;
   min-width: 0;
 }
-.filter-btn {
+/* 按钮本体复用 .tab-btn（与 tab 构造上等高）；wrapper 复刻 .tab-scroll 的阴影 padding 盒模型，保证像素级对齐 */
+.filter-btn-wrap {
   flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
+  padding: 3px 2px 6px;
+  margin: -4px -2px 0;
+}
+.filter-btn {
   gap: 4px;
-  min-height: 44px;
-  padding: 4px 10px;
-  font-family: var(--nb-font-head);
-  font-weight: 900;
-  font-size: 0.8rem;
-  background: var(--card);
-  color: var(--card-foreground);
-  border: 2px solid var(--border);
-  border-radius: var(--nb-radius);
-  box-shadow: var(--shadow-xs);
-  cursor: pointer;
 }
 .filter-btn.on {
   background: var(--primary);
@@ -5184,4 +5176,20 @@ button.git-bar:active {  transform: translate(2px, 2px);
   background: var(--primary);
   box-shadow: var(--shadow-sm);
   flex: 1 1 auto;
+}
+
+/* 筛选 Sheet footer：[重置] 与 [查看 N 个] 分离，主次明确 */
+.filter-foot {
+  display: flex;
+  align-items: stretch;
+  gap: 12px;
+}
+.filter-reset {
+  flex: 0 0 auto;
+}
+
+/* tab 行滚动暗示：右侧还有 tab 时右缘渐隐 28px（用户不滑动也能感知可滑） */
+.tab-scroll.fade-right {
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
 }

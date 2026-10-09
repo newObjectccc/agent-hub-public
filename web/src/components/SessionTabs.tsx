@@ -35,6 +35,29 @@ export function SessionTabs({
   const [ready, setReady] = useState(false);
   /** 测量失配：滑块隐藏 + active 按钮纯 CSS 兜底（见 styles.css .tab-slider.misaligned） */
   const [misaligned, setMisaligned] = useState(false);
+  /** 右侧还有更多 tab 可滑（滚动暗示渐变）：滚动/尺寸/字体变化时更新；到底自动消失 */
+  const [moreRight, setMoreRight] = useState(false);
+  const checkMoreRight = useCallback(() => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    setMoreRight(el.scrollLeft + el.clientWidth < el.scrollWidth - 2);
+  }, []);
+  useEffect(() => {
+    checkMoreRight();
+    const el = scrollerRef.current;
+    const group = groupRef.current;
+    el?.addEventListener("scroll", checkMoreRight, { passive: true });
+    window.addEventListener("resize", checkMoreRight);
+    // tab 宽度变化（counts/字体迟到）也会改变可滑性：观察 tab-group 尺寸
+    const ro = typeof ResizeObserver !== "undefined" && group ? new ResizeObserver(() => checkMoreRight()) : null;
+    if (group && ro) ro.observe(group);
+    void document.fonts?.ready?.then(() => checkMoreRight());
+    return () => {
+      el?.removeEventListener("scroll", checkMoreRight);
+      window.removeEventListener("resize", checkMoreRight);
+      ro?.disconnect();
+    };
+  }, [checkMoreRight]);
   /** 最近一次写入滑块的定位值（失配比对基准：DOM 实际布局 vs 已写入值） */
   const sliderRef = useRef<{ left: number; width: number }>({ left: 0, width: 0 });
   /** 下一次定位允许播动画（仅用户点击切换触发） */
@@ -211,7 +234,7 @@ export function SessionTabs({
   }, [value, ready]);
 
   return (
-    <div className="tab-scroll" ref={scrollerRef}>
+    <div className={cn("tab-scroll", moreRight && "fade-right")} ref={scrollerRef}>
       <div className="tab-group" role="tablist" aria-label="会话过滤" ref={groupRef}>
         <span
           className={cn("tab-slider", ready && "ready", misaligned && "misaligned")}
