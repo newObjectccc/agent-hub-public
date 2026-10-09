@@ -97,10 +97,17 @@ export interface RouteDeps {
   /** 应用锁门禁（F1）：传入请求的 X-App-Lock-Token，返回 false 时拒绝签发终端 token；缺省视为已解锁 */
   terminalUnlocked?: (lockToken?: string) => boolean | Promise<boolean>;}
 
-/** 会话项注入终端驱动状态（仅 pi 会话；agents 未启用时原样返回） */
-function stampTerminal(session: SessionListItem, agents?: AgentLinkLike): SessionListItem {
-  if (!agents || session.source !== "pi") return session;
-  return { ...session, terminal: agents.statusFor(session.id) };
+/** 会话出参 DTO：剥离 sessionFile（服务端内部绝对路径，前端零使用；数百会话可省 ~57KB 响应） */
+export type SessionDto = Omit<SessionListItem, "sessionFile">;
+export function toSessionDto(session: SessionListItem): SessionDto {
+  const { sessionFile: _sessionFile, ...rest } = session;
+  return rest;
+}
+
+/** 会话项注入终端驱动状态（仅 pi 会话；agents 未启用时原样返回）；出参统一走 SessionDto 瘦身 */
+function stampTerminal(session: SessionListItem, agents?: AgentLinkLike): SessionDto {
+  if (!agents || session.source !== "pi") return toSessionDto(session);
+  return toSessionDto({ ...session, terminal: agents.statusFor(session.id) });
 }
 
 /** 指令通道仅限本机回环 + 共享 token（防局域网伪造心跳/指令/回执） */
@@ -340,7 +347,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
         throw new HubError(ErrorCodes.INVALID_REQUEST, "source 必须是 pi|claude|codex 之一");
       }
       const session = await hub.createSession(cwd, name, source);
-      return reply.status(201).send({ session });
+      return reply.status(201).send({ session: toSessionDto(session) });
     } catch (err) {
       return handle(reply, err);
     }
@@ -350,7 +357,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   app.post<{ Params: { id: string } }>("/api/sessions/:id/fork", async (req, reply) => {
     try {
       const session = await hub.forkSession(req.params.id);
-      return reply.status(201).send({ session });
+      return reply.status(201).send({ session: toSessionDto(session) });
     } catch (err) {
       return handle(reply, err);
     }

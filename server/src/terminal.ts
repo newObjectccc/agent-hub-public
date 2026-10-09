@@ -106,6 +106,26 @@ export function injectTerminalShim(html: string): string {
   return shim + withAssets;
 }
 
+/**
+ * 日志脱敏（P2）：终端 token 走 `?t=` URL 能力链接，而 pino/Fastify 请求日志默认记 req.url——
+ * 令牌会随访问日志落盘/外送。凡查询键为 `t` / `token` / `*token*` / secret / password /
+ * sig / auth / credential 等敏感名，其值一律替换为 [REDACTED]（path 与非敏感查询保留原样）。
+ */
+const SENSITIVE_QUERY_KEY_RE = /^(t|token|access[_-]?token|.*token.*|secret|.*secret.*|password|passwd|pwd|sig|signature|auth|authorization|credential|api[_-]?key|key)$/i;
+
+export function redactUrlSecrets(url: string): string {
+  const qIndex = url.indexOf("?");
+  if (qIndex < 0) return url;
+  const path = url.slice(0, qIndex);
+  const parts = url.slice(qIndex + 1).split("&").map((part) => {
+    const eq = part.indexOf("=");
+    if (eq < 0) return part;
+    const key = part.slice(0, eq);
+    return SENSITIVE_QUERY_KEY_RE.test(key) ? `${key}=[REDACTED]` : part;
+  });
+  return `${path}?${parts.join("&")}`;
+}
+
 /** 从 URL 查询串 / Cookie 提取终端 token */
 export function tokenFrom(url: string | undefined, cookieHeader: string | undefined): string | null {
   const query = (url ?? "").split("?")[1] ?? "";
@@ -606,6 +626,8 @@ export function attachTerminalProxy(app: FastifyInstance, runtime: TerminalRunti
   app.server.on("upgrade", (req: UpgradeRequestMarked, socket, head) => {
     const path = (req.url ?? "").split("?")[0] ?? "";
     if (!path.startsWith(TERMINAL_PREFIX)) return;
+    // 已被更早的处理器接管/拒绝（如 index.ts 的 Host 校验直接断连）：不再二次处理
+    if (req[UPGRADE_HANDLED_MARK] === true) return;
     req[UPGRADE_HANDLED_MARK] = true;
     const target = runtime.proxyTarget();
     const token = tokenFrom(req.url, req.headers.cookie);

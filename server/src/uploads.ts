@@ -17,11 +17,13 @@
  * 2. 大小上限 10MB（base64 与解码后双向校验）、类型白名单（MIME + 扩展名兜底）。
  * 3. 上传目录固定 `.agent-hub-uploads/`（cwd 不可用时退临时目录），不进 git（仓库 .gitignore）。
  * 4. prompt 附件只能来自上传目录（cwd 内或临时上传根），拒绝 `../` 逃逸。
+ * 5. 符号链接逃逸二次校验：resolve 级判定后追加 fs.realpath 校验，目标真实路径必须
+ *    仍在允许根内（root 内 symlink 指向 root 外一律拒绝）。
  * ─────────────────────────────────────────────────────────────────────────
  */
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { extname, isAbsolute, join, resolve, sep } from "node:path";
 import { ErrorCodes, HubError } from "./errors.js";
@@ -248,6 +250,22 @@ export function isUnderRoot(root: string, target: string): boolean {
 }
 
 /**
+ * 符号链接逃逸二次校验（P2）：resolve 级判定不展开符号链接，root 内的 symlink 可指向
+ * root 外。realpath 展开后目标真实路径必须仍在真实 root 内（root 自身的 symlink 也被展开
+ * 后比较，合法的链接式目录布局不受影响）。目标/root 不存在 → 返回 false（由调用方保持
+ * 原有 404/写入错误语义）。
+ */
+export async function isUnderRootReal(root: string, target: string): Promise<boolean> {
+  try {
+    const realRoot = await realpath(resolve(root));
+    const real = await realpath(resolve(target));
+    return real === realRoot || real.startsWith(realRoot + sep);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * 落盘上传文件：cwd 下 `.agent-hub-uploads/`，cwd 不可用退临时目录。
  * 返回可引用路径（cwd 内为相对路径，供 `@path` 引用；临时目录为绝对路径）。
  */
@@ -272,6 +290,12 @@ export async function saveUpload(options: SaveUploadOptions): Promise<UploadDto>
     ? join(cwd, UPLOAD_DIR_NAME)
     : join(tempUploadRoot(), sanitizeSessionId(options.sessionId));
   await mkdir(dir, { recursive: true, mode: 0o755 });
+  // 符号链接逃逸二次校验（P2）：上传目录本身可能是指向外部的 symlink，
+  // realpath 展开后必须仍在允许根（cwd / 临时上传根）内
+  const dirBase = cwdUsable ? cwd : tempUploadRoot();
+  if (!(await isUnderRootReal(dirBase, dir))) {
+    throw new HubError(ErrorCodes.INVALID_PATH, "上传路径越界（符号链接逃逸）", 400);
+  }
   const storedName = await uniqueName(dir, type.name);
   const target = join(dir, storedName);
   assertContained(dir, target);
@@ -330,6 +354,11 @@ export async function loadImageAttachments(
       size = info.size;
     } catch {
       throw new HubError(ErrorCodes.FILE_NOT_FOUND, `附件不存在: ${ref}`, 404);
+    }
+    // 符号链接逃逸二次校验（P2）：root 内的 symlink 可指向 root 外，realpath 展开后再判
+    const insideReal = await Promise.all(roots.map((root) => isUnderRootReal(root, candidate)));
+    if (!insideReal.some(Boolean)) {
+      throw new HubError(ErrorCodes.INVALID_PATH, `附件路径越界（符号链接逃逸）: ${ref}`, 400);
     }
     if (size > MAX_UPLOAD_BYTES) {
       throw new HubError(ErrorCodes.UPLOAD_TOO_LARGE, `附件超过大小上限 ${MAX_UPLOAD_BYTES} 字节`, 413);

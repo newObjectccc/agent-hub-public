@@ -101,7 +101,10 @@ export function ensureConfig({
   const wrote = created || hasOverrides;
   if (wrote && !dryRun) {
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
-    fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+    // 配置可能含 auth.token 明文（P2）：写盘固定 0600，已有文件 chmod 收紧
+    // （writeFileSync 的 mode 只在新建时生效）
+    fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+    fs.chmodSync(configPath, 0o600);
   }
   return { created, wrote, path: configPath, config, workspaceRootFallback };
 }

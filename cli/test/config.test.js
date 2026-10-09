@@ -153,3 +153,21 @@ test('ensureConfig: 已有 config 不动（幂等），即使 workspaceRoot 目�
   assert.equal(res.config.workspaceRoot, '~/Missing');
   assert.equal(fs.readFileSync(configPath, 'utf8'), original);
 });
+
+test('ensureConfig: 写盘文件权限 0600（auth.token 明文保护，P2）', (t) => {
+  const dir = tmpDir(t);
+  const configPath = path.join(dir, 'hub.config.json');
+  // 新建即 0600
+  ensureConfig({ configPath, templatePath: path.join(dir, 'nope.json'), overrides: {} });
+  assert.equal(fs.statSync(configPath).mode & 0o777, 0o600, '新建落盘 0600');
+
+  // 已存在但权限宽松（0644）且含 auth.token → 回写后 chmod 收紧
+  fs.writeFileSync(configPath, JSON.stringify({
+    port: 7700,
+    auth: { enabled: true, token: 'secret-token' },
+  }), 'utf8');
+  fs.chmodSync(configPath, 0o644);
+  ensureConfig({ configPath, templatePath: configPath, overrides: { port: '7001' } });
+  assert.equal(fs.statSync(configPath).mode & 0o777, 0o600, '回写后收紧到 0600');
+  assert.equal(loadConfig(configPath).auth.token, 'secret-token');
+});

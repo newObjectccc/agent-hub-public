@@ -18,6 +18,7 @@ import { SessionHub } from "../sessions/hub.js";
 import type { PromptResult } from "../sessions/hub.js";
 import type { MessageDto, SearchResultDto, ServerEvent, SessionListItem, SessionSource, SessionTreeDto, SystemInfo } from "../types.js";
 import { ErrorCodes, HubError } from "../errors.js";
+import { toSessionDto } from "../routes.js";
 import { fakeUnlockedAppLock } from "./fakeAppLock.js";
 
 const sessionFixture: SessionListItem = {
@@ -251,7 +252,9 @@ describe("contract: POST /api/sessions（source 分发）与 POST /api/sessions/
     );
     const r1 = await app.inject({ method: "POST", url: "/api/sessions", payload: { cwd: "/tmp/demo" } });
     assert.equal(r1.statusCode, 201);
-    assert.deepEqual(r1.json(), { session: sessionFixture });
+    // 出参为 SessionDto：剥离内部路径 sessionFile（响应瘦身，前端零使用）
+    assert.deepEqual(r1.json(), { session: toSessionDto(sessionFixture) });
+    assert.equal("sessionFile" in r1.json().session, false, "出参不泄漏服务端内部路径");
 
     const r2 = await app.inject({
       method: "POST",

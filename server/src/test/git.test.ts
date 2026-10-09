@@ -8,7 +8,7 @@
  */
 import { strict as assert } from "node:assert";
 import { makeFakeDashboard } from "./fakeDashboard.js";
-import { readFile, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { readFile, mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -369,6 +369,34 @@ describe("git: createGitApi（mock runner）", () => {
       { name: "main", current: true, upstream: "origin/main" },
       { name: "feat/w3-git", current: false, upstream: null },
     ]);
+  });
+
+  it("fileContent/diff：符号链接逃逸二次校验（P2）", async () => {
+    const { run } = makeRunner(statusHandlers);
+    const api = createGitApi(run);
+    const outsideDir = await mkdtemp(join(tmpdir(), "agent-hub-git-out-"));
+    const outside = join(outsideDir, "secret.txt");
+    await writeFile(outside, "TOP SECRET\n");
+    try {
+      await symlink(outside, join(repoDir, "link.txt"));
+      // symlink 指向仓库外 → 400（resolve 级检查不展开链接，realpath 二次校验拦下）
+      await assert.rejects(api.fileContent(repoDir, "link.txt"), (err: unknown) => {
+        const e = err as { code: string };
+        return e.code === ErrorCodes.INVALID_PATH;
+      });
+      await assert.rejects(api.diff(repoDir, "link.txt", null), (err: unknown) => {
+        const e = err as { code: string };
+        return e.code === ErrorCodes.INVALID_PATH;
+      });
+      // 指向仓库内的 symlink 不误伤
+      await symlink(join(repoDir, "src", "a.ts"), join(repoDir, "inner.txt"));
+      const ok = await api.fileContent(repoDir, "inner.txt");
+      assert.equal(ok.content, "export const a = 1;\n");
+    } finally {
+      await rm(join(repoDir, "link.txt"), { force: true });
+      await rm(join(repoDir, "inner.txt"), { force: true });
+      await rm(outsideDir, { recursive: true, force: true });
+    }
   });
 
   it("fileContent：正常读取 / 超 256KB 截断 / 二进制 400 / 不存在 404 / 穿越 400", async () => {

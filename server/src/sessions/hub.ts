@@ -117,6 +117,8 @@ export class SessionHub {
   static readonly LIVE_IDLE_TTL_MS = 10 * 60_000;
   /** statuses 过期 TTL：非 idle 状态超过此时长视为过期条目清扫（idle 条目随时清） */
   static readonly STATE_TTL_MS = 30 * 60_000;
+  /** live.toolResults 上限（P2-6）：单 run 数千工具调用 × preview 文本防无上界驻留，保留最近 N 条 */
+  static readonly TOOL_RESULTS_MAX = 200;
 
   constructor(sessionDir: string, emit: EmitFn, options: SessionHubOptions = {}) {
     this.sessionDir = sessionDir;
@@ -682,7 +684,7 @@ export class SessionHub {
         const messageId = live.currentMessageId ?? live.lastMessageId ?? `live-${live.seq}`;
         const result = event.result as { content?: unknown } | undefined;
         const preview = truncateText(contentToText(result?.content), RESULT_PREVIEW_LIMIT);
-        live.toolResults.set(event.toolCallId, { isError: event.isError === true, text: preview });
+        this.rememberToolResult(live, event.toolCallId, { isError: event.isError === true, text: preview });
         this.emit(id, {
           type: "tool_end",
           messageId,
@@ -726,6 +728,21 @@ export class SessionHub {
       }
       default:
         break;
+    }
+  }
+
+  /**
+   * 登记工具结果 preview（P2-6 限容）：单 run 数千工具调用时只留最近 TOOL_RESULTS_MAX 条
+   * （Map 插入序 FIFO 逐出）；被逐出的老 callId 在 message_end 折叠时降级为无 preview，
+   * 不再随 LiveSession 无上界驻留。
+   */
+  private rememberToolResult(live: LiveSession, callId: string, result: { isError: boolean; text: string }): void {
+    live.toolResults.delete(callId);
+    live.toolResults.set(callId, result);
+    while (live.toolResults.size > SessionHub.TOOL_RESULTS_MAX) {
+      const oldest = live.toolResults.keys().next();
+      if (oldest.done) break;
+      live.toolResults.delete(oldest.value);
     }
   }
 

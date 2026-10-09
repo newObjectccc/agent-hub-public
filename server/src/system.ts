@@ -157,10 +157,12 @@ export interface SystemInfoProviderOptions extends ProbeOptions {
  * 真实指标按 metricsTtlMs 缓存（首采照常双快照，窗口内复用 + 在途去重，不再每请求 200ms）。
  */
 export function createSystemInfoProvider(options: SystemInfoProviderOptions): () => Promise<SystemInfo> {
-  const toolsTtlMs = options.toolsTtlMs ?? 30_000;
+  // 工具版本探测 TTL 默认 5min（pi/claude/tmux 版本几乎不变）；过期走 SWR 后台刷新，不阻塞请求
+  const toolsTtlMs = options.toolsTtlMs ?? 300_000;
   const metricsTtlMs = options.metricsTtlMs ?? 30_000;
   let toolsPromise: Promise<Omit<SystemInfo, "metrics"> | null> | null = null;
   let toolsAt = 0;
+  let toolsCache: { value: Omit<SystemInfo, "metrics">; at: number } | null = null;
   let metricsPromise: Promise<SystemMetrics | null> | null = null;
   let metricsAt = 0;
   const probeTools = async (): Promise<Omit<SystemInfo, "metrics">> => {
@@ -191,12 +193,27 @@ export function createSystemInfoProvider(options: SystemInfoProviderOptions): ()
   };
   return async () => {
     const now = Date.now();
-    if (toolsPromise === null || now - toolsAt >= toolsTtlMs) {
-      toolsAt = now;
-      toolsPromise = probeTools().catch(() => null);
+    if (toolsCache === null) {
+      // 首次无陈旧值：必须等真实探测（在途请求共享同一次）
+      if (toolsPromise === null) {
+        toolsAt = now;
+        toolsPromise = probeTools().catch(() => null);
+      }
+      const first = await toolsPromise;
+      if (first === null) throw new Error("system probe failed");
+      toolsCache = { value: first, at: toolsAt };
+    } else if (now - toolsCache.at >= toolsTtlMs) {
+      // 过期：立即返回陈旧值 + 后台刷新（SWR）——CLI 冷探测 0.5~1s 永不阻塞请求；失败保留旧值
+      if (toolsPromise === null || now - toolsAt >= toolsTtlMs) {
+        toolsAt = now;
+        toolsPromise = probeTools()
+          .then((v) => {
+            if (v !== null) toolsCache = { value: v, at: toolsAt };
+            return v;
+          })
+          .catch(() => null);
+      }
     }
-    const tools = await toolsPromise;
-    if (tools === null) throw new Error("system probe failed");
-    return { ...tools, metrics: await collectMetricsCached() };
+    return { ...toolsCache.value, metrics: await collectMetricsCached() };
   };
 }

@@ -85,6 +85,13 @@ export interface AppLockRecord {
   tokenHash: string | null;
   tokenExpiresAt: number | null;
   webauthn: AppLockCredential | null;
+  /**
+   * 连续验证失败计数（可选，旧文件无此字段按 0）：持久化到 app-lock.json，
+   * 重启后继续计数（防重启清零暴力破解），验证成功时清零。
+   */
+  failures?: number;
+  /** 临时锁定截止时间戳（可选；指数退避，与 failures 一同持久化，跨重启生效） */
+  lockedUntil?: number;
   createdAt: number;
   updatedAt: number;
 }
@@ -98,6 +105,8 @@ export function parseAppLockRecord(raw: string): AppLockRecord | null {
     if (typeof parsed.salt !== "string" || parsed.salt === "") return null;
     const tokenHash = typeof parsed.tokenHash === "string" && parsed.tokenHash.length === 64 ? parsed.tokenHash : null;
     const tokenExpiresAt = typeof parsed.tokenExpiresAt === "number" ? parsed.tokenExpiresAt : null;
+    const failures = typeof parsed.failures === "number" && parsed.failures > 0 ? Math.floor(parsed.failures) : undefined;
+    const lockedUntil = typeof parsed.lockedUntil === "number" && parsed.lockedUntil > 0 ? parsed.lockedUntil : undefined;
     let webauthn: AppLockCredential | null = null;
     if (parsed.webauthn && typeof parsed.webauthn === "object") {
       const w = parsed.webauthn as Partial<AppLockCredential>;
@@ -116,6 +125,8 @@ export function parseAppLockRecord(raw: string): AppLockRecord | null {
       tokenHash,
       tokenExpiresAt,
       webauthn,
+      ...(failures !== undefined ? { failures } : {}),
+      ...(lockedUntil !== undefined ? { lockedUntil } : {}),
       createdAt: typeof parsed.createdAt === "number" ? parsed.createdAt : 0,
       updatedAt: typeof parsed.updatedAt === "number" ? parsed.updatedAt : 0,
     };
@@ -304,9 +315,9 @@ const CHALLENGE_TTL_MS = 2 * 60 * 1000;
 export class AppLockStore implements AppLockStoreLike {
   private record: AppLockRecord | null = null;
   private challenges = new Map<string, PendingChallenge>();
-  /** 连续失败计数（PIN/口令/生物识别，成功即清零；进程内存态，重启重新计） */
+  /** 连续失败计数（PIN/口令/生物识别，成功即清零）：持久化在 record.failures，跨重启继续计 */
   private failures = 0;
-  /** 临时锁定截止（指数退避） */
+  /** 临时锁定截止（指数退避）：持久化在 record.lockedUntil，跨重启生效 */
   private lockedUntil = 0;
 
   constructor(
@@ -317,6 +328,11 @@ export class AppLockStore implements AppLockStoreLike {
       this.record = parseAppLockRecord(readFileSync(this.file, "utf8"));
     } catch {
       this.record = null;
+    }
+    // 失败限速状态从盘上恢复（P2：连错锁定跨重启生效，重启不再清零）
+    if (this.record) {
+      this.failures = this.record.failures ?? 0;
+      this.lockedUntil = this.record.lockedUntil ?? 0;
     }
   }
 
@@ -347,7 +363,7 @@ export class AppLockStore implements AppLockStoreLike {
     }
   }
 
-  /** 验证失败计数 + 指数退避（连错 5 次锁 30s，之后每多错一次翻倍，封顶 15min） */
+  /** 验证失败计数 + 指数退避（连错 5 次锁 30s，之后每多错一次翻倍，封顶 15min）；持久化落盘 */
   private recordFailure(): void {
     this.failures += 1;
     if (this.failures >= LOCK_MAX_FAILURES) {
@@ -355,6 +371,7 @@ export class AppLockStore implements AppLockStoreLike {
       const backoff = Math.min(LOCK_BACKOFF_BASE_MS * 2 ** over, LOCK_BACKOFF_MAX_MS);
       this.lockedUntil = this.now() + backoff;
     }
+    this.persistFailureState();
   }
 
   private recordSuccess(): void {
@@ -362,9 +379,17 @@ export class AppLockStore implements AppLockStoreLike {
     this.lockedUntil = 0;
   }
 
+  /** 失败限速状态落盘（只改 failures/lockedUntil，不动任何凭据字段） */
+  private persistFailureState(): void {
+    const rec = this.record;
+    if (!rec) return;
+    this.save({ ...rec, failures: this.failures, lockedUntil: this.lockedUntil, updatedAt: this.now() });
+  }
+
   private issueToken(rec: AppLockRecord): IssuedLockToken {
     const { token, tokenHash, expiresAt } = newLockToken(this.now());
-    this.save({ ...rec, tokenHash, tokenExpiresAt: expiresAt, updatedAt: this.now() });
+    // 发新令牌 = 本轮验证成功：失败计数/锁定一并清零落盘
+    this.save({ ...rec, failures: 0, lockedUntil: 0, tokenHash, tokenExpiresAt: expiresAt, updatedAt: this.now() });
     return { token, expiresAt };
   }
 

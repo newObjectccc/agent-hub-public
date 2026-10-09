@@ -114,3 +114,42 @@ describe("renderMarkdown: GFM 表格", () => {
     }
   });
 });
+
+describe("renderMarkdown: P2 安全加固（协议相对 URL / 占位符伪造）", () => {
+  it("拒绝协议相对 //host/x 图片与链接（防第三方追踪请求）", () => {
+    const html = renderMarkdown("![x](//evil.test/a.png)\n\n[y](//evil.test/b)");
+    expect(html).not.toContain("<img");
+    expect(html).not.toContain("<a ");
+    expect(html).not.toContain("href=");
+    expect(html).not.toContain("src=");
+  });
+
+  it("拒绝反斜杠协议相对变体（浏览器把 \\ 归一为 /）", () => {
+    const html = renderMarkdown("![x](\\\\evil.test/a.png)\n\n[y](\\\\evil.test/b)");
+    expect(html).not.toContain("<img");
+    expect(html).not.toContain("<a ");
+  });
+
+  it("控制字符剥除后判定 scheme（防控制字符前缀绕过）", () => {
+    const html = renderMarkdown("![x](\u0001javascript:alert(1))\n\n[y](\u0001javascript:alert(1))");
+    expect(html).not.toContain("<img");
+    expect(html).not.toContain("<a ");
+    expect(html).not.toContain("href=");
+  });
+
+  it("输入伪造 \\u0000CODE 占位符不产生显示混淆（预处理剥离）", () => {
+    // 伪造占位符想冒充第一个行内代码槽；预处理剥 \u0000 后按普通文本渲染
+    const html = renderMarkdown("\u0000CODE0\u0000 `真实代码`");
+    expect(html).toContain("CODE0");
+    expect(html).toContain("<code>真实代码</code>");
+    expect(html.startsWith("<p>CODE0 ")).toBe(true);
+    // 真实行内代码照常回填；输出不含 NUL
+    expect(html).not.toContain("\u0000");
+  });
+
+  it("伪造输入下块级缓存与全量渲染仍逐字符一致", () => {
+    const src = "开头 \u0000CODE0\u0000 `x` \u0000CODE99999\u0000 结尾";
+    const cache = new MarkdownRenderCache();
+    expect(cache.render(src)).toBe(renderMarkdown(src));
+  });
+});

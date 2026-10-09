@@ -3,8 +3,12 @@
  * 默认监听 127.0.0.1:7700（config/hub.config.json 可覆盖），绝不明文绑定公网。
  */
 import { existsSync, realpathSync } from "node:fs";
+import { createHash } from "node:crypto";
+import type { IncomingMessage } from "node:http";
+import { isIPv4, isIPv6 } from "node:net";
 import { homedir } from "node:os";
 import { join, sep } from "node:path";
+import type { Duplex } from "node:stream";
 import { pathToFileURL } from "node:url";
 import Fastify, { type FastifyInstance } from "fastify";
 import fastifyCompress from "@fastify/compress";
@@ -31,10 +35,117 @@ import { PresenceWatcher } from "./sessions/presence.js";
 import { findSessionFiles } from "./sessions/scan.js";
 import { SessionTailManager } from "./sessions/tail.js";
 import { createSystemInfoProvider } from "./system.js";
-import { attachTerminalProxy, TerminalService, type TerminalRuntime } from "./terminal.js";
+import {
+  attachTerminalProxy,
+  redactUrlSecrets,
+  TerminalService,
+  UPGRADE_HANDLED_MARK,
+  type TerminalRuntime,
+} from "./terminal.js";
 import { UsageService } from "./usage.js";
 import type { ServerEvent } from "./types.js";
 import { WsHub } from "./ws.js";
+
+/**
+ * DNS rebinding 防护（P2）：浏览器会把任意域名解析到本机，恶意页面再以
+ * `http://evil.com:7700` 直连本服务（同源策略下可读响应）。Host 头白名单宽松判定：
+ * - localhost / *.localhost、任意 IP 字面量（回环/局域网 IP 直接访问不受影响，IP 无 DNS 可被 rebind）
+ * - *.ts.net（Tailscale MagicDNS）、*.local（mDNS 局域网设备名）
+ * - 额外显式信任名单 extraHosts（bindHost 主机名 + allowOrigins 的 hostname）
+ * 其余主机名一律 403。未配置项零维护：自定义域名部署可经 allowOrigins/绑定主机名进入白名单。
+ */
+export function isAllowedHostHeader(
+  hostHeader: string | string[] | undefined,
+  options: { bindHost?: string; extraHosts?: readonly string[] } = {},
+): boolean {
+  const raw = Array.isArray(hostHeader) ? hostHeader[0] : hostHeader;
+  if (typeof raw !== "string") return false;
+  const h = raw.trim().toLowerCase();
+  if (h === "") return false;
+  // Host 头 = hostname[:port]；IPv6 字面量必须带 []（裸多冒号非法一律拒）
+  let hostname: string;
+  if (h.startsWith("[")) {
+    const end = h.indexOf("]");
+    if (end <= 1) return false;
+    hostname = h.slice(1, end);
+  } else {
+    const colons = h.split(":").length - 1;
+    if (colons > 1) return false;
+    hostname = colons === 1 ? h.slice(0, h.indexOf(":")) : h;
+  }
+  if (hostname === "") return false;
+  if (hostname === "localhost" || hostname.endsWith(".localhost")) return true;
+  if (isIPv4(hostname) || isIPv6(hostname)) return true;
+  if (hostname.endsWith(".ts.net") || hostname.endsWith(".local")) return true;
+  const extras = [options.bindHost, ...(options.extraHosts ?? [])];
+  return extras.some((extra) => {
+    if (typeof extra !== "string" || extra.trim() === "") return false;
+    return hostname === extra.trim().toLowerCase();
+  });
+}
+
+/**
+ * emit 同步链隔离（P2）：通知聚合 / WS 广播 / 子代理路由各路独立 try/catch，
+ * 单路抛错只记日志不影响其它路（任一订阅者出错不拖垮事件分发）。
+ */
+export interface EmitTargets {
+  recordEvent(sessionId: string, event: ServerEvent): void;
+  broadcast(sessionId: string, event: ServerEvent): void;
+  broadcastGlobal(event: { type: string; [key: string]: unknown }): void;
+  route(sessionId: string, event: ServerEvent): { parentSessionId: string; event: ServerEvent } | null;
+}
+
+export function createEventEmitter(
+  targets: EmitTargets,
+  onError: (where: string, err: unknown) => void = (where, err) => {
+    console.error(`[agent-hub] emit ${where} failed:`, err instanceof Error ? err.stack ?? err.message : err);
+  },
+): (sessionId: string, event: ServerEvent) => void {
+  return (sessionId, event) => {
+    try {
+      targets.recordEvent(sessionId, event);
+    } catch (err) {
+      onError("recordEvent", err);
+    }
+    if (event.type === "status") {
+      try {
+        targets.broadcastGlobal({ type: "session_status", sessionId, status: event.status });
+      } catch (err) {
+        onError("broadcastGlobal", err);
+      }
+    }
+    try {
+      targets.broadcast(sessionId, event);
+    } catch (err) {
+      onError("broadcast", err);
+    }
+    try {
+      const routed = targets.route(sessionId, event);
+      if (routed) targets.broadcast(routed.parentSessionId, routed.event);
+    } catch (err) {
+      onError("route", err);
+    }
+  };
+}
+
+/**
+ * 日志 req 序列化器（P2）：终端 token 走 `?t=` 能力链接，pino 默认序列化会把完整 req.url
+ * 记入访问日志——此处输出最小字段集并对敏感查询参数（t/token/secret/…）统一 [REDACTED]。
+ * createApp 的 pino serializers.req 与测试共用本实现。
+ */
+export function serializeReqForLog(req: {
+  method?: string;
+  url?: string;
+  hostname?: string;
+  ip?: string;
+}): Record<string, unknown> {
+  return {
+    method: req.method,
+    url: redactUrlSecrets(req.url ?? ""),
+    hostname: req.hostname,
+    remoteAddress: req.ip,
+  };
+}
 
 export interface CreateAppOptions extends RouteDeps {
   /** 静态托管根目录（web/dist）；null 表示不托管 */
@@ -46,7 +157,59 @@ export interface CreateAppOptions extends RouteDeps {
 
 /** 装配 Fastify app：CORS + REST 路由 + 静态托管 + SPA history fallback */
 export async function createApp(options: CreateAppOptions): Promise<FastifyInstance> {
-  const app = Fastify({ logger: options.logger ?? false, forceCloseConnections: true });
+  // 日志脱敏（P2）：终端 token 走 `?t=` 能力链接，pino 默认 req 序列化会把完整 req.url
+  // 记入访问日志。自定义 req serializer 对敏感查询参数（t/token/secret/…）统一 [REDACTED]。
+  const loggerOption = options.logger
+    ? {
+        level: "info",
+        serializers: {
+          req: serializeReqForLog,
+        },
+      }
+    : false;
+  const app = Fastify({ logger: loggerOption, forceCloseConnections: true });
+  // GET/HEAD JSON 响应弱 ETag + no-cache 协商缓存：重复打开面板命中 If-None-Match → 304（零字节体），
+  // 慢链路（tailnet 中继）下二次打开的关键优化。注册在压缩之前：对 identity 内容做哈希
+  // （W/ 弱 ETag，语义与 nginx gzip+etag 同口径）；静态资源由 @fastify/static 自管缓存不受影响。
+  app.addHook("onSend", async (req, reply, payload) => {
+    if (
+      (req.method === "GET" || req.method === "HEAD") &&
+      reply.statusCode === 200 &&
+      typeof payload === "string" &&
+      !reply.hasHeader("etag")
+    ) {
+      const etag = `W/"${createHash("sha1").update(payload).digest("base64url").slice(0, 27)}"`;
+      reply.header("etag", etag);
+      if (!reply.hasHeader("cache-control")) reply.header("cache-control", "no-cache");
+      const inm = req.headers["if-none-match"];
+      if (typeof inm === "string" && inm.split(",").some((t) => t.trim() === etag)) {
+        reply.code(304);
+        return "";
+      }
+    }
+    return payload;
+  });
+  // DNS rebinding 防护（P2）：非法 Host（非 localhost/IP/ts.net/local/显式信任名）→ 403，
+  // 先于一切业务路由/静态托管；WS upgrade 不走 onRequest hook，在下方单独把关
+  const extraHostNames = options.config.allowOrigins
+    .map((origin) => {
+      try {
+        return new URL(origin).hostname;
+      } catch {
+        return "";
+      }
+    })
+    .filter((h) => h !== "");
+  const hostOptions = { bindHost: options.config.host, extraHosts: extraHostNames };
+  app.addHook("onRequest", async (req, reply) => {
+    if (isAllowedHostHeader(req.headers.host, hostOptions)) return;
+    return reply.status(403).send({ error: { code: ErrorCodes.UNAUTHORIZED, message: "host not allowed (dns rebinding guard)" } });
+  });
+  app.server.on("upgrade", (req: IncomingMessage, socket: Duplex) => {
+    if (isAllowedHostHeader(req.headers.host, hostOptions)) return;
+    (req as IncomingMessage & Record<string, unknown>)[UPGRADE_HANDLED_MARK] = true;
+    socket.destroy();
+  });
   // 响应压缩（brotli 优先）：弱网/移动网络下 JSON 与静态资源体积降约 70%；
   // 仅在请求带 Accept-Encoding 时生效（WS upgrade / 终端反代不受影响）
   await app.register(fastifyCompress, { encodings: ["br", "gzip", "deflate"] });
@@ -138,17 +301,15 @@ export async function startHub(): Promise<StartedHub> {
 
   const wshub = new WsHub();
   // 统一事件出口：通知聚合（settled/error + 最后输出摘要）+ WS 推送 +
-  // 全局 status 变更广播（首页运行看板实时刷新）
-  const emit = (sessionId: string, event: ServerEvent): void => {
-    dashboard.recordEvent(sessionId, event);
-    if (event.type === "status") {
-      wshub.broadcastGlobal({ type: "session_status", sessionId, status: event.status });
-    }
-    wshub.broadcast(sessionId, event);
-    // 子代理活动路由（反馈轮 3 #4）：子会话事件按 parentSessionId 汇到父会话通道
-    const routed = subAgentRouter.route(sessionId, event);
-    if (routed) wshub.broadcast(routed.parentSessionId, routed.event);
-  };
+  // 全局 status 变更广播（首页运行看板实时刷新）+ 子代理活动路由（反馈轮 3 #4：
+  // 子会话事件按 parentSessionId 汇到父会话通道）。各路独立 try/catch（P2 emit 隔离）；
+  // 目标对象延迟绑定（事件只可能在 startHub 装配完成后到达）
+  const emit = createEventEmitter({
+    recordEvent: (sessionId, event) => dashboard.recordEvent(sessionId, event),
+    broadcast: (sessionId, event) => wshub.broadcast(sessionId, event),
+    broadcastGlobal: (event) => wshub.broadcastGlobal(event),
+    route: (sessionId, event) => subAgentRouter.route(sessionId, event),
+  });
   const piHub = new SessionHub(config.sessionDir, emit);
   // 终端 pi 反向指令通道（E3 双模式）：心跳 / 指令队列 / 回执（attach_state、command_ack 走同一 emit）
   const agents = new AgentCommandHub(emit);

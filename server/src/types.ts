@@ -203,6 +203,11 @@ export interface ToolAvailability {
 
 export interface TailscaleStatus extends ToolAvailability {
   loggedIn: boolean;
+  /**
+   * ⚠ 敏感字段（P2 审计，建议前端脱敏/文档化）：Tailscale 设备名可暴露本机身份/网络
+   * 拓扑（GET /api/system 对任何可达客户端可见）。实际脱敏移交后续（routes.ts 本次禁改）；
+   * 使用方应避免在不可信网络展示 hostname，或在前端替换为掩码。
+   */
   hostname: string | null;
 }
 
@@ -241,6 +246,13 @@ export interface SystemMetrics {
   sampledAt: string;
 }
 
+/**
+ * GET /api/system 响应。
+ * ⚠ 敏感字段提示（P2 审计）：`tailscale.hostname`（本机/Tailscale 设备名）与
+ * `tailscale.loggedIn`（组网登录状态）属可识别信息，向任何可达客户端泄露主机身份；
+ * `sessionDir` / `workspaceRoot` 亦泄露本机绝对路径布局。类型层先标注，实际响应脱敏/
+ * 文档化移交后续（routes.ts 本次禁改）——建议前端对 hostname 掩码展示。
+ */
 export interface SystemInfo {
   platform: "darwin" | "win32" | "linux" | string;
   pi: ToolAvailability;

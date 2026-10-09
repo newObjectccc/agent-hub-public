@@ -10,7 +10,7 @@
  * - 输出统一截断上限（diff 512KB / 文件 256KB），防止超大响应拖垮手机端。
  */
 import { execFile } from "node:child_process";
-import { open } from "node:fs/promises";
+import { open, realpath } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { stat } from "node:fs/promises";
 import { promisify } from "node:util";
@@ -32,6 +32,14 @@ export const MAX_DIFF_BYTES = 512 * 1024;
 export const MAX_FILE_BYTES = 256 * 1024;
 const GIT_TIMEOUT_MS = 15_000;
 const GIT_MAX_BUFFER = 16 * 1024 * 1024;
+/** 未跟踪文件补 diff 数量上限 */
+export const UNTRACKED_DIFF_LIMIT = 20;
+/** 未跟踪补 diff 并发上限（P2-1：串行 20 × 15s 最坏 5 分钟 → 并发池） */
+export const DIFF_CONCURRENCY = 4;
+/** 单次 diff 请求总预算（P2-1）：Promise.race 钳制，超时返回已得部分 */
+export const DIFF_TOTAL_TIMEOUT_MS = 20_000;
+/** status 缓存上限（P2-3：LRU，超出逐出最久未用条目） */
+export const STATUS_CACHE_MAX = 256;
 
 /** 可注入的 git 运行器（测试 mock 用） */
 export type GitRunner = (cwd: string, args: string[], opts?: GitRunOpts) => Promise<string>;
@@ -77,7 +85,8 @@ export function isAbsolutePath(p: string): boolean {
 
 /**
  * 把用户传入的相对/绝对路径 resolve 到仓库根内；越界即抛 INVALID_PATH。
- * 说明：按任务要求做 resolve 级校验（不展开符号链接）。
+ * 说明：按任务要求做 resolve 级校验（不展开符号链接），真实路径二次校验见
+ * assertRealPathInside（fileContent / diff 读取前调用）。
  */
 export function resolveInsideRepo(root: string, target: string): string {
   if (typeof target !== "string" || target.trim() === "") {
@@ -97,6 +106,25 @@ const COMMIT_RE = /^[A-Za-z0-9][A-Za-z0-9._/~^@{}+-]{0,99}$/;
 export function assertCommitRef(commit: string): void {
   if (typeof commit !== "string" || !COMMIT_RE.test(commit) || commit.includes("..")) {
     throw new HubError(ErrorCodes.INVALID_REQUEST, `非法 commit/ref: ${String(commit).slice(0, 80)}`, 400);
+  }
+}
+
+/**
+ * 符号链接逃逸二次校验（P2）：resolveInsideRepo 不展开符号链接，仓库内的 symlink
+ * 可指向仓库外。fs.realpath 展开后目标真实路径必须仍在真实仓库根内。
+ * 目标/根不存在（realpath 失败）不在此报错：交给后续 open/git 保持原有 404/空 diff 语义
+ * （指向不存在目标的 symlink 读到的只是链接本身，无内容泄漏）。
+ */
+export async function assertRealPathInside(root: string, target: string): Promise<void> {
+  let realRoot: string;
+  let real: string;
+  try {
+    [realRoot, real] = await Promise.all([realpath(root), realpath(target)]);
+  } catch {
+    return;
+  }
+  if (real !== realRoot && !real.startsWith(realRoot + sep)) {
+    throw new HubError(ErrorCodes.INVALID_PATH, "路径越出仓库根（符号链接逃逸）", 400);
   }
 }
 
@@ -238,12 +266,49 @@ async function resolveRepoRoot(run: GitRunner, cwd: string): Promise<string> {
   return root;
 }
 
+/** 并发池：最多 limit 个 fn 同时在跑（items 顺序由调用方按索引写回结果） */
+async function mapWithConcurrency<T>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<void>,
+): Promise<void> {
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const i = next;
+      next += 1;
+      if (i >= items.length) return;
+      await fn(items[i], i);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, worker));
+}
+
+export interface GitApiOptions {
+  /** 单次 diff 请求总预算（P2-1，缺省 20s；测试注入短值） */
+  diffTimeoutMs?: number;
+  /** 未跟踪补 diff 并发上限（P2-1，缺省 4） */
+  diffConcurrency?: number;
+}
+
 /** 可注入 runner 的 git API 工厂（测试注入 mock execFile） */
 /** git status 缓存：会话列表每行一个徽章请求（36+ 行 = 36+ git 子进程），服务端缓存防雪崩 */
 const GIT_STATUS_CACHE_MS = 30_000;
 
-export function createGitApi(runner: GitRunner = runGit): GitApi {
+export function createGitApi(runner: GitRunner = runGit, options: GitApiOptions = {}): GitApi {
+  const diffTimeoutMs = Math.max(1, options.diffTimeoutMs ?? DIFF_TOTAL_TIMEOUT_MS);
+  const diffConcurrency = Math.max(1, options.diffConcurrency ?? DIFF_CONCURRENCY);
   const statusCache = new Map<string, { at: number; result: GitStatusResult | null; error: unknown }>();
+  // P2-3：写入走 LRU——重复 set 刷新位次 + 上限逐出最久未用（Map 插入序 = 使用序）
+  const storeStatus = (cwd: string, entry: { at: number; result: GitStatusResult | null; error: unknown }): void => {
+    statusCache.delete(cwd);
+    statusCache.set(cwd, entry);
+    while (statusCache.size > STATUS_CACHE_MAX) {
+      const oldest = statusCache.keys().next();
+      if (oldest.done) break;
+      statusCache.delete(oldest.value);
+    }
+  };
   // 未缓存实现（缓存壳在下面的 status 方法里）
   const runStatus = async (cwd: string): Promise<GitStatusResult> => {
       const root = await resolveRepoRoot(runner, cwd);
@@ -293,16 +358,20 @@ export function createGitApi(runner: GitRunner = runGit): GitApi {
       const hit = statusCache.get(cwd);
       const now = Date.now();
       if (hit && now - hit.at < GIT_STATUS_CACHE_MS) {
+        // LRU：命中刷新位次（storeStatus 内 delete+set）
+        storeStatus(cwd, hit);
         if (hit.error !== null) throw hit.error;
         return hit.result as GitStatusResult;
       }
+      // P2-3：过期即删（不再只跳过重算），防过期条目无上界驻留
+      if (hit) statusCache.delete(cwd);
       try {
         const result = await runStatus(cwd);
-        statusCache.set(cwd, { at: now, result, error: null });
+        storeStatus(cwd, { at: Date.now(), result, error: null });
         return result;
       } catch (err) {
         // 失败也短缓存（防非仓库路径反复触发 git 子进程）
-        statusCache.set(cwd, { at: now, result: null, error: err });
+        storeStatus(cwd, { at: Date.now(), result: null, error: err });
         throw err;
       }
     },
@@ -316,7 +385,13 @@ export function createGitApi(runner: GitRunner = runGit): GitApi {
 
     async diff(cwd: string, file: string | null, commit: string | null): Promise<GitDiffResult> {
       const root = await resolveRepoRoot(runner, cwd);
-      const rel = file === null ? null : relative(root, resolveInsideRepo(root, file));
+      let rel: string | null = null;
+      if (file !== null) {
+        const abs = resolveInsideRepo(root, file);
+        // 符号链接逃逸二次校验（P2）：用户传入 file 的真实路径必须仍在仓库内
+        await assertRealPathInside(root, abs);
+        rel = relative(root, abs);
+      }
       if (commit !== null) assertCommitRef(commit);
 
       // 只读：diff/show/ls-files 都是纯读取；`--` 终止选项解析，路径参数不会被当作 flag
@@ -324,25 +399,43 @@ export function createGitApi(runner: GitRunner = runGit): GitApi {
       if (commit !== null) {
         raw = await runner(root, ["show", "--no-color", "--format=", "--patch", commit, "--", ...(rel === null ? [] : [rel])]);
       } else {
-        raw = await runner(root, ["diff", "--no-color", "HEAD", "--", ...(rel === null ? [] : [rel])]);
-        // git diff HEAD 不含未跟踪文件：用 ls-files --others + diff --no-index（只读）补全，
-        // 新文件也能在“变更”里看到（上限 20 个，防超大输出）
-        const untracked = await runner(root, [
-          "ls-files",
-          "--others",
-          "--exclude-standard",
-          ...(rel === null ? [] : ["--", rel]),
-        ]);
-        const extras: string[] = [];
-        for (const u of untracked.split("\n").filter((l) => l.trim() !== "").slice(0, 20)) {
-          const d = await runner(root, ["diff", "--no-index", "--no-color", "--", "/dev/null", u], {
-            okExitCodes: [0, 1],
+        // P2-1 加固：未跟踪补 diff 从串行（20 × 15s 最坏 5 分钟）改为
+        // 并发池（≤ diffConcurrency）+ 单请求总预算（Promise.race diffTimeoutMs）。
+        // 超时返回已得部分（extras 按文件序拼接），预算耗尽后不再起新的 git 子进程。
+        const deadline = Date.now() + diffTimeoutMs;
+        let mainRaw = "";
+        const extras: (string | undefined)[] = [];
+        const work = (async () => {
+          mainRaw = await runner(root, ["diff", "--no-color", "HEAD", "--", ...(rel === null ? [] : [rel])]);
+          // git diff HEAD 不含未跟踪文件：用 ls-files --others + diff --no-index（只读）补全，
+          // 新文件也能在“变更”里看到（上限 UNTRACKED_DIFF_LIMIT 个，防超大输出）
+          const untracked = await runner(root, [
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+            ...(rel === null ? [] : ["--", rel]),
+          ]);
+          const files = untracked.split("\n").filter((l) => l.trim() !== "").slice(0, UNTRACKED_DIFF_LIMIT);
+          await mapWithConcurrency(files, diffConcurrency, async (u, i) => {
+            if (Date.now() >= deadline) return; // 预算耗尽：未开始的不再起 git 子进程
+            const d = await runner(root, ["diff", "--no-index", "--no-color", "--", "/dev/null", u], {
+              okExitCodes: [0, 1],
+            });
+            if (d.trim() !== "") extras[i] = d; // 按索引写回：并发不乱序
           });
-          if (d.trim() !== "") extras.push(d);
-        }
-        if (extras.length > 0) {
-          raw = raw.trim() === "" ? extras.join("") : `${raw.trimEnd()}\n${extras.join("")}`;
-        }
+        })();
+        // race 落败后的后台收尾不产生 unhandled rejection；正常失败仍由 race 抛给调用方
+        work.catch(() => undefined);
+        let timer: NodeJS.Timeout | null = null;
+        const budget = new Promise<"timeout">((resolve) => {
+          // 不 unref：预算计时器是钳制的唯一兜底（后台 git 挂死时也必须准时返回），
+          // work 结束后 clearTimeout 不留句柄
+          timer = setTimeout(() => resolve("timeout"), diffTimeoutMs);
+        });
+        await Promise.race([work, budget]);
+        if (timer !== null) clearTimeout(timer);
+        const extraText = extras.filter((x): x is string => typeof x === "string").join("");
+        raw = extraText === "" ? mainRaw : mainRaw.trim() === "" ? extraText : `${mainRaw.trimEnd()}\n${extraText}`;
       }
       const { text, truncated } = clampOutput(raw, MAX_DIFF_BYTES);
       return { root, file: rel, commit, truncated, diff: text };
@@ -359,6 +452,8 @@ export function createGitApi(runner: GitRunner = runGit): GitApi {
     async fileContent(cwd: string, path: string): Promise<FileContentResult> {
       const root = await resolveRepoRoot(runner, cwd);
       const abs = resolveInsideRepo(root, path);
+      // 符号链接逃逸二次校验（P2）：symlink 指向仓库外的真实文件一律拒绝
+      await assertRealPathInside(root, abs);
       const rel = relative(root, abs);
 
       let size: number;

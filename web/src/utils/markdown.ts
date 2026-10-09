@@ -5,6 +5,11 @@
  * 安全：先整体 HTML 转义，再做标记替换；链接仅放行 http(s)/mailto；
  * 图片仅放行 http(s)/data:image/相对路径（拒绝 javascript: 等其它 scheme）。
  *
+ * 【P2 加固已改本文件】协议相对 URL：`//host/x`（含 `\\` 变体，浏览器归一为 /）图片/链接
+ * 会向第三方发追踪请求 → 一律拒绝；`\u0000CODE<n>\u0000` 行内代码占位符可被输入伪造（显示
+ * 混淆）→ 预处理剥离子源文本中的 \u0000，占位符无法由输入构造；scheme 判定前剥 ASCII
+ * 控制字符（浏览器 URL 解析会剥 tab/换行，防 `java\tscript:` 类绕过）。
+ *
  * 流式性能（UX 审查 AC5）：块级缓存 + 尾段增量——已完整解析的块（输出前缀）直接复用，
  * 只重解析尾部未完成块。解析循环唯一实现（parseLinesInto），缓存版与全量版输出逐字符一致。
  */
@@ -21,16 +26,21 @@ export function escapeHtml(s: string): string {
 
 function safeHref(raw: string): string | null {
   const href = raw.trim();
-  if (/^(https?:\/\/|mailto:)/i.test(href)) return escapeHtml(href);
+  // 判定前剥 ASCII 控制字符（浏览器 URL 解析会剥 tab/换行，防 `java\tscript:` 类绕过）
+  const probe = href.replace(/[\u0000-\u001f\u007f]/g, "");
+  if (/^(https?:\/\/|mailto:)/i.test(probe)) return escapeHtml(href);
   return null;
 }
 
 /** 图片 src 白名单：http(s)、data:image/…、相对路径；其余 scheme（javascript: 等）拒绝 */
 function safeImgSrc(raw: string): string | null {
   const src = raw.trim();
-  if (/^https?:\/\//i.test(src)) return escapeHtml(src);
-  if (/^data:image\/(png|jpe?g|gif|webp|avif);base64,[A-Za-z0-9+/=]+$/i.test(src)) return escapeHtml(src);
-  if (!/^[a-z][a-z0-9+.-]*:/i.test(src) && src !== "") return escapeHtml(src); // 无 scheme 的相对路径
+  const probe = src.replace(/[\u0000-\u001f\u007f]/g, "");
+  if (/^https?:\/\//i.test(probe)) return escapeHtml(src);
+  if (/^data:image\/(png|jpe?g|gif|webp|avif);base64,[A-Za-z0-9+/=]+$/i.test(probe)) return escapeHtml(src);
+  // 协议相对 `//host/x`（反斜杠变体浏览器归一为 /）会向第三方发追踪请求 → 拒绝
+  if (probe.replace(/\\/g, "/").startsWith("//")) return null;
+  if (probe !== "" && !/^[a-z][a-z0-9+.-]*:/i.test(probe)) return escapeHtml(src); // 无 scheme 的相对路径
   return null;
 }
 
@@ -55,14 +65,16 @@ function renderInline(escaped: string): string {
   // 粗体 / 斜体
   s = s.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
   s = s.replace(/(^|[\s(（])\*([^*\n]+)\*/g, "$1<em>$2</em>");
-  // 回填行内代码
-  s = s.replace(/\u0000CODE(\d+)\u0000/g, (_m, i: string) => codeSlots[Number(i)]);
+  // 回填行内代码（占位符 \u0000CODE<n>\u0000 只能由上方替换产生；源 \u0000 已在 toLines 剥离，
+  // 输入无法伪造占位符——index 越界兜底保持原样）
+  s = s.replace(/\u0000CODE(\d+)\u0000/g, (m, i: string) => codeSlots[Number(i)] ?? m);
   return s;
 }
 
 /** 转义 + 换行归一 + 切行（缓存版与全量版共用同一入口，保证行基线一致） */
 function toLines(src: string): string[] {
-  return escapeHtml(src.replace(/\r\n?/g, "\n")).split("\n");
+  // \u0000 剥离（P2）：防输入伪造行内代码占位符（\u0000CODE<n>\u0000）造成显示混淆
+  return escapeHtml(src.replace(/\r\n?/g, "\n").replace(/\u0000/g, "")).split("\n");
 }
 
 /** 解析器跨行工作状态（段落/列表/引用在行间累积，flush 时落盘） */

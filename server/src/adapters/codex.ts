@@ -54,12 +54,46 @@ export interface CodexAdapterOptions {
   /** 可注入（测试伪造 spawn） */
   spawnFn?: typeof spawn;
   codexBin?: string;
+  /** fileCache LRU 上限（缺省 FILE_CACHE_MAX，测试注入小值） */
+  fileCacheMax?: number;
 }
 
 /** stderr 预览上限（错误提示用） */
 const STDERR_PREVIEW_LIMIT = 500;
 /** abort 后 SIGTERM → SIGKILL 宽限时间 */
 const KILL_GRACE_MS = 2_000;
+/** fileCache LRU 上限（audit P2-4）：数百个 rollout 文件快照不无上界驻留 */
+export const FILE_CACHE_MAX = 500;
+
+/**
+ * LRU Map（audit P2-4）：get 刷新位次、set 逐出最久未用（Map 插入序 = 使用序）。
+ * 作为 `Map<string, CodexFileCacheEntry>` 传给 scanCodexSessions，读写都自动限容。
+ */
+export class LruMap<K, V> extends Map<K, V> {
+  constructor(private readonly max: number) {
+    super();
+  }
+
+  get(key: K): V | undefined {
+    const value = super.get(key);
+    if (value !== undefined) {
+      super.delete(key);
+      super.set(key, value); // 命中刷新 LRU 位次（绕过覆写的 set，尺寸不变）
+    }
+    return value;
+  }
+
+  set(key: K, value: V): this {
+    super.delete(key);
+    super.set(key, value);
+    while (this.size > this.max) {
+      const oldest = this.keys().next();
+      if (oldest.done) break;
+      super.delete(oldest.value); // 逐出最久未用
+    }
+    return this;
+  }
+}
 
 interface RunningRun {
   child: ChildProcess;
@@ -79,17 +113,19 @@ export class CodexAdapter implements SessionAdapter {
   private readonly codexBin: string;
   private readonly running = new Map<string, RunningRun>();
   private readonly queues = new Map<string, string[]>();
-  private readonly statuses = new Map<string, SessionStatus>();
+  /** 内存运行态（含显式 idle）：带登记时间，超 STATE_TTL 清扫（镜像 hub.ts/claude.ts，audit P2-4） */
+  private readonly statuses = new Map<string, { status: SessionStatus; at: number }>();
   private sessionIndex: Map<string, string> | null = null;
   private disposed = false;
+  private sweepTimer: ReturnType<typeof setInterval> | null = null;
   /** 会话清单 TTL 缓存（listSessions/findSession/loadMessages 共享一次全量解析） */
   private listCache: SessionListItem[] | null = null;
   private listCacheAt = 0;
   private listCacheInflight: Promise<SessionListItem[]> | null = null;
   /** 清单全量扫描次数（测试基准：TTL 内重复查询/并发请求应为 0 新增） */
   private listScans = 0;
-  /** 文件级 mtime+size 快照缓存：重扫时不重复 parse 未变 rollout（数百文件防全量读盘） */
-  private readonly fileCache = new Map<string, CodexFileCacheEntry>();
+  /** 文件级 mtime+size 快照缓存：重扫时不重复 parse 未变 rollout（数百文件防全量读盘）；LRU 限容（audit P2-4） */
+  private readonly fileCache: LruMap<string, CodexFileCacheEntry>;
   /** id → 时间序分段文件（同一会话可跨多个 rollout 段，详情/消息全量加载用） */
   private segmentsById = new Map<string, string[]>();
   /** 会话转 live 时回调（用于停掉文件 tail，保持单一推送源） */
@@ -101,6 +137,10 @@ export class CodexAdapter implements SessionAdapter {
     this.emit = options.emit;
     this.spawnFn = options.spawnFn ?? spawn;
     this.codexBin = options.codexBin ?? "codex";
+    const fileCacheMax =
+      typeof options.fileCacheMax === "number" && options.fileCacheMax > 0 ? Math.floor(options.fileCacheMax) : FILE_CACHE_MAX;
+    this.fileCache = new LruMap<string, CodexFileCacheEntry>(fileCacheMax);
+    this.startSweep();
   }
 
   isLive(id: string): boolean {
@@ -108,13 +148,13 @@ export class CodexAdapter implements SessionAdapter {
   }
 
   getStatus(id: string): SessionStatus {
-    return this.statuses.get(id) ?? "idle";
+    return this.statuses.get(id)?.status ?? "idle";
   }
 
   private statusWithInference(id: string, updatedMs: number): SessionStatus {
     // 本进程状态优先（含显式 idle）：与 sessions/hub.ts 同口径——刚创建/刚 settled 的
     // 文件 mtime 必然新鲜，丢弃 idle 走时间推断会误判 running 60s（新会话显示「思考中」）
-    const own = this.statuses.get(id);
+    const own = this.statuses.get(id)?.status;
     if (own) return own;
     return inferExternalStatus(updatedMs);
   }
@@ -126,8 +166,29 @@ export class CodexAdapter implements SessionAdapter {
 
   /** 统一出口：status 事件回写内存状态（含 translator 直发的），保证 getStatus 不漂移 */
   private dispatch(id: string, event: ServerEvent): void {
-    if (event.type === "status") this.statuses.set(id, event.status);
+    if (event.type === "status") this.statuses.set(id, { status: event.status, at: Date.now() });
     this.emit(id, event);
+  }
+
+  /** statuses 过期 TTL（镜像 hub.ts/claude.ts STATE_TTL，audit P2-4）：条目只写不清会让外部写盘永久被压制 */
+  static readonly STATE_TTL_MS = 30 * 60_000;
+
+  /**
+   * 周期清扫（镜像 hub.ts sweep）：statuses 过期条目清理（idle 同样走 TTL——随时清会让
+   * 刚创建/刚 settled 的会话回落时间推断误判 running）。TTL 过期后无本进程记录，状态随
+   * 文件 mtime 老化自愈。
+   */
+  sweep(now = Date.now()): void {
+    for (const [id, entry] of [...this.statuses]) {
+      if (now - entry.at > CodexAdapter.STATE_TTL_MS) this.statuses.delete(id);
+    }
+  }
+
+  /** 启动周期清扫（30s，unref）；测试可直接调 sweep */
+  private startSweep(intervalMs = 30_000): void {
+    if (this.sweepTimer !== null) return;
+    this.sweepTimer = setInterval(() => this.sweep(), intervalMs);
+    this.sweepTimer.unref?.();
   }
 
   private async getIndex(): Promise<Map<string, string>> {
@@ -143,6 +204,11 @@ export class CodexAdapter implements SessionAdapter {
   /** 清单全量扫描次数（基准验证用） */
   get scanCount(): number {
     return this.listScans;
+  }
+
+  /** fileCache 当前驻留数（测试/诊断：LRU 上限验证，audit P2-4） */
+  get fileCacheSize(): number {
+    return this.fileCache.size;
   }
 
   /**
@@ -236,7 +302,7 @@ export class CodexAdapter implements SessionAdapter {
       (await this.getIndex()).set(sessionId, trimmedName);
     }
     // 显式登记 idle：新文件 mtime=now，不登记会被时间推断误判 running 60s
-    this.statuses.set(sessionId, "idle");
+    this.statuses.set(sessionId, { status: "idle", at: Date.now() });
     this.invalidateList();
     return {
       id: sessionId,
@@ -294,7 +360,7 @@ export class CodexAdapter implements SessionAdapter {
       (await this.getIndex()).set(newId, found.name);
     }
     // 显式登记 idle：fork 新文件 mtime=now，不登记会被时间推断误判 running 60s（与 createSession 同根因）
-    this.statuses.set(newId, "idle");
+    this.statuses.set(newId, { status: "idle", at: Date.now() });
     this.invalidateList();
     const created = await this.findSession(newId);
     if (!created) {
@@ -355,6 +421,10 @@ export class CodexAdapter implements SessionAdapter {
 
   disposeAll(): void {
     this.disposed = true;
+    if (this.sweepTimer !== null) {
+      clearInterval(this.sweepTimer);
+      this.sweepTimer = null;
+    }
     for (const run of this.running.values()) {
       this.killChild(run.child);
     }

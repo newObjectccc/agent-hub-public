@@ -4,7 +4,7 @@
  */
 import { strict as assert } from "node:assert";
 import { existsSync } from "node:fs";
-import { mkdtemp, mkdir, readFile, rm, stat, truncate, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, stat, symlink, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { after, before, describe, it } from "node:test";
@@ -298,6 +298,46 @@ describe("uploads: loadImageAttachments（prompt 附件，通道 b）", () => {
       413,
     );
     await rm(big, { force: true });
+  });
+
+  it("符号链接逃逸二次校验（P2）：root 内 symlink 指向外部 → 400 INVALID_PATH", async () => {
+    const outsideDir = await mkdtemp(join(tmpdir(), "agent-hub-out-"));
+    const outside = join(outsideDir, "secret.png");
+    await writeFile(outside, Buffer.from([9, 9]));
+    try {
+      await symlink(outside, join(cwd, UPLOAD_DIR_NAME, "link.png"));
+      await expectHubErrorAsync(
+        async () => loadImageAttachments(cwd, [`${UPLOAD_DIR_NAME}/link.png`]),
+        ErrorCodes.INVALID_PATH,
+        400,
+      );
+      // 指向 root 内的 symlink 不误伤
+      await symlink(join(cwd, UPLOAD_DIR_NAME, "pic.png"), join(cwd, UPLOAD_DIR_NAME, "inner.png"));
+      const ok = await loadImageAttachments(cwd, [`${UPLOAD_DIR_NAME}/inner.png`]);
+      assert.equal(ok.length, 1);
+    } finally {
+      await rm(join(cwd, UPLOAD_DIR_NAME, "link.png"), { force: true });
+      await rm(join(cwd, UPLOAD_DIR_NAME, "inner.png"), { force: true });
+      await rm(outsideDir, { recursive: true, force: true });
+    }
+  });
+
+  it("saveUpload：上传目录被换成指向外部的 symlink → 400 INVALID_PATH（P2）", async () => {
+    const cwd2 = await mkdtemp(join(tmpdir(), "agent-hub-sl-"));
+    const outsideDir = await mkdtemp(join(tmpdir(), "agent-hub-out-"));
+    try {
+      await symlink(outsideDir, join(cwd2, UPLOAD_DIR_NAME));
+      await expectHubErrorAsync(
+        async () => saveUpload({ cwd: cwd2, name: "a.png", mimeType: "image/png", data: PNG_BASE64 }),
+        ErrorCodes.INVALID_PATH,
+        400,
+      );
+      // 穿越目录不落盘
+      assert.deepEqual(await readFile(join(outsideDir, "a.png")).catch(() => null), null);
+    } finally {
+      await rm(cwd2, { recursive: true, force: true });
+      await rm(outsideDir, { recursive: true, force: true });
+    }
   });
 
   it("appendAttachmentHints：文本未引用时补 @path 提示（claude 通道 a）", () => {

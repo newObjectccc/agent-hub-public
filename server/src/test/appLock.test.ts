@@ -18,6 +18,7 @@ import {
   checkWebAuthnClientData,
   hashSecret,
   isValidSecret,
+  LOCK_BACKOFF_BASE_MS,
   LOCK_TOKEN_TTL_MS,
   newLockToken,
   parseAppLockRecord,
@@ -196,6 +197,36 @@ describe("appLock: setup / unlock / change / disable 生命周期", () => {
       );
     }
     assert.ok(store.unlock("1234").token.length > 20, "4 次错误未达阈值，不受限");
+  });
+
+  it("失败计数/临时锁定持久化（P2）：重启后连错锁定继续生效，不再清零暴力破解", () => {
+    let now = 1_000_000;
+    const { store, file } = tmpStore(() => now);
+    store.setup("1234");
+    for (let i = 0; i < 5; i += 1) {
+      assert.throws(
+        () => store.unlock("0000"),
+        (err: unknown) => err instanceof HubError && err.statusCode === 401,
+      );
+    }
+    // 失败计数与锁定截止已落盘（非内存态）
+    const onDisk = parseAppLockRecord(readFileSync(file, "utf8"));
+    assert.ok(onDisk);
+    assert.equal(onDisk!.failures, 5);
+    assert.ok((onDisk!.lockedUntil ?? 0) > now, "锁定截止已持久化");
+    // 模拟重启（同文件新实例）：锁定期内正确 PIN 也拒绝（429）
+    const restarted = new AppLockStore(file, () => now);
+    assert.throws(
+      () => restarted.unlock("1234"),
+      (err: unknown) => err instanceof HubError && err.statusCode === 429,
+      "重启后锁定状态必须继续生效",
+    );
+    // 锁定期过后正确 PIN 解锁 → 计数清零落盘
+    now += LOCK_BACKOFF_BASE_MS + 1;
+    assert.ok(restarted.unlock("1234").token.length > 20);
+    const cleared = parseAppLockRecord(readFileSync(file, "utf8"));
+    assert.equal(cleared?.failures ?? 0, 0);
+    assert.equal(cleared?.lockedUntil ?? 0, 0);
   });
 
   it("凭据文件 chmod 0600（save / disable 均收紧）", () => {

@@ -9,6 +9,13 @@
  * 增量能力由 MessageLoader 可选携带（pi session-format 自带 PiIncrementalParser；注入的
  * claude transcript loader 无该能力时安全回退全量解析，行为与旧实现一致）。
  * knownIds 去重始终兜底：任何路径下 message_end 都不丢不重不错序。
+ *
+ * 内存窗口化（OOM 审计 P2-2）：
+ * - PiIncrementalParser.entries 只留最近窗口（条数 + 字节双上限），窗口外旧链不再驻留；
+ *   需要全量语义时走文件重建（rewrite 重喂 / loadSessionMessages）。
+ * - knownIds 换环形上限（FIFO 逐出）：丢弃窗口外 id 后靠「窗口内不重复」语义保正确——
+ *   环容量 ≥ 解析器 entry 窗口 / 全量回退消息窗口（构造时强制鉗制），窗口内可产出的
+ *   id 必然仍在环里，不会重推；窗口外的历史消息本来就不在增量产出里，也不会补推。
  */
 import { open, stat } from "node:fs/promises";
 import { buildMessages, loadSessionMessages, selectActiveBranch, type RawEntry } from "./scan.js";
@@ -48,21 +55,49 @@ export interface IncrementalParser {
   messages(): MessageDto[];
 }
 
+/** 增量解析器窗口参数（P2-2）：条数 + 字节双上限，超出逐出最旧 entry */
+export interface IncrementalParserOptions {
+  /** entry 条数窗口（缺省 DEFAULT_ENTRY_WINDOW） */
+  maxEntries?: number;
+  /** entry 字节窗口（缺省 DEFAULT_ENTRY_WINDOW_BYTES，按原始行 UTF-8 字节数记账） */
+  maxBytes?: number;
+}
+
+/** entry 条数窗口默认值（P2-2）：单轮写入 2000+ entry 并发不现实，正常会话永不融断 */
+export const DEFAULT_ENTRY_WINDOW = 1_000;
+/** entry 字节窗口默认值（P2-2）：10MB JSONL 不再全量驻留，只留最近 ≈2MB */
+export const DEFAULT_ENTRY_WINDOW_BYTES = 2 * 1024 * 1024;
+/** knownIds 环形上限默认值（P2-2）：8192 id ≈ 数百 KB，窗口内 id 必在环内 */
+export const DEFAULT_KNOWN_IDS_MAX = 8_192;
+/** 全量回退解析（claude/codex 无增量能力）只对账最近 N 条消息的窗口默认值 */
+export const DEFAULT_MESSAGE_WINDOW = 4_096;
+
 /** 消息加载器：按会话文件格式注入（pi session-format / claude transcript） */
 export interface MessageLoader {
   (file: string): Promise<MessageDto[]>;
   /** 可选增量能力（pi 格式自带）；缺失时 tail 安全回退全量解析 */
-  createIncremental?: () => IncrementalParser;
+  createIncremental?: (options?: IncrementalParserOptions) => IncrementalParser;
 }
 
 /**
  * pi session-format v3 增量解析器：按行解析 entry（与 scan.parseSessionJsonl 同规则），
  * 复用 selectActiveBranch + buildMessages 纯函数产出消息（与 loadSessionMessages 同口径）。
- * 只对新增行做 JSON.parse；历史 entries 驻留内存供分支选择（活跃 tail = 当前打开的会话）。
+ * 只对新增行做 JSON.parse；历史 entries 窗口化驻留（P2-2）：只留最近 maxEntries 条/
+ * maxBytes 字节，旧链出窗即弃（分支链路退化为尾链，只影响窗口内可产出消息，去重语义不变）。
  */
 export class PiIncrementalParser implements IncrementalParser {
   private readonly entries: RawEntry[] = [];
+  /** 与 entries 平行的原始行字节记账（窗口裁剪用，避免反复 JSON.stringify 重算） */
+  private readonly entryBytes: number[] = [];
+  private entriesBytes = 0;
   private headerSeen = false;
+  private readonly maxEntries: number;
+  private readonly maxBytes: number;
+
+  constructor(options: IncrementalParserOptions = {}) {
+    this.maxEntries = Math.max(1, options.maxEntries ?? DEFAULT_ENTRY_WINDOW);
+    this.maxBytes = Math.max(1, options.maxBytes ?? DEFAULT_ENTRY_WINDOW_BYTES);
+  }
 
   pushLine(line: string): void {
     const trimmed = line.trim();
@@ -81,6 +116,18 @@ export class PiIncrementalParser implements IncrementalParser {
       return; // 文件首个 session 行是 header，不进 entries（同 parseSessionJsonl）
     }
     this.entries.push(entry);
+    const bytes = Buffer.byteLength(trimmed, "utf8");
+    this.entryBytes.push(bytes);
+    this.entriesBytes += bytes;
+    this.trimWindow();
+  }
+
+  /** 窗口裁剪（P2-2）：条数/字节任一超限即逐出最旧（至少保 1 条，最新消息永不被裁） */
+  private trimWindow(): void {
+    while (this.entries.length > 1 && (this.entries.length > this.maxEntries || this.entriesBytes > this.maxBytes)) {
+      this.entries.shift();
+      this.entriesBytes -= this.entryBytes.shift() ?? 0;
+    }
   }
 
   messages(): MessageDto[] {
@@ -91,7 +138,7 @@ export class PiIncrementalParser implements IncrementalParser {
 /** pi 格式消息加载器：全量解析（scan.loadSessionMessages）+ 增量能力（tail 默认 loader） */
 export const piMessageLoader: MessageLoader = Object.assign(
   (file: string): Promise<MessageDto[]> => loadSessionMessages(file),
-  { createIncremental: (): IncrementalParser => new PiIncrementalParser() },
+  { createIncremental: (options?: IncrementalParserOptions): IncrementalParser => new PiIncrementalParser(options) },
 );
 
 /** 尾部残留是否为「整行已写完但缺换行符」（合法 JSON）；半行（写到一半）返回 false 留到下轮 */
@@ -164,7 +211,7 @@ const FULL_REPARSE_MIN_INTERVAL_MS = 10_000;
 /** 连续每轮都检测到变更达到此次数 → 视为高频写入（同样触发降频熔断） */
 const HIGH_CHURN_TICKS = 3;
 
-/** 测试可注入：轮询/静默窗口与全量回退熔断参数（生产用默认值） */
+/** 测试可注入：轮询/静默窗口、全量回退熔断与内存窗口参数（生产用默认值） */
 export interface TailOptions {
   pollMs?: number;
   idleAfterMs?: number;
@@ -173,6 +220,14 @@ export interface TailOptions {
   fullReparseMaxBytes?: number;
   /** 熔断后全量解析的最小间隔（缺省 10s） */
   fullReparseMinIntervalMs?: number;
+  /** knownIds 环形上限（缺省 8192，P2-2） */
+  knownIdsMax?: number;
+  /** 全量回退解析只对账最近 N 条消息（缺省 4096，鉗制 ≤ knownIdsMax） */
+  messageWindow?: number;
+  /** 增量解析器 entry 条数窗口（缺省 1000，鉗制 ≤ knownIdsMax） */
+  entryWindow?: number;
+  /** 增量解析器 entry 字节窗口（缺省 2MB） */
+  entryWindowBytes?: number;
 }
 
 interface TailState {
@@ -212,6 +267,11 @@ export class SessionTailManager {
     }
   }
 
+  /** 供测试/诊断：某 tail 的 knownIds 驻留数（环形上限验证） */
+  knownIdCount(sessionId: string): number {
+    return this.tails.get(sessionId)?.tail.knownIdCount() ?? 0;
+  }
+
   /**
    * 强制停掉某会话的 tail（不管 ref）：会话转 live 后由 SDK 事件单一推送，
    * 文件 tail 继续跑会把同一消息以不同 id 再推一遍（前端出重复气泡）。
@@ -231,7 +291,9 @@ export class SessionTailManager {
 
 class SessionTail {
   private timer: NodeJS.Timeout | null = null;
+  /** 已知消息 id（P2-2：环形上限 + FIFO 逐出，语义靠「窗口内不重复」） */
   private readonly knownIds = new Set<string>();
+  private readonly knownIdRing: string[] = [];
   private lastChangeMs = 0;
   private runningPushed = false;
   private closed = false;
@@ -260,6 +322,12 @@ class SessionTail {
   private readonly idleAfterReplyMs: number;
   private readonly fullReparseMaxBytes: number;
   private readonly fullReparseMinIntervalMs: number;
+  /** knownIds 环形容量（≥ 窗口可产出 id 数，构造时鉗制） */
+  private readonly knownIdsMax: number;
+  /** 全量回退解析只对账最近 N 条消息（P2-2 窗口语义） */
+  private readonly messageWindow: number;
+  /** 传给增量解析器的窗口参数 */
+  private readonly parserOptions: IncrementalParserOptions;
 
   constructor(
     private readonly sessionId: string,
@@ -273,6 +341,36 @@ class SessionTail {
     this.idleAfterReplyMs = options.idleAfterReplyMs ?? IDLE_AFTER_REPLY_MS;
     this.fullReparseMaxBytes = options.fullReparseMaxBytes ?? FULL_REPARSE_MAX_BYTES;
     this.fullReparseMinIntervalMs = options.fullReparseMinIntervalMs ?? FULL_REPARSE_MIN_INTERVAL_MS;
+    this.knownIdsMax = Math.max(16, options.knownIdsMax ?? DEFAULT_KNOWN_IDS_MAX);
+    // 窗口/环鉗制（P2-2 正确性前提）：消息窗口 ≤ entry 窗口 ≤ 环容量，
+    // 保证窗口内可产出的 id 一定还在环里（不重推），环外 id 对应消息也一定出了窗（不补推）
+    this.messageWindow = Math.max(1, Math.min(options.messageWindow ?? DEFAULT_MESSAGE_WINDOW, this.knownIdsMax));
+    const entryWindow = Math.max(1, Math.min(options.entryWindow ?? DEFAULT_ENTRY_WINDOW, this.knownIdsMax));
+    this.parserOptions = {
+      maxEntries: entryWindow,
+      maxBytes: options.entryWindowBytes ?? DEFAULT_ENTRY_WINDOW_BYTES,
+    };
+  }
+
+  /** 供测试/诊断：knownIds 驻留数（环形上限验证） */
+  knownIdCount(): number {
+    return this.knownIds.size;
+  }
+
+  /** 登记已知 id（P2-2：环形 FIFO 逐出，超上限即丢最旧） */
+  private remember(id: string): void {
+    if (this.knownIds.has(id)) return;
+    this.knownIds.add(id);
+    this.knownIdRing.push(id);
+    while (this.knownIdRing.length > this.knownIdsMax) {
+      const evicted = this.knownIdRing.shift();
+      if (evicted !== undefined) this.knownIds.delete(evicted);
+    }
+  }
+
+  /** 消息窗口（P2-2）：全量回退只对账最近 N 条（新消息必在尾部；窗口内 id 必在环内） */
+  private windowed(messages: MessageDto[]): MessageDto[] {
+    return messages.length <= this.messageWindow ? messages : messages.slice(-this.messageWindow);
   }
 
   /**
@@ -291,13 +389,13 @@ class SessionTail {
       const createIncremental = this.loadMessages.createIncremental;
       let snapshot: MessageDto[];
       if (createIncremental) {
-        // 增量路径：从偏移 0 喂入全部完整行建立状态（首帧即增量，无全量 parse）
-        this.parser = createIncremental();
+        // 增量路径：从偏移 0 喂入全部完整行建立状态（首帧即增量，无全量 parse；entry 窗口化驻留）
+        this.parser = createIncremental(this.parserOptions);
         snapshot = await this.ingestFrom(0);
       } else {
-        // 无增量能力（注入 loader）：安全回退全量解析
+        // 无增量能力（注入 loader）：安全回退全量解析（只对账消息窗口，P2-2）
         this.fullParseAt = Date.now();
-        snapshot = await this.loadMessages(this.file);
+        snapshot = this.windowed(await this.loadMessages(this.file));
       }
       this.applyStartSnapshot(snapshot, startedMs);
       this.lastChangeMs = Date.now();
@@ -320,7 +418,7 @@ class SessionTail {
         lastNew = { role: m.role, text: m.text };
         this.emit(this.sessionId, { type: "message_end", message: m });
       }
-      this.knownIds.add(m.id);
+      this.remember(m.id);
     }
     if (changed) {
       this.pushRunning();
@@ -418,7 +516,7 @@ class SessionTail {
       if (this.parser !== null) {
         if (change === "rewrite") {
           // 全量对账：重建增量状态从 0 重喂（历史消息走 knownIds 去重，不重复推送）
-          this.parser = this.loadMessages.createIncremental?.() ?? null;
+          this.parser = this.loadMessages.createIncremental?.(this.parserOptions) ?? null;
           this.parsedOffset = 0;
           this.tailFingerprint = null;
         }
@@ -438,13 +536,15 @@ class SessionTail {
         }
         this.fullParseAt = now0;
         this.pendingReparse = false;
-        messages = await this.loadMessages(this.file);
+        // P2-2：只对账最近 messageWindow 条（窗口内 id 必在 knownIds 环内，不重推；
+        // 窗口外历史消息不再逐条比对，防 10MB transcript × 数万 id 驻留）
+        messages = this.windowed(await this.loadMessages(this.file));
       }
       let changed = false;
       let lastNew: { role: string; text: string } | null = null;
       for (const m of messages) {
         if (this.knownIds.has(m.id)) continue;
-        this.knownIds.add(m.id);
+        this.remember(m.id);
         changed = true;
         lastNew = { role: m.role, text: m.text };
         // 契约事件：message_end 携带权威消息（前端 upsert）

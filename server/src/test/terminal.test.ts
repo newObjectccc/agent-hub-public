@@ -10,6 +10,7 @@ import {
   injectTerminalShim,
   installHint,
   parseTtydListenPort,
+  redactUrlSecrets,
   TerminalService,
   tokenFrom,
   WINDOWS_UNSUPPORTED_HINT,
@@ -151,6 +152,18 @@ describe("terminal: 纯函数", () => {
     assert.equal(tokenFrom("/terminal/ws", "hub-terminal-token=cook-tok; a=b"), "cook-tok");
     assert.equal(tokenFrom("/terminal/ws", "other=1"), null);
     assert.equal(tokenFrom(undefined, undefined), null);
+  });
+
+  it("redactUrlSecrets：日志脱敏，token 不进访问日志（P2）", () => {
+    // `?t=` 终端 token：值替换为 [REDACTED]，path / 非敏感查询保留
+    assert.equal(redactUrlSecrets("/terminal/?t=SECRET123&x=1"), "/terminal/?t=[REDACTED]&x=1");
+    assert.equal(redactUrlSecrets("/ws?token=abc&room=2"), "/ws?token=[REDACTED]&room=2");
+    assert.equal(redactUrlSecrets("/api/x?access_token=k1&lock_token=k2&sig=k3"), "/api/x?access_token=[REDACTED]&lock_token=[REDACTED]&sig=[REDACTED]");
+    // 无查询串 / 非敏感键原样
+    assert.equal(redactUrlSecrets("/terminal/"), "/terminal/");
+    assert.equal(redactUrlSecrets("/api/sessions?limit=5"), "/api/sessions?limit=5");
+    // 键名大小写不敏感；无值的键保持原样
+    assert.equal(redactUrlSecrets("/a?TOKEN=z&flag"), "/a?TOKEN=[REDACTED]&flag");
   });
 
   it("installHint：跨平台安装提示 / Windows 降级", () => {

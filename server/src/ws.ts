@@ -17,6 +17,9 @@ import type { ServerEvent, SessionListItem } from "./types.js";
 const WS_PATH_RE = /^\/ws\/sessions\/([^/]+)$/;
 const WS_EVENTS_PATH = "/ws/events";
 
+/** 连接建立期 pending 队列上限（P2-5）：findSession 解析完成前的消息堆积防护，超出丢弃最旧 */
+export const WS_PENDING_MAX = 100;
+
 /** WS upgrade 鉴权配置（与 routes.ts HTTP Bearer 鉴权同口径） */
 export interface WsAuthConfig {
   enabled: boolean;
@@ -302,6 +305,9 @@ export class WsHub {
       if (ready) {
         process(text);
       } else {
+        // P2-5：握手前消息队列限容（100 条/连接），超出丢最旧——防建立期消息风暴把
+        // pending 数组堆到无上界（丢最旧保最新，连接保持可用）
+        if (pending.length >= WS_PENDING_MAX) pending.shift();
         pending.push(text);
       }
     });

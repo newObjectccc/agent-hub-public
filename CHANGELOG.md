@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### P2 加固批（开源审计清理：稳健/安全 + 资源/性能 + web/a11y）
+- [安全] 日志 URL 脱敏（token/secret → [REDACTED]）；uploads/git realpath 二次校验堵 symlink 逃逸；markdown 拒 `//` 协议相对 URL + `\u0000` 占位符伪造剥离；DNS rebinding 防护（Host 白名单，HTTP+WS 双把关）；PIN 锁定跨重启持久化；auth.token 写盘 0600
+- [性能] git diff 并发池 + 20s 总超时；tail 内存双窗口 + knownIds 环形去重；statusCache 过期即删 + LRU；codex statuses TTL sweep + fileCache LRU；ws pending 限容 100；hub toolResults 限容 200；SW 旧 hash assets 清理
+- [web] fetch 默认 30s 超时（TIMEOUT 友好文案）；unhandledRejection 全局兑底（toast 不裸吞）；a11y：AttachBadge/SystemStatus ARIA 修复、菜单 Esc 焦点归还、Sheet 焦点陷阱全覆盖
+- 测试：server 571→613、web 785→794、cli 79→80 全绿
+
 ### 开源发布前审计修复批（五维度审计：安全 / 数据一致性 / 错误处理 / 资源生命周期 / 契约，P0 全清 + P1 修复）
 - [安全-P0] CORS 不再反射任意 Origin（同源 + config.allowOrigins 白名单，非白名单 403）：堵死「任意网页跨域驱动面板（远程派发 agent 指令）」
 - [安全-P0] WS upgrade 鉴权（Authorization / 子协议 / ?token=，与 HTTP 同口径）；WS 连接竞态泄漏修复（连接建立期断连不再泄漏 socket/interval）

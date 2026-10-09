@@ -43,15 +43,18 @@ export function HomePage() {
     // 慢刷新才露出进度条：连续快速刷新视觉上零变化（不闪不跳）
     if (progressTimer.current) clearTimeout(progressTimer.current);
     progressTimer.current = setTimeout(() => setProgressVisible(true), PROGRESS_REVEAL_MS);
-    const statsRes = await api.getDashboardStats().catch((e: unknown) => {
-      // 友好文案（原始 JS 异常不裸露）：业务错误（ApiError）用服务端中文提示
-      if (seq === refreshSeq.current) {
-        setLoadError(e instanceof Error && e.name === "ApiError" && e.message.trim() !== "" ? e.message : "工作台数据加载失败，请重试");
-      }
-      return null;
-    });
-    // Token 用量独立拉取：失败安静降级（占位），不拖垮概览其它格
-    const usageRes = await api.getUsage().catch(() => null);
+    // 概览与用量并行拉取（慢链路上省一次串行往返；各自独立降级，互不拖垮）
+    const [statsRes, usageRes] = await Promise.all([
+      api.getDashboardStats().catch((e: unknown) => {
+        // 友好文案（原始 JS 异常不裸露）：业务错误（ApiError）用服务端中文提示
+        if (seq === refreshSeq.current) {
+          setLoadError(e instanceof Error && e.name === "ApiError" && e.message.trim() !== "" ? e.message : "工作台数据加载失败，请重试");
+        }
+        return null;
+      }),
+      // Token 用量独立拉取：失败安静降级（占位），不拖垮概览其它格
+      api.getUsage().catch(() => null),
+    ]);
     // 过期响应丢弃：不覆盖新数据、不误关新一轮刷新的状态
     if (seq !== refreshSeq.current) return;
     if (progressTimer.current) {
