@@ -28,14 +28,25 @@ export interface SessionActionsMenuProps {
 export function SessionActionsMenu({ onFork, forkBusy = false, onRename, info }: SessionActionsMenuProps) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
 
   useDismissable({ open, onDismiss: () => setOpen(false), rootRef: wrapRef });
 
   return (
-    <div className="action-menu-wrap" ref={wrapRef}>
+    <div
+      className="action-menu-wrap"
+      ref={wrapRef}
+      onKeyDown={(e) => {
+        // Esc 闭环：关闭后焦点归还触发按钮（useDismissable 只管关闭，键盘不丢失位置）
+        if (e.key !== "Escape" || !open) return;
+        setOpen(false);
+        triggerRef.current?.focus();
+      }}
+    >
       <button
         type="button"
         className="icon-btn tool-btn"
+        ref={triggerRef}
         aria-label="会话操作"
         aria-haspopup="menu"
         aria-expanded={open}

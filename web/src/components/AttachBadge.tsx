@@ -12,7 +12,14 @@ export function AttachBadge({ terminal }: { terminal?: TerminalAttachInfo | null
   const info = attachBadge(terminal);
   if (!info) return null;
   return (
-    <Badge variant="outline" className={cn("badge", "attach-badge", `attach-${info.variant}`)} title={info.title}>
+    <Badge
+      variant="outline"
+      className={cn("badge", "attach-badge", `attach-${info.variant}`)}
+      /* 窄屏隐藏文字后仅剩 emoji（title 触屏/读屏不可达）→ role=img + aria-label 兜底完整语义 */
+      role="img"
+      aria-label={info.title}
+      title={info.title}
+    >
       <span aria-hidden="true">{info.icon}</span>
       <span className="badge-text-long"> {info.label}</span>
     </Badge>

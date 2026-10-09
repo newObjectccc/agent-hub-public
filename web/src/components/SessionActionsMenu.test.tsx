@@ -96,4 +96,44 @@ describe("SessionActionsMenu", () => {
     const items = [...el.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')];
     expect(items.some((i) => i.textContent?.includes("重命名"))).toBe(false);
   });
+
+  it("触发按钮无障碍语义完整：aria-label + aria-haspopup=menu + aria-expanded 随开合", () => {
+    const el = render(<SessionActionsMenu onFork={() => undefined} />);
+    const trigger = el.querySelector<HTMLButtonElement>('button[aria-label="会话操作"]')!;
+    expect(trigger.getAttribute("aria-haspopup")).toBe("menu");
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    click(trigger);
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("键盘闭环：菜单内按 Esc 关闭且焦点归还触发按钮（不丢失位置）", () => {
+    const el = render(<SessionActionsMenu onFork={() => undefined} />);
+    const trigger = el.querySelector<HTMLButtonElement>('button[aria-label="会话操作"]')!;
+    click(trigger);
+    const item = el.querySelector<HTMLButtonElement>('[role="menuitem"]')!;
+    act(() => {
+      item.focus();
+    });
+    act(() => {
+      item.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(el.querySelector(".action-menu")).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it("键盘可达：菜单项为原生 button（Tab 可达、Enter/Space 可触发）", () => {
+    const onFork = vi.fn();
+    const el = render(<SessionActionsMenu onFork={onFork} />);
+    click(el.querySelector('button[aria-label="会话操作"]'));
+    const item = el.querySelector<HTMLButtonElement>('[role="menuitem"]')!;
+    expect(item.tagName).toBe("BUTTON");
+    expect(item.tabIndex).toBe(0);
+    act(() => {
+      item.focus();
+    });
+    act(() => {
+      item.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(onFork).toHaveBeenCalledTimes(1);
+  });
 });

@@ -142,7 +142,7 @@ export function SystemStatusBar({ system }: { system: SystemStatus | null }) {
     : "指标不可用";
 
   return (
-    <Card className="card syscard" aria-label="系统状态">
+    <Card className="card syscard" role="group" aria-label="系统状态">
       <div className="sys-metrics">
         <MetricBar label="CPU" percent={metrics?.cpu.usagePercent ?? null} detail={cpuDetail} />
         <MetricBar label="内存" percent={metrics?.memory.usagePercent ?? null} detail={memDetail} />
@@ -155,7 +155,7 @@ export function SystemStatusBar({ system }: { system: SystemStatus | null }) {
           <span>采样 {new Date(metrics.sampledAt).toLocaleTimeString()}</span>
         </div>
       )}
-      <div className="sys-env" aria-label="环境">
+      <div className="sys-env" role="group" aria-label="环境">
         <span className="sys-env-label">环境</span>
         <Chip
           label="pi"
@@ -191,9 +191,10 @@ export function SystemStatusBar({ system }: { system: SystemStatus | null }) {
             <span>{live.terminal?.running ? "运行中 →" : "进入 →"}</span>
           </button>
         ) : (
-          <span className="syschip off terminal-entry" aria-label="终端入口不可用">
+          <span className="syschip off terminal-entry">
             <span className="dot" />
             <span className="label">⌨ 终端</span>
+            {/* 降级说明：可见文本即可访问名兜底（span 无 role 时 aria-label 无效，不再重复） */}
             <span>{live.terminal?.hint ?? "未安装（brew install ttyd）"}</span>
           </span>
         )}

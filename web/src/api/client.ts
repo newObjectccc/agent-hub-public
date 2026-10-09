@@ -43,22 +43,49 @@ export class ApiError extends Error {
   }
 }
 
+/** 默认请求超时（P2）：弱网挂起时 fetch 永不落定 → UI 永久 loading，30s 兜底中止 */
+export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+/** 超时统一友好文案（不裸露 DOMException） */
+export const TIMEOUT_MESSAGE = "网络请求超时，请检查网络后重试";
+
+/**
+ * 超时判定：AbortSignal.timeout 以 TimeoutError 为 abort reason（fetch/读 body 抛同名错误）。
+ * 调用方主动 abort（AbortError）不算超时，原样抛出保持既有重试/取消语义。
+ */
+function isTimeoutError(e: unknown, signal: AbortSignal): boolean {
+  const name = (e as { name?: unknown } | null)?.name;
+  if (name === "TimeoutError") return true;
+  const reason = signal.reason as { name?: unknown } | null | undefined;
+  return signal.aborted === true && reason?.name === "TimeoutError";
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(path, {
-    headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
-    ...init,
-  });
-  let body: unknown = null;
+  // P2：未自带 signal 时默认 30s 超时；调用方 signal 原样透传（保持兼容，不做二次兜底）
+  const signal = init?.signal ?? AbortSignal.timeout(DEFAULT_REQUEST_TIMEOUT_MS);
   try {
-    body = await res.json();
-  } catch {
-    body = null;
+    const res = await fetch(path, {
+      headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
+      ...init,
+      signal,
+    });
+    let body: unknown = null;
+    try {
+      body = await res.json();
+    } catch (e) {
+      // 读 body 阶段超时同样走友好文案；其余解析失败维持旧行为（body=null）
+      if (isTimeoutError(e, signal)) throw e;
+      body = null;
+    }
+    if (!res.ok) {
+      const err = (body as ApiErrorBody | null)?.error;
+      throw new ApiError(res.status, err?.code ?? "HTTP_ERROR", err?.message ?? `请求失败（${res.status}）`);
+    }
+    return body as T;
+  } catch (e) {
+    if (e instanceof ApiError) throw e;
+    if (isTimeoutError(e, signal)) throw new ApiError(0, "TIMEOUT", TIMEOUT_MESSAGE);
+    throw e;
   }
-  if (!res.ok) {
-    const err = (body as ApiErrorBody | null)?.error;
-    throw new ApiError(res.status, err?.code ?? "HTTP_ERROR", err?.message ?? `请求失败（${res.status}）`);
-  }
-  return body as T;
 }
 
 export { request };

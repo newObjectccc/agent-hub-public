@@ -48,6 +48,20 @@ describe("AttachBadge", () => {
     expect(parallel.textContent).toContain("平行线");
   });
 
+  it("aria-label 完整语义兑底：窄屏 emoji-only 时触屏/读屏仍可达（不只靠 title）", () => {
+    const attached = render(<AttachBadge terminal={{ online: true, attached: true }} />);
+    const badge = attached.querySelector(".badge")!;
+    expect(badge.getAttribute("role")).toBe("img");
+    expect(badge.getAttribute("aria-label")).toMatch(/已接管/);
+    expect(badge.getAttribute("aria-label")).toContain("终端 pi");
+
+    const online = render(<AttachBadge terminal={{ online: true, attached: false }} />);
+    expect(online.querySelector(".badge")!.getAttribute("aria-label")).toMatch(/终端在线/);
+
+    const parallel = render(<AttachBadge terminal={{ online: false, attached: false }} />);
+    expect(parallel.querySelector(".badge")!.getAttribute("aria-label")).toMatch(/平行线/);
+  });
+
   it("无 terminal 状态（claude / 旧 server）不渲染", () => {
     const el = render(<AttachBadge terminal={null} />);
     expect(el.querySelector(".badge")).toBeNull();

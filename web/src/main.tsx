@@ -1,6 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
+import { installUnhandledRejectionGuard } from "./utils/unhandledRejection";
 import "./styles.css";
 import "./d-polish.css";
 import "./e3-attach.css";
@@ -13,6 +14,9 @@ createRoot(document.getElementById("root")!).render(
     <App />
   </StrictMode>,
 );
+
+// 未处理 Promise 拒绝全局兜底（P2）：dev console.warn / 生产安静，toast 提示不裸吞
+installUnhandledRejectionGuard();
 
 // 注册 Service Worker（仅生产构建；dev 下避免干扰 HMR）
 if ("serviceWorker" in navigator && import.meta.env.PROD) {
