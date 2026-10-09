@@ -150,6 +150,18 @@ tailscale ping <手机的 Tailscale IP>    # 出现 direct（UDPv6）= P2P 直�
 | `docs/` | API 契约、架构、平台细则、headscale 自建指南（HEADSCALE.md）、路线图 |
 | `docs/headscale/` | 自建 headscale 控制面部署文件（docker compose + Caddy 自动 HTTPS） |
 
+## 文档地图
+
+| 文档 | 内容 |
+|---|---|
+| [docs/API_CONTRACT.md](docs/API_CONTRACT.md) | REST / WS API 契约（二次开发/集成参考） |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 架构设计与数据流（会话文件为唯一事实源） |
+| [docs/PLATFORM.md](docs/PLATFORM.md) | 三平台（macOS / Linux / Windows）安装细则 |
+| [docs/HEADSCALE.md](docs/HEADSCALE.md) | 自建 headscale 控制面（不依赖官方 Tailscale） |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | 路线图（规划中） |
+| [CHANGELOG.md](CHANGELOG.md) | 版本记录 |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | 贡献流程与开发约定 |
+
 ## 开发
 
 ```bash

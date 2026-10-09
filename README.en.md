@@ -152,6 +152,18 @@ Mobile PWA ──HTTP/WS──▶ server (Fastify) ──▶ pi SDK / claude CLI
 | `docs/` | API contract, architecture, platform details, headscale guide (HEADSCALE.md), roadmap |
 | `docs/headscale/` | Self-hosted headscale control-plane deployment files (docker compose + Caddy auto-HTTPS) |
 
+## Documentation Map
+
+| Document | Contents |
+|---|---|
+| [docs/API_CONTRACT.md](docs/API_CONTRACT.md) | REST / WS API contract (for integrations) |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Architecture & data flow (session files as the single source of truth) |
+| [docs/PLATFORM.md](docs/PLATFORM.md) | Platform-specific setup (macOS / Linux / Windows) |
+| [docs/HEADSCALE.md](docs/HEADSCALE.md) | Self-hosted headscale control plane (no official Tailscale required) |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | Roadmap |
+| [CHANGELOG.md](CHANGELOG.md) | Release history |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Contribution workflow & conventions |
+
 ## Development
 
 ```bash
