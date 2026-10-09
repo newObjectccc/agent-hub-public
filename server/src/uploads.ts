@@ -212,6 +212,11 @@ export interface SaveUploadOptions {
   /** base64（不含 data: 前缀） */
   data: unknown;
   maxBytes?: number;
+  /**
+   * cwd 允许的根（workspaceRoot / 已知会话 cwd）；传入时 cwd 必须落在其一内，
+   * 否则直接 400 拒绝（不静默退临时目录，防任意目录写入）。
+   */
+  allowedCwdRoots?: readonly string[];
 }
 
 /** 唯一文件名：冲突时 `name-1.ext`、`name-2.ext`… */
@@ -235,6 +240,13 @@ function assertContained(dir: string, target: string): void {
   }
 }
 
+/** target 是否落在 root 目录内（含 root 本身；resolve 级判定） */
+export function isUnderRoot(root: string, target: string): boolean {
+  const absRoot = resolve(root);
+  const abs = resolve(target);
+  return abs === absRoot || abs.startsWith(absRoot + sep);
+}
+
 /**
  * 落盘上传文件：cwd 下 `.agent-hub-uploads/`，cwd 不可用退临时目录。
  * 返回可引用路径（cwd 内为相对路径，供 `@path` 引用；临时目录为绝对路径）。
@@ -246,6 +258,15 @@ export async function saveUpload(options: SaveUploadOptions): Promise<UploadDto>
   const type = resolveUploadType(safeName, options.mimeType);
 
   const cwd = typeof options.cwd === "string" ? options.cwd : null;
+  // cwd 白名单（workspaceRoot / 已知会话 cwd）：不在允许根内直接拒绝任意目录写入
+  if (cwd !== null && options.allowedCwdRoots !== undefined) {
+    const allowed = options.allowedCwdRoots.some(
+      (root) => typeof root === "string" && root !== "" && isUnderRoot(root, cwd),
+    );
+    if (!allowed) {
+      throw new HubError(ErrorCodes.INVALID_CWD, `cwd 不在允许的上传根内: ${cwd}`, 400);
+    }
+  }
   const cwdUsable = cwd !== null && isAbsolute(cwd) && existsSync(cwd);
   const dir = cwdUsable
     ? join(cwd, UPLOAD_DIR_NAME)

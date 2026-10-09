@@ -18,6 +18,7 @@ import { SessionHub } from "../sessions/hub.js";
 import type { PromptResult } from "../sessions/hub.js";
 import type { MessageDto, SearchResultDto, ServerEvent, SessionListItem, SessionSource, SessionTreeDto, SystemInfo } from "../types.js";
 import { ErrorCodes, HubError } from "../errors.js";
+import { fakeUnlockedAppLock } from "./fakeAppLock.js";
 
 const sessionFixture: SessionListItem = {
   id: "sess-1",
@@ -88,6 +89,7 @@ describe("contract: SPA history fallback", () => {
       config,
       systemInfo: async () => systemFixture,
       webRoot,
+      appLock: fakeUnlockedAppLock(),
     });
   });
 
@@ -158,7 +160,7 @@ describe("contract: GET /api/search 与 GET /api/sessions/:id/tree", () => {
       kpi: { getCards: () => [] },
       config: { ...DEFAULT_CONFIG },
       systemInfo: async () => systemFixture,
-      webRoot: null,
+      webRoot: null, appLock: fakeUnlockedAppLock(),
     });
   }
 
@@ -230,7 +232,7 @@ describe("contract: POST /api/sessions（source 分发）与 POST /api/sessions/
       kpi: { getCards: () => [] },
       config: { ...DEFAULT_CONFIG },
       systemInfo: async () => systemFixture,
-      webRoot: null,
+      webRoot: null, appLock: fakeUnlockedAppLock(),
     });
   }
 
@@ -342,7 +344,7 @@ describe("contract: POST /api/sessions/:id/rename（body.name 空串=清空）",
       kpi: { getCards: () => [] },
       config: { ...DEFAULT_CONFIG },
       systemInfo: async () => systemFixture,
-      webRoot: null,
+      webRoot: null, appLock: fakeUnlockedAppLock(),
     });
   }
 
@@ -446,7 +448,7 @@ describe("contract: POST prompt 409 SESSION_BUSY", () => {
       dashboard: makeFakeDashboard(),
       config: { ...DEFAULT_CONFIG },
       systemInfo: async () => systemFixture,
-      webRoot: null,
+      webRoot: null, appLock: fakeUnlockedAppLock(),
     });
   });
 
@@ -476,7 +478,7 @@ describe("contract: POST prompt 409 SESSION_BUSY", () => {
       dashboard: makeFakeDashboard(),
       config: { ...DEFAULT_CONFIG },
       systemInfo: async () => systemFixture,
-      webRoot: null,
+      webRoot: null, appLock: fakeUnlockedAppLock(),
     });
     const res = await okApp.inject({
       method: "POST",
@@ -648,7 +650,7 @@ describe("contract: 统一 404 错误信封（web/dist 缺失时也生效）", (
       kpi: { getCards: () => [] },
       config: { ...DEFAULT_CONFIG },
       systemInfo: async () => systemFixture,
-      webRoot: null,
+      webRoot: null, appLock: fakeUnlockedAppLock(),
     });
   });
 
@@ -692,7 +694,7 @@ describe("contract: GET /api/sessions/:id 消息分页（?before=&limit=）", ()
       kpi: { getCards: () => [] },
       config: { ...DEFAULT_CONFIG },
       systemInfo: async () => systemFixture,
-      webRoot: null,
+      webRoot: null, appLock: fakeUnlockedAppLock(),
     });
   });
 
@@ -747,6 +749,7 @@ describe("contract: GET /api/commands 与 GET /api/fs/tree（§8/§9）", () => 
     await mkdir(join(fsRoot, ".git"), { recursive: true });
     await writeFile(join(fsRoot, "README.md"), "# hi");
     app = await createApp({
+      appLock: fakeUnlockedAppLock(),
       hub: makeFakeHub({ accepted: true, mode: "prompt" }),
       dashboard: makeFakeDashboard(),
       kpi: { getCards: () => [] },
@@ -789,6 +792,7 @@ describe("contract: GET /api/commands 与 GET /api/fs/tree（§8/§9）", () => 
   it("pi 会话 /compact [指令] → 转发 SDK session.compact()（202 handled=compact）", async () => {
     const calls: Array<string | undefined> = [];
     const compactApp = await createApp({
+      appLock: fakeUnlockedAppLock(),
       hub: makeFakeHub({ accepted: true, mode: "prompt" }, {
         compact: async (_id: string, instructions?: string) => {
           calls.push(instructions);
@@ -821,6 +825,7 @@ describe("contract: GET /api/commands 与 GET /api/fs/tree（§8/§9）", () => 
 
   it("compact 语义错误（Nothing to compact）→ 400 而非 500", async () => {
     const compactApp = await createApp({
+      appLock: fakeUnlockedAppLock(),
       hub: makeFakeHub({ accepted: true, mode: "prompt" }, {
         compact: async () => {
           throw new Error("Nothing to compact (session too small)");

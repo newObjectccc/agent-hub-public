@@ -14,7 +14,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { after, before, describe, it } from "node:test";
 import { DEFAULT_CONFIG } from "../config.js";
-import { ErrorCodes } from "../errors.js";
+import { ErrorCodes, HubError } from "../errors.js";
 import {
   assertCommitRef,
   clampOutput,
@@ -26,11 +26,13 @@ import {
   parseLog,
   parsePorcelainStatus,
   resolveInsideRepo,
+  runGit,
   type GitRunner,
 } from "../git.js";
 import { createApp } from "../index.js";
 import type { SessionHubLike } from "../routes.js";
 import type { MessageDto, SessionListItem, SystemInfo } from "../types.js";
+import { fakeUnlockedAppLock } from "./fakeAppLock.js";
 
 const sessionFixture: SessionListItem = {
   id: "sess-1",
@@ -442,7 +444,7 @@ describe("git: 路由（契约 §6 信封）", () => {
       kpi: { getCards: () => [] },
       config: { ...DEFAULT_CONFIG },
       systemInfo: async () => systemFixture,
-      webRoot: null,
+      webRoot: null, appLock: fakeUnlockedAppLock(),
       git: createGitApi(run),
     });
   });
@@ -544,6 +546,25 @@ describe("git: 路由（契约 §6 信封）", () => {
 });
 
 /* ============ 5. 只读硬保证 ============ */
+
+describe("git: 失败信封不泄漏内部细节（审计 P1）", () => {
+  it("git 子进程失败：只回 `git <cmd> 失败`，stderr 内容只进服务端日志", async () => {
+    const tmp = await mkdtemp(join(tmpdir(), "agent-hub-git-fail-"));
+    try {
+      const err = await runGit(tmp, ["log", "-n1"]).then(
+        () => null,
+        (e: unknown) => e,
+      );
+      assert.ok(err instanceof HubError, "非仓库目录 git 必须失败");
+      assert.equal(err.code, ErrorCodes.GIT_FAILED);
+      assert.equal(err.message, "git log 失败", "错误文案固定格式");
+      assert.equal(err.message.includes("fatal"), false, "stderr 不得进错误 message");
+      assert.equal(err.message.includes("not a git repository"), false, "内部细节不出网");
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("git: 只读硬保证（源码扫描）", () => {
   it("git.ts 不含任何 git 写子命令", async () => {

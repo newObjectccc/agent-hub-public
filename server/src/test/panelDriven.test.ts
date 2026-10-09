@@ -23,6 +23,7 @@ import {
 import type { SessionHubLike } from "../routes.js";
 import type { PromptResult } from "../sessions/hub.js";
 import type { MessageDto, SearchResultDto, SessionListItem, SessionTreeDto, SystemInfo } from "../types.js";
+import { fakeUnlockedAppLock } from "./fakeAppLock.js";
 
 const systemFixture: SystemInfo = {
   platform: "darwin",
@@ -153,7 +154,7 @@ describe("panelDriven 路由：lastDrivenBy 标注与提示契约", () => {
       dashboard: makeFakeDashboard(),
       config: { ...DEFAULT_CONFIG },
       systemInfo: async () => systemFixture,
-      webRoot: null,
+      webRoot: null, appLock: fakeUnlockedAppLock(),
       panelDriven: store,
     });
     try {
@@ -186,7 +187,7 @@ describe("panelDriven 路由：lastDrivenBy 标注与提示契约", () => {
       dashboard: makeFakeDashboard(),
       config: { ...DEFAULT_CONFIG },
       systemInfo: async () => systemFixture,
-      webRoot: null,
+      webRoot: null, appLock: fakeUnlockedAppLock(),
       panelDriven: busyStore,
     });
     try {
@@ -208,7 +209,7 @@ describe("panelDriven 路由：lastDrivenBy 标注与提示契约", () => {
       dashboard: makeFakeDashboard(),
       config: { ...DEFAULT_CONFIG },
       systemInfo: async () => systemFixture,
-      webRoot: null,
+      webRoot: null, appLock: fakeUnlockedAppLock(),
       panelDriven: store,
     });
     try {

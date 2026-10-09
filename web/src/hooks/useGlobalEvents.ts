@@ -6,6 +6,7 @@
  */
 import { useEffect, useRef } from "react";
 import type { NotificationItem, SessionStatus } from "../api/types";
+import { wsLockProtocols } from "../utils/appLock";
 
 const BASE_DELAY_MS = 1000;
 const MAX_DELAY_MS = 30_000;
@@ -23,22 +24,31 @@ export interface UseGlobalEventsOptions {
   /** 会话运行状态变化（运行看板实时刷新） */
   onSessionStatus?: (payload: { sessionId: string; status: SessionStatus }) => void;
   onStatusChange?: (connected: boolean) => void;
+  /** 断线重连成功（非首次连接）后回调：全量补拉（会话列表 + 通知），补上断线期间丢失的广播 */
+  onReconnect?: () => void;
 }
 
-export function useGlobalEvents({ onSessionsChanged, onNotification, onSessionStatus, onStatusChange }: UseGlobalEventsOptions): void {
-  const cbs = useRef({ onSessionsChanged, onNotification, onSessionStatus, onStatusChange });
-  cbs.current = { onSessionsChanged, onNotification, onSessionStatus, onStatusChange };
+export function useGlobalEvents({
+  onSessionsChanged,
+  onNotification,
+  onSessionStatus,
+  onStatusChange,
+  onReconnect,
+}: UseGlobalEventsOptions): void {
+  const cbs = useRef({ onSessionsChanged, onNotification, onSessionStatus, onStatusChange, onReconnect });
+  cbs.current = { onSessionsChanged, onNotification, onSessionStatus, onStatusChange, onReconnect };
 
   useEffect(() => {
     let ws: WebSocket | null = null;
     let closed = false;
     let attempt = 0;
+    let hadConnection = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
 
     const connect = (): void => {
       if (closed) return;
       try {
-        ws = new WebSocket(eventsUrl());
+        ws = new WebSocket(eventsUrl(), wsLockProtocols(window.localStorage));
       } catch {
         scheduleReconnect();
         return;
@@ -46,6 +56,12 @@ export function useGlobalEvents({ onSessionsChanged, onNotification, onSessionSt
       ws.onopen = () => {
         attempt = 0;
         cbs.current.onStatusChange?.(true);
+        if (hadConnection) {
+          // 重连成功（参照 useSessionSocket 的 onReconnect 模式）：断线期间的
+          // sessions_changed / notification / session_status 广播全丢，触发一次全量补拉
+          cbs.current.onReconnect?.();
+        }
+        hadConnection = true;
       };
       ws.onmessage = (raw: MessageEvent<string>) => {
         try {

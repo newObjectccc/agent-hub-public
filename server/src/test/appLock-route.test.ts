@@ -306,3 +306,72 @@ describe("app-lock 路由：状态 / setup / unlock / change / disable", () => {
     assert.equal((status.json() as { configured: boolean }).configured, false);
   });
 });
+
+describe("app-lock 全局锁屏门禁（onRequest）", () => {
+  let app: Awaited<ReturnType<typeof createApp>>;
+  let store: AppLockStore;
+  let token: string;
+
+  before(async () => {
+    const dir = mkdtempSync(join(tmpdir(), "app-lock-gate-"));
+    store = new AppLockStore(join(dir, "app-lock.json"));
+    app = await createApp({
+      hub: makeFakeHub(),
+      dashboard: makeFakeDashboard(),
+      kpi: { getCards: () => [] },
+      config: { ...DEFAULT_CONFIG } as HubConfig,
+      systemInfo: async () => systemFixture,
+      webRoot: null,
+      appLock: store,
+    });
+    token = store.setup("246810").token;
+  });
+
+  after(async () => {
+    await app.close();
+  });
+
+  it("锁屏 + 无令牌：全部业务 API 拒绝 423 APP_LOCKED（统一错误信封）", async () => {
+    for (const url of ["/api/sessions", "/api/kpi", "/api/system", "/api/dashboard/stats"]) {
+      const res = await app.inject({ method: "GET", url });
+      assert.equal(res.statusCode, 423, url);
+      const body = res.json() as { error: { code: string; message: string } };
+      assert.deepEqual(Object.keys(body), ["error"]);
+      assert.equal(body.error.code, "APP_LOCKED");
+    }
+    const post = await app.inject({ method: "POST", url: "/api/sessions/sess-1/prompt", payload: { text: "hi" } });
+    assert.equal(post.statusCode, 423, "锁屏下不得驱动 agent");
+  });
+
+  it("错令牌 401 APP_LOCK_DENIED；有效令牌放行 200", async () => {
+    const wrong = await app.inject({
+      method: "GET",
+      url: "/api/sessions",
+      headers: { "x-app-lock-token": "forged" },
+    });
+    assert.equal(wrong.statusCode, 401);
+    assert.equal((wrong.json() as { error: { code: string } }).error.code, "APP_LOCK_DENIED");
+
+    const ok = await app.inject({ method: "GET", url: "/api/sessions", headers: { "x-app-lock-token": token } });
+    assert.equal(ok.statusCode, 200);
+  });
+
+  it("解锁/设置/登录端点豁免门禁（可从锁屏态进入解锁流程），静态资源不受影响", async () => {
+    const status = await app.inject({ method: "GET", url: "/api/app-lock/status" });
+    assert.equal(status.statusCode, 200, "status 可查（前端显示锁屏）");
+    assert.equal((status.json() as { unlocked: boolean }).unlocked, false);
+
+    const unlock = await app.inject({ method: "POST", url: "/api/app-lock/unlock", payload: { secret: "wrong-pin" } });
+    assert.equal(unlock.statusCode, 401, "unlock 可达（验证 PIN 失败是 401，不是 423 门禁）");
+
+    const login = await app.inject({ method: "POST", url: "/api/app-lock/webauthn/login/start", payload: {} });
+    assert.notEqual(login.statusCode, 423, "生物识别登录流程可达");
+
+    const setup = await app.inject({ method: "POST", url: "/api/app-lock/setup", payload: { secret: "112233" } });
+    assert.equal(setup.statusCode, 409, "setup 可达（已配置 409，不是 423 门禁）");
+
+    // 静态资源 / SPA fallback / 未知路径不走 API 门禁
+    const page = await app.inject({ method: "GET", url: "/no/such/page" });
+    assert.equal(page.statusCode, 404, "非 API 路径不受锁屏门禁");
+  });
+});

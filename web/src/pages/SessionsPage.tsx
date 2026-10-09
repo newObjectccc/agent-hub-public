@@ -73,6 +73,8 @@ export function SessionsPage() {
     });
   };
   const progressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** refresh 并发序号：WS 事件风暴下旧响应（序号过期）不覆盖新数据 */
+  const refreshSeq = useRef(0);
   /** 会话虚拟列表滚动容器（列表 scrollTop 记忆 + 下拉刷新到顶判定） */
   const listScrollRef = useRef<HTMLDivElement | null>(null);
   /** 进场动画 seen：提升到页面层（跨 tab 卸载/重挂持久）——空分类往返零动画（AC3-b） */
@@ -99,6 +101,7 @@ export function SessionsPage() {
   }, []);
 
   const refresh = useCallback(async () => {
+    const seq = ++refreshSeq.current;
     setRefreshing(true);
     setListError(null);
     // 慢刷新才露出进度条：连续快速刷新视觉上零变化（不闪不跳）
@@ -107,10 +110,13 @@ export function SessionsPage() {
     // 会话列表独立先回：不被 dashboard（git 全仓扫描，可能数分钟）拖住
     const sessionsPromise = api.listSessions().then(
       (res) => {
+        // 过期响应丢弃：旧请求晚到不覆盖新数据
+        if (seq !== refreshSeq.current) return;
         setSessions(res.sessions ?? []);
         setListError(null);
       },
       (err: unknown) => {
+        if (seq !== refreshSeq.current) return;
         setListError(err instanceof Error ? err.message : "会话列表加载失败");
       },
     );
@@ -120,6 +126,8 @@ export function SessionsPage() {
       api.getUsage().catch(() => null),
     ]);
     await sessionsPromise;
+    // 过期响应丢弃：不覆盖新数据、不误关新一轮刷新的状态
+    if (seq !== refreshSeq.current) return;
     if (progressTimer.current) {
       clearTimeout(progressTimer.current);
       progressTimer.current = null;
@@ -139,11 +147,12 @@ export function SessionsPage() {
   }, [refresh]);
 
   // 全局会话变更流：终端里跑的 pi 落盘 → 列表自动刷新（fs.watch 事件驱动）；
-  // status/新通知 → 优先级（等你处理）实时联动
+  // status/新通知 → 优先级（等你处理）实时联动；断线重连补拉（断线期间广播全丢）
   useGlobalEvents({
     onSessionsChanged: () => void refresh(),
     onSessionStatus: () => void refresh(),
     onNotification: () => void refresh(),
+    onReconnect: () => void refresh(),
   });
 
   const attentionIds = useMemo(

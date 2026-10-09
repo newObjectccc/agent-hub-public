@@ -117,11 +117,24 @@ export const api = {
     });
   },
 
-  /** 发送消息（契约 §1）；images 为上传图片引用路径（pi 直接附图，契约 §11）；signal 可选超时/中止 */
-  sendPrompt(id: string, text: string, mode: PromptMode = "prompt", images?: string[], signal?: AbortSignal): Promise<PromptResult> {
+  /** 发送消息（契约 §1）；images 为上传图片引用路径（pi 直接附图，契约 §11）；
+   *  clientMessageId 幂等键（乐观占位 localId，弱网重发同键由 server 去重，防同文双发）；signal 可选超时/中止 */
+  sendPrompt(
+    id: string,
+    text: string,
+    mode: PromptMode = "prompt",
+    images?: string[],
+    clientMessageId?: string,
+    signal?: AbortSignal,
+  ): Promise<PromptResult> {
     return request(`/api/sessions/${encodeURIComponent(id)}/prompt`, {
       method: "POST",
-      body: JSON.stringify(images && images.length > 0 ? { text, mode, images } : { text, mode }),
+      body: JSON.stringify({
+        text,
+        mode,
+        ...(images && images.length > 0 ? { images } : {}),
+        ...(clientMessageId ? { clientMessageId } : {}),
+      }),
       signal,
     });
   },

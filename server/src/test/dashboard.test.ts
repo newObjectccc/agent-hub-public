@@ -19,12 +19,14 @@ import {
   deriveDashboard,
   findGitRepos,
   parseRevListCount,
+  setResidentText,
   startOfDay,
   startOfWeek,
   sumCommitCounts,
   DashboardService,
   LIVE_TEXT_LIMIT,
   READ_IDS_MAX,
+  TEXT_MAP_MAX,
 } from "../dashboard.js";
 import { notificationSummary } from "../notifications.js";
 import { buildInsight, type SessionInsight } from "../sessions/scan.js";
@@ -380,5 +382,45 @@ describe("dashboard: 内存驻留裁剪（AC6）", () => {
     // 未超上限不裁剪
     const small = new Set(["a", "b"]);
     assert.deepEqual([...capReadIds(small)], ["a", "b"]);
+  });
+});
+
+describe("dashboard: 文本 Map 无界驻留治理（LRU 200 上限）", () => {
+  it("setResidentText 同 key 刷新插入序、超上限逐出最久未写入条目", () => {
+    const map = new Map<string, string>();
+    for (let i = 0; i < TEXT_MAP_MAX; i += 1) setResidentText(map, `s${i}`, `v${i}`);
+    assert.equal(map.size, TEXT_MAP_MAX);
+    setResidentText(map, "s0", "刷新后的值"); // 刷新 s0 的插入序（LRU）
+    setResidentText(map, "new", "新会话"); // 超限 → 逐出最久未写入的 s1
+    assert.equal(map.size, TEXT_MAP_MAX, "上限 200 不被突破");
+    assert.ok(map.has("s0"), "刚刷新的 s0 保留");
+    assert.equal(map.get("s0"), "刷新后的值");
+    assert.ok(map.has("new"));
+    assert.ok(!map.has("s1"), "最久未写入的 s1 被逐出（s0 刷新后 s1 成为最老）");
+  });
+
+  it("recordEvent 的 lastUserText/lastAssistantText 超上限逐出最老（行为回归：摘要走 fallback）", async () => {
+    const tmpRoot = await mkdtemp(join(tmpdir(), "agent-hub-dash-lru-"));
+    const notes: Array<{ text: string }> = [];
+    const service = new DashboardService({
+      sessionDir: join(tmpRoot, "sessions"),
+      workspaceRoot: tmpRoot,
+      storeFile: join(tmpRoot, "marks.json"),
+      now: () => NOW,
+      onNotification: (item) => notes.push(item),
+    });
+    try {
+      for (let i = 0; i < TEXT_MAP_MAX + 1; i += 1) {
+        service.recordEvent(`s${i}`, { type: "message_end", message: msg(`m${i}`, "assistant", `输出文本${i}`, NOW) });
+      }
+      // s0 的驻留文本已被逐出：settled 摘要走 fallback（不引用已被逐出的文本）
+      service.recordEvent("s0", { type: "agent_settled" });
+      assert.match(notes.at(-1)!.text, /agent 已完成本轮工作/, "被逐出会话的摘要走 fallback");
+      // 最新的 s200 文本仍在：摘要含其文本
+      service.recordEvent(`s${TEXT_MAP_MAX}`, { type: "agent_settled" });
+      assert.match(notes.at(-1)!.text, /输出文本200/, "最近写入的会话摘要仍引用其驻留文本");
+    } finally {
+      await rm(tmpRoot, { recursive: true, force: true });
+    }
   });
 });

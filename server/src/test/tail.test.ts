@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import type { ServerEvent } from "../types.js";
 import { loadSessionMessages } from "../sessions/scan.js";
+import { SessionHub } from "../sessions/hub.js";
 import { inferExternalStatus, piMessageLoader, SessionTailManager, type MessageLoader } from "../sessions/tail.js";
 
 const ts = () => new Date().toISOString();
@@ -357,6 +358,202 @@ describe("tail: 字节偏移增量解析（AC1：不丢不重不错序）", () =
       await sleep(400);
       assert.deepEqual(endedIds(got), ["c2"], "回退全量解析下事件仍不丢不重");
       assert.ok(loads >= 2, "无增量能力时按变更回退全量解析（行为与旧实现一致）");
+    } finally {
+      manager.stopAll();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------- 数据一致性审计：rewrite 检测 / 吞消息窗口 / 状态回写 / 全量回退熔断 ----------
+
+describe("tail: 原地截断重写（SDK _rewriteFile 形态）→ 重建 parser，不错位不丢消息", () => {
+  it("重写为更长内容（size > 已解析偏移）不再误判 append：两代数据不混排，新消息全量对账补推", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agent-hub-tail-rewrite2-"));
+    const file = join(dir, "s.jsonl");
+    const header = JSON.stringify({ type: "session", version: 3, id: "rw-1", timestamp: ts(), cwd: "/tmp/demo" });
+    await writeFile(
+      file,
+      [
+        header,
+        centry("r1", null, "user", "旧消息-初始内容AAAA"),
+        centry("r2", "r1", "assistant", "旧回复-初始内容BBBB"),
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    const got: Array<{ sessionId: string; event: ServerEvent }> = [];
+    const manager = new SessionTailManager((sessionId, event) => got.push({ sessionId, event }), {
+      pollMs: 100,
+      idleAfterMs: 60_000,
+      idleAfterReplyMs: 60_000,
+    });
+    try {
+      manager.acquire("rw-1", file);
+      await sleep(300); // 初始快照消费完旧内容
+      // open "w" 截断重写为更长内容（与 SDK _rewriteFile 同形态）：旧实现按 append 错位读取，
+      // 会把 r3 切成半行丢掉、只推错位后的行（两代数据混排）
+      await writeFile(
+        file,
+        [
+          header,
+          centry("r1", null, "user", "旧消息-初始内容AAAA"),
+          centry("r3", "r1", "assistant", `重写后新增的第一条-${"C".repeat(200)}`),
+          centry("r4", "r3", "user", "重写后新增的第二条"),
+        ].join("\n") + "\n",
+        "utf8",
+      );
+      await sleep(400);
+      assert.deepEqual(endedIds(got), ["r3", "r4"], "重写后全量对账：r1 不重推、r3/r4 不丢不错序");
+    } finally {
+      manager.stopAll();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("tail: start 快照吞消息窗口（连接时刻后写入的消息照常推送）", () => {
+  it("快照读取期间写入的新消息不得只记 knownIds 不推送（本连接 UI 永久缺消息）", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agent-hub-tail-window-"));
+    const file = join(dir, "s.jsonl");
+    await writeFile(
+      file,
+      [JSON.stringify({ type: "session", version: 3, id: "win-1", timestamp: ts(), cwd: "/tmp/demo" }), centry("m1", null, "user", "旧消息")].join("\n") + "\n",
+      "utf8",
+    );
+    // 慢 loader：快照读取期间外部写入 → 新消息被包含进快照（复现吞消息窗口的确定性时序）
+    const loader: MessageLoader = async (f: string) => {
+      await sleep(150);
+      return loadSessionMessages(f);
+    };
+    const got: Array<{ sessionId: string; event: ServerEvent }> = [];
+    const manager = new SessionTailManager((sessionId, event) => got.push({ sessionId, event }), {
+      pollMs: 100,
+      idleAfterMs: 60_000,
+      idleAfterReplyMs: 60_000,
+    });
+    try {
+      manager.acquire("win-1", file, loader);
+      await sleep(30); // start() 已取连接时刻 startedMs
+      await appendFile(file, `\n${centry("m2", "m1", "assistant", "快照窗口内的新消息")}`, "utf8");
+      await sleep(500);
+      assert.deepEqual(endedIds(got), ["m2"], "快照中晚于连接时刻的消息照常推送（旧消息 m1 不重复推）");
+    } finally {
+      manager.stopAll();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("tail: status 事件回写内存状态源（API/WS 不分叉）", () => {
+  it("tail 推 running/idle 时同步回写 hub.statuses，getStatus 与 WS 显示同源", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agent-hub-tail-status-"));
+    const file = join(dir, "s.jsonl");
+    await writeFile(
+      file,
+      [JSON.stringify({ type: "session", version: 3, id: "st-1", timestamp: ts(), cwd: "/tmp/demo" }), centry("u1", null, "user", "初始")].join("\n") + "\n",
+      "utf8",
+    );
+    const got: Array<{ sessionId: string; event: ServerEvent }> = [];
+    const hub = new SessionHub(dir, (_sid, ev) => got.push({ sessionId: _sid, event: ev }));
+    const manager = new SessionTailManager((sessionId, event) => got.push({ sessionId, event }), {
+      pollMs: 100,
+      idleAfterReplyMs: 200,
+      idleAfterMs: 60_000,
+    });
+    try {
+      manager.acquire("st-1", file);
+      await sleep(250);
+      assert.equal(hub.getStatus("st-1"), "idle", "无活动时 API 状态 idle");
+      // user 落盘不走短静默：持续 running（回写后 getStatus 必须是 running，不再是陈旧 idle）
+      await appendFile(file, `\n${centry("u2", "u1", "user", "新任务来了")}`, "utf8");
+      await sleep(400);
+      assert.equal(hub.getStatus("st-1"), "running", "tail 推 running 时 API 状态同步回写");
+      // assistant 回复落盘 + 短静默 → tail settle，API 状态同步回 idle
+      await appendFile(file, `\n${centry("a1", "u2", "assistant", "干完了")}`, "utf8");
+      await sleep(600);
+      assert.equal(hub.getStatus("st-1"), "idle", "tail settle 后 API 状态同步回 idle");
+    } finally {
+      manager.stopAll();
+      hub.disposeAll();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("tail: 全量回退熔断（无增量能力 loader 的 CPU/内存防护）", () => {
+  it("大文件阈值：熔断期间降频全量解析，消息延迟但不丢（pendingReparse 补推）", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agent-hub-tail-fuse-"));
+    const file = join(dir, "s.jsonl");
+    await writeFile(
+      file,
+      [JSON.stringify({ type: "session", version: 3, id: "fu-1", timestamp: ts(), cwd: "/tmp/demo" }), centry("f1", null, "user", "初始")].join("\n") + "\n",
+      "utf8",
+    );
+    let loads = 0;
+    const loader: MessageLoader = async (f: string) => {
+      loads += 1;
+      return loadSessionMessages(f);
+    };
+    const got: Array<{ sessionId: string; event: ServerEvent }> = [];
+    // 任何文件都算「大文件」（阈值 1 字节）+ 400ms 降频窗口，轮询 50ms
+    const manager = new SessionTailManager((sessionId, event) => got.push({ sessionId, event }), {
+      pollMs: 50,
+      idleAfterMs: 60_000,
+      idleAfterReplyMs: 60_000,
+      fullReparseMaxBytes: 1,
+      fullReparseMinIntervalMs: 400,
+    });
+    try {
+      manager.acquire("fu-1", file, loader);
+      await sleep(150); // 初始快照（loads=1，记为全量解析基准时刻）
+      assert.equal(loads, 1, "初始快照全量解析一次");
+      await appendFile(file, `\n${centry("f2", "f1", "user", "熔断期间的消息")}`, "utf8");
+      await sleep(250); // 降频窗口内多轮 tick：不得每轮全量重解析
+      assert.ok(loads <= 2, `熔断期间全量解析应降频，实际 loads=${loads}`);
+      await sleep(600); // 窗口过后补解析（pendingReparse 补推）
+      assert.deepEqual(endedIds(got), ["f2"], "熔断只降频不丢消息：窗口过后照常补推");
+    } finally {
+      manager.stopAll();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("高频变更（每轮都有写入）同样触发降频，消息最终完整推送", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agent-hub-tail-churn-"));
+    const file = join(dir, "s.jsonl");
+    await writeFile(
+      file,
+      [JSON.stringify({ type: "session", version: 3, id: "ch-1", timestamp: ts(), cwd: "/tmp/demo" }), centry("h1", null, "user", "初始")].join("\n") + "\n",
+      "utf8",
+    );
+    let loads = 0;
+    const loader: MessageLoader = async (f: string) => {
+      loads += 1;
+      return loadSessionMessages(f);
+    };
+    const got: Array<{ sessionId: string; event: ServerEvent }> = [];
+    const manager = new SessionTailManager((sessionId, event) => got.push({ sessionId, event }), {
+      pollMs: 50,
+      idleAfterMs: 60_000,
+      idleAfterReplyMs: 60_000,
+      fullReparseMaxBytes: 10 * 1024 * 1024, // 不走大小阈值：只测变化频率熔断
+      fullReparseMinIntervalMs: 400,
+    });
+    try {
+      manager.acquire("ch-1", file, loader);
+      await sleep(150);
+      // 持续写入 5 条（每 60ms 一条，覆盖多轮 tick → churn 熔断）
+      for (let i = 2; i <= 6; i += 1) {
+        await appendFile(file, `\n${centry(`h${i}`, `h${i - 1}`, "user", `持续写入-${i}`)}`, "utf8");
+        await sleep(60);
+      }
+      await sleep(700); // 停止写入后窗口到达：剩余消息补推
+      const ids = endedIds(got);
+      for (let i = 2; i <= 6; i += 1) {
+        assert.ok(ids.includes(`h${i}`), `h${i} 应最终推送（不丢），实际 ${JSON.stringify(ids)}`);
+      }
+      assert.equal(new Set(ids).size, ids.length, "不重复推送");
+      assert.ok(loads < 8, `高频写入应降频全量解析，实际 loads=${loads}`);
     } finally {
       manager.stopAll();
       await rm(dir, { recursive: true, force: true });

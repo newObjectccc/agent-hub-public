@@ -81,7 +81,11 @@ export async function main(argv = [], deps = {}) {
   try {
     const overrides = {};
     if (options.port !== undefined) overrides.port = assertPort(options.port);
-    if (options.lan) overrides.host = '0.0.0.0';
+    if (options.lan) {
+      overrides.host = '0.0.0.0';
+      // server isSafeBindHost 要求通配绑定必须显式 opt-in（防误配暴露公网）
+      overrides.allowLan = true;
+    }
     const missing = !fs.existsSync(configPath);
     if (missing || Object.keys(overrides).length) {
       const res = ensureConfig({

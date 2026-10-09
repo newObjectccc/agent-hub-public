@@ -78,4 +78,32 @@ describe("streaming 标志（活占位生命周期）", () => {
     const fresh = [msg("m-1", { text: "新的" })];
     expect(reconcileMessages(prev, fresh)).toBe(fresh);
   });
+
+  it("流式对账不丢字：GET 快照落后于已到达 delta 时保留更长的在途文本", () => {
+    // 在途已累积 6 字，GET 返回的落盘旧文本只有 2 字（断线重连/刷新瞬间）
+    const prev = [msg("live-1", { text: "你好，世界啊", streaming: true, thinking: "先想一大段" })];
+    const fresh = [msg("live-1", { text: "你好", thinking: "想" })];
+    const merged = reconcileMessages(prev, fresh);
+    expect(merged[0].text).toBe("你好，世界啊");
+    expect(merged[0].thinking).toBe("先想一大段");
+    expect(merged[0].streaming).toBe(true);
+    // message_end 权威替换后自然覆盖（此处只验证对账不回退）
+    const settled = reconcileMessages(
+      prev,
+      [msg("live-1", { text: "你好，世界啊！完整回复", streaming: false })],
+    );
+    expect(settled[0].text).toBe("你好，世界啊！完整回复");
+    expect(settled[0].streaming).toBe(true); // 仍在途（等 message_end）
+  });
+
+  it("在途消息尚未落盘（GET 快照里没有）时保留在尾部，进行中的回复不消失", () => {
+    const prev = [msg("m-0"), msg("live-2", { text: "流式中…", streaming: true })];
+    const fresh = [msg("m-0", { text: "历史" })];
+    const merged = reconcileMessages(prev, fresh);
+    expect(merged).toHaveLength(2);
+    expect(merged[0].text).toBe("历史");
+    expect(merged[1].id).toBe("live-2");
+    expect(merged[1].text).toBe("流式中…");
+    expect(merged[1].streaming).toBe(true);
+  });
 });

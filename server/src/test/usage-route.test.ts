@@ -15,6 +15,7 @@ import { createApp } from "../index.js";
 import type { SessionHubLike } from "../routes.js";
 import { UsageService } from "../usage.js";
 import type { MessageDto, SearchResultDto, SessionListItem, SessionTreeDto, SystemInfo, UsageOverviewDto, UsageSessionDto } from "../types.js";
+import { fakeUnlockedAppLock } from "./fakeAppLock.js";
 
 const NOW = Date.now();
 const sessionFixture: SessionListItem = {
@@ -95,7 +96,7 @@ describe("contract: GET /api/usage", () => {
       kpi: { getCards: () => [] },
       config,
       systemInfo: async () => systemFixture,
-      webRoot: null,
+      webRoot: null, appLock: fakeUnlockedAppLock(),
     });
   });
 

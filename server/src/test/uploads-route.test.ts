@@ -5,7 +5,7 @@
 import { makeFakeDashboard } from "./fakeDashboard.js";
 import { strict as assert } from "node:assert";
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
@@ -23,6 +23,7 @@ import type {
 } from "../types.js";
 import { ErrorCodes } from "../errors.js";
 import { MAX_UPLOAD_BYTES, UPLOAD_DIR_NAME } from "../uploads.js";
+import { fakeUnlockedAppLock } from "./fakeAppLock.js";
 
 const PNG_BASE64 = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).toString("base64");
 
@@ -99,7 +100,7 @@ describe("uploads 路由：POST /api/uploads + prompt images", () => {
       kpi: { getCards: () => [] },
       config,
       systemInfo: async () => systemFixture,
-      webRoot: null,
+      webRoot: null, appLock: fakeUnlockedAppLock(),
     });
   });
 
@@ -170,6 +171,33 @@ describe("uploads 路由：POST /api/uploads + prompt images", () => {
     });
     assert.equal(relCwd.statusCode, 400);
     assert.equal((relCwd.json() as { error: { code: string } }).error.code, ErrorCodes.INVALID_CWD);
+  });
+
+  it("body.cwd 收紧到 workspaceRoot / 已知会话 cwd：越界拒绝任意目录写入（审计 P1）", async () => {
+    const outside = await mkdtemp(join(tmpdir(), "agent-hub-outside-"));
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/uploads",
+        payload: { cwd: outside, name: "x.png", mimeType: "image/png", data: PNG_BASE64 },
+      });
+      assert.equal(res.statusCode, 400);
+      assert.equal((res.json() as { error: { code: string } }).error.code, ErrorCodes.INVALID_CWD);
+      assert.equal(existsSync(join(outside, UPLOAD_DIR_NAME)), false, "不得写入任意目录");
+
+      // 已知会话 cwd 的子目录仍允许
+      await mkdir(join(cwd, "sub"), { recursive: true });
+      const ok = await app.inject({
+        method: "POST",
+        url: "/api/uploads",
+        payload: { cwd: join(cwd, "sub"), name: "y.png", mimeType: "image/png", data: PNG_BASE64 },
+      });
+      assert.equal(ok.statusCode, 201);
+      const { upload } = ok.json() as { upload: { absPath: string } };
+      assert.ok(upload.absPath.startsWith(join(cwd, "sub", UPLOAD_DIR_NAME)), "落在会话 cwd 内");
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
   });
 
   it("超大文件 → 413 UPLOAD_TOO_LARGE（bodyLimit 内、业务上限外）", async () => {

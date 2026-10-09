@@ -6,7 +6,7 @@ import path from 'node:path';
 import { assertPort } from './process.js';
 import { expandHome } from './paths.js';
 
-export const CONFIG_KEYS = ['port', 'host', 'sessionDir', 'workspaceRoot', 'kpiRefreshMinutes', 'auth'];
+export const CONFIG_KEYS = ['port', 'host', 'sessionDir', 'workspaceRoot', 'kpiRefreshMinutes', 'auth', 'allowLan'];
 
 /** 模板缺失时的内置默认（与 config/hub.config.example.json 一致）。 */
 export const DEFAULT_CONFIG = {
@@ -36,6 +36,11 @@ export function applyOverrides(config, overrides = {}) {
       if (typeof v !== 'string') throw new Error(`${key} 必须是字符串`);
       next[key] = v;
     }
+  }
+  // --lan 显式 opt-in（server isSafeBindHost 要求：绑定 0.0.0.0 必须 allowLan:true）
+  if (overrides.allowLan !== undefined && overrides.allowLan !== null) {
+    if (typeof overrides.allowLan !== 'boolean') throw new Error('allowLan 必须是布尔值');
+    next.allowLan = overrides.allowLan;
   }
   return next;
 }

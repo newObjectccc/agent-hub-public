@@ -26,7 +26,7 @@ import { ErrorCodes, HubError } from "../errors.js";
 import type { PromptResult } from "../sessions/hub.js";
 import { appendAttachmentHints } from "../uploads.js";
 import { decidePromptAction, parsePromptMode } from "../sessions/prompt-policy.js";
-import { inferExternalStatus } from "../sessions/tail.js";
+import { inferExternalStatus, registerTailStatusSink } from "../sessions/tail.js";
 import type { MessageDto, PromptImageAttachment, ServerEvent, SessionListItem, SessionStatus } from "../types.js";
 import { ClaudeStreamTranslator } from "./claude-stream.js";
 import {
@@ -74,9 +74,13 @@ export class ClaudeAdapter implements SessionAdapter {
   private readonly claudeBin: string;
   private readonly running = new Map<string, RunningRun>();
   private readonly queues = new Map<string, string[]>();
-  private readonly statuses = new Map<string, SessionStatus>();
+  /** 内存运行态（含显式 idle）：带登记时间，超 STATE_TTL 清扫（外部 `claude --resume` 写 transcript 时状态可随 mtime 自愈） */
+  private readonly statuses = new Map<string, { status: SessionStatus; at: number }>();
   private historyIndex: Map<string, string> | null = null;
   private disposed = false;
+  private sweepTimer: ReturnType<typeof setInterval> | null = null;
+  /** tail 状态回写注销（disposeAll 时解除） */
+  private readonly unregisterTailStatus: () => void;
   /** 会话清单 TTL 缓存（listSessions/findSession/loadMessages 共享一次全量解析） */
   private listCache: SessionListItem[] | null = null;
   private listCacheAt = 0;
@@ -92,6 +96,11 @@ export class ClaudeAdapter implements SessionAdapter {
     this.emit = options.emit;
     this.spawnFn = options.spawnFn ?? spawn;
     this.claudeBin = options.claudeBin ?? "claude";
+    // tail 的 status 事件只走 WS 广播，不回写会让 getStatus 与 WS 显示分叉（镜像 hub.ts 同机制）
+    this.unregisterTailStatus = registerTailStatusSink((id, status) => {
+      this.statuses.set(id, { status, at: Date.now() });
+    });
+    this.startSweep();
   }
 
   isLive(id: string): boolean {
@@ -99,13 +108,13 @@ export class ClaudeAdapter implements SessionAdapter {
   }
 
   getStatus(id: string): SessionStatus {
-    return this.statuses.get(id) ?? "idle";
+    return this.statuses.get(id)?.status ?? "idle";
   }
 
   private statusWithInference(id: string, updatedMs: number): SessionStatus {
     // 本进程状态优先（含显式 idle）：与 sessions/hub.ts 同口径——刚创建/刚 settled 的
     // 文件 mtime 必然新鲜，丢弃 idle 走时间推断会误判 running 60s（新会话显示「思考中」）
-    const own = this.statuses.get(id);
+    const own = this.statuses.get(id)?.status;
     if (own) return own;
     return inferExternalStatus(updatedMs);
   }
@@ -117,8 +126,28 @@ export class ClaudeAdapter implements SessionAdapter {
 
   /** 统一出口：status 事件回写内存状态（含 translator 直发的），保证 getStatus 不漂移 */
   private dispatch(id: string, event: ServerEvent): void {
-    if (event.type === "status") this.statuses.set(id, event.status);
+    if (event.type === "status") this.statuses.set(id, { status: event.status, at: Date.now() });
     this.emit(id, event);
+  }
+
+  /** statuses 过期 TTL（镜像 hub.ts STATE_TTL）：条目只写不清会让外部 `claude --resume` 的持续写盘永久被压制为 idle */
+  static readonly STATE_TTL_MS = 30 * 60_000;
+
+  /**
+   * 周期清扫：statuses 过期条目清理（idle 同样走 TTL——随时清会让刚创建的会话
+   * 回落时间推断误判 running）。TTL 过期后无本进程记录，状态随文件 mtime 老化自愈。
+   */
+  sweep(now = Date.now()): void {
+    for (const [id, entry] of [...this.statuses]) {
+      if (now - entry.at > ClaudeAdapter.STATE_TTL_MS) this.statuses.delete(id);
+    }
+  }
+
+  /** 启动周期清扫（30s，unref）；测试可直接调 sweep */
+  private startSweep(intervalMs = 30_000): void {
+    if (this.sweepTimer !== null) return;
+    this.sweepTimer = setInterval(() => this.sweep(), intervalMs);
+    this.sweepTimer.unref?.();
   }
 
   private async getHistoryIndex(): Promise<Map<string, string>> {
@@ -238,7 +267,7 @@ export class ClaudeAdapter implements SessionAdapter {
     }
     await writeFile(file, `${lines.join("\n")}\n`, { flag: "wx" });
     // 显式登记 idle：空会话文件 mtime=now，不登记会被时间推断误判 running 60s
-    this.statuses.set(sessionId, "idle");
+    this.statuses.set(sessionId, { status: "idle", at: Date.now() });
     this.invalidateList();
     return {
       id: sessionId,
@@ -271,9 +300,16 @@ export class ClaudeAdapter implements SessionAdapter {
     }
     const newId = randomUUID();
     const content = await readFile(found.sessionFile, "utf8");
+    const lines = content.split("\n");
+    // 尾部残行（外部写到一半）：末尾非空行若不是合法 JSON 会把半行带进新文件，
+    // 丢弃后重试场景安全（原文件不动，残行下轮写完仍在原文件）
+    let lastNonEmpty = -1;
+    for (let i = 0; i < lines.length; i += 1) {
+      if (lines[i].trim() !== "") lastNonEmpty = i;
+    }
     const outLines: string[] = [];
-    for (const line of content.split("\n")) {
-      const trimmed = line.trim();
+    for (let i = 0; i < lines.length; i += 1) {
+      const trimmed = lines[i].trim();
       if (trimmed === "") continue;
       let row: Record<string, unknown> | null = null;
       try {
@@ -283,7 +319,8 @@ export class ClaudeAdapter implements SessionAdapter {
         row = null;
       }
       if (row === null) {
-        outLines.push(trimmed); // 损坏行原样保留（解析层本就跳过）
+        if (i === lastNonEmpty) continue; // 尾部残行丢弃（读到半行）
+        outLines.push(trimmed); // 中间损坏行原样保留（解析层本就跳过）
         continue;
       }
       if (typeof row.sessionId === "string") row.sessionId = newId;
@@ -293,7 +330,7 @@ export class ClaudeAdapter implements SessionAdapter {
     await writeFile(file, `${outLines.join("\n")}\n`, { flag: "wx" });
     // 显式登记 idle：fork 新文件 mtime=now，不登记会被时间推断误判 running 60s
     // （与 createSession 同根因：fork 后进 chat 页即显示「思考中」+ 停止按钮）
-    this.statuses.set(newId, "idle");
+    this.statuses.set(newId, { status: "idle", at: Date.now() });
     this.invalidateList();
     const created = await this.findSession(newId);
     if (!created) {
@@ -317,9 +354,17 @@ export class ClaudeAdapter implements SessionAdapter {
     if (!found) {
       throw new HubError(ErrorCodes.SESSION_NOT_FOUND, `会话不存在: ${id}`, 404);
     }
-    // 快照必须在写盘前取：写盘后 mtime=now 必然推断成 running，快照就失去意义
+    // 快照必须在写盘前取：写盘后 mtime=now 必然推断成 running，快照就失去意义；
+    // 且必须用实时 mtime 现算——listCache ≤5s 陈旧会漏掉刚发生的外部 `claude --resume` 写盘，
+    // 把真实 running 错误快照成 idle 后会压制后续状态自愈（竞态）
+    let updatedMs = Date.parse(found.updatedAt);
+    try {
+      updatedMs = (await stat(found.sessionFile)).mtimeMs;
+    } catch {
+      // stat 失败回退缓存时间戳（保守推断）
+    }
     const hadOwn = this.statuses.has(id);
-    const snapshot = this.statusWithInference(id, Date.parse(found.updatedAt));
+    const snapshot = this.statusWithInference(id, updatedMs);
     const trimmed = typeof name === "string" ? name.replace(/[\r\n]+/g, " ").trim() : "";
     const timestamp = new Date().toISOString();
     await appendFile(
@@ -328,7 +373,7 @@ export class ClaudeAdapter implements SessionAdapter {
       "utf8",
     );
     if (hadOwn || snapshot !== "running") {
-      this.statuses.set(id, snapshot);
+      this.statuses.set(id, { status: snapshot, at: Date.now() });
     }
     // 失效清单缓存：改名立即可见（否则 TTL 窗口内列表/详情还是旧名）
     this.invalidateList();
@@ -391,6 +436,11 @@ export class ClaudeAdapter implements SessionAdapter {
 
   disposeAll(): void {
     this.disposed = true;
+    this.unregisterTailStatus();
+    if (this.sweepTimer !== null) {
+      clearInterval(this.sweepTimer);
+      this.sweepTimer = null;
+    }
     for (const run of this.running.values()) {
       this.killChild(run.child);
     }

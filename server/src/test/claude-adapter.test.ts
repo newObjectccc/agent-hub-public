@@ -4,7 +4,7 @@
  */
 import { strict as assert } from "node:assert";
 import { EventEmitter } from "node:events";
-import { mkdtemp, mkdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, mkdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, beforeEach, describe, it } from "node:test";
@@ -497,6 +497,143 @@ describe("claude adapter: 会话清单 TTL 缓存（AC1 基准）", () => {
       assert.equal(hit.name, "缓存可见性");
     } finally {
       adapter.disposeAll();
+    }
+  });
+});
+
+describe("claude adapter: statuses TTL 清扫（外部 `claude --resume` 写盘状态自愈）", () => {
+  it("显式 idle 登记超过 STATE_TTL 后被清扫，外部写 transcript 后状态随 mtime 自愈为 running", async () => {
+    const adapter = makeAdapter(() => undefined);
+    const id = "55555555-6666-7777-8888-999999999999";
+    const projDir = join(projectsDir, "-Users-me-Workspace-demo");
+    const file = join(projDir, `${id}.jsonl`);
+    try {
+      const oldIso = new Date(Date.now() - 70_000).toISOString();
+      await writeFile(
+        file,
+        JSON.stringify({
+          type: "user",
+          message: { role: "user", content: "hi" },
+          uuid: "u-ttl-1",
+          parentUuid: null,
+          sessionId: id,
+          timestamp: oldIso,
+          cwd: CWD,
+        }) + "\n",
+        "utf8",
+      );
+      const old = new Date(Date.now() - 70_000);
+      await utimes(file, old, old);
+      // server 侧改名登记 idle（mtime 陷阱防护）
+      const renamed = await adapter.renameSession(id, "TTL 自愈");
+      assert.equal(renamed.status, "idle");
+      // 外部 `claude --resume` 持续写 transcript（mtime 刷新）：own 登记压制期间仍是 idle（bug 现场）
+      await appendFile(
+        file,
+        JSON.stringify({
+          type: "assistant",
+          message: { id: "msg_ttl", role: "assistant", content: [{ type: "text", text: "外部 CLI 的持续输出" }] },
+          uuid: "a-ttl-1",
+          timestamp: new Date().toISOString(),
+          cwd: CWD,
+          sessionId: id,
+        }) + "\n",
+        "utf8",
+      );
+      assert.equal((await adapter.findSession(id))?.status, "idle", "未过期的 own 登记压制时间推断（bug 现场）");
+      // TTL 清扫后无 own 记录：按文件 mtime 新鲜推断 running——状态自愈
+      adapter.sweep(Date.now() + ClaudeAdapter.STATE_TTL_MS + 1_000);
+      assert.equal((await adapter.findSession(id))?.status, "running", "TTL 过期清扫后状态随外部写盘自愈为 running");
+      // 未过期条目不被清扫（刚登记的 idle 保留）
+      const created = await adapter.createSession(root, "未过期");
+      adapter.sweep(Date.now() + 1_000);
+      assert.equal((await adapter.findSession(created.id))?.status, "idle", "TTL 内的登记不被清扫");
+    } finally {
+      adapter.disposeAll();
+      await rm(file, { force: true });
+    }
+  });
+});
+
+describe("claude adapter: rename 状态快照实时 mtime（listCache 陈旧竞态回归）", () => {
+  it("快照用实时 mtime 现算：陈旧 listCache 不得把真实 running 错误快照成 idle", async () => {
+    const adapter = makeAdapter(() => undefined);
+    const id = "66666666-7777-8888-9999-aaaaaaaaaaaa";
+    const projDir = join(projectsDir, "-Users-me-Workspace-demo");
+    const file = join(projDir, `${id}.jsonl`);
+    try {
+      const oldIso = new Date(Date.now() - 70_000).toISOString();
+      await writeFile(
+        file,
+        JSON.stringify({
+          type: "user",
+          message: { role: "user", content: "hi" },
+          uuid: "u-race-1",
+          parentUuid: null,
+          sessionId: id,
+          timestamp: oldIso,
+          cwd: CWD,
+        }) + "\n",
+        "utf8",
+      );
+      const old = new Date(Date.now() - 70_000);
+      await utimes(file, old, old);
+      const cached = await adapter.findSession(id); // 建立 listCache（此刻文件老）
+      assert.equal(cached?.status, "idle");
+      // 外部 `claude --resume` 写盘（真实 running），listCache 未失效（≤5s 陈旧窗口竞态）
+      await appendFile(
+        file,
+        JSON.stringify({
+          type: "assistant",
+          message: { id: "msg_race", role: "assistant", content: [{ type: "text", text: "外部输出" }] },
+          uuid: "a-race-1",
+          timestamp: new Date().toISOString(),
+          cwd: CWD,
+          sessionId: id,
+        }) + "\n",
+        "utf8",
+      );
+      const renamed = await adapter.renameSession(id, "竞态改名");
+      assert.equal(renamed.status, "running", "快照必须基于写盘前实时 mtime：不得用陈旧缓存压制真实 running");
+    } finally {
+      adapter.disposeAll();
+      await rm(file, { force: true });
+    }
+  });
+});
+
+describe("claude adapter: forkSession 尾部残行丢弃（读到半行不带进新文件）", () => {
+  it("尾部写到一半的残行被丢弃，新文件每行都是完整 JSON", async () => {
+    const adapter = makeAdapter(() => undefined);
+    const id = "77777777-8888-9999-aaaa-bbbbbbbbbbbb";
+    const projDir = join(projectsDir, "-Users-me-Workspace-demo");
+    const file = join(projDir, `${id}.jsonl`);
+    let forkedFile = "";
+    try {
+      const good = JSON.stringify({
+        type: "user",
+        message: { role: "user", content: "完整行" },
+        uuid: "u-half-1",
+        parentUuid: null,
+        sessionId: id,
+        timestamp: new Date().toISOString(),
+        cwd: CWD,
+      });
+      // 尾部残行（外部写到一半）：旧实现「损坏行原样保留」会把半行带进 fork 文件
+      await writeFile(file, `${good}\n{"type":"assistant","message":{"role":"assi`, "utf8");
+      const forked = await adapter.forkSession(id);
+      forkedFile = forked.sessionFile!;
+      const raw = await readFile(forkedFile, "utf8");
+      const rows = raw.trim().split("\n");
+      assert.equal(rows.length, 1, "尾部残行被丢弃，只保留完整行");
+      for (const row of rows) {
+        assert.doesNotThrow(() => JSON.parse(row), `新文件每行都必须是完整 JSON: ${row.slice(0, 40)}`);
+      }
+      assert.equal((JSON.parse(rows[0]) as { sessionId: string }).sessionId, forked.id, "完整行 sessionId 已替换");
+    } finally {
+      adapter.disposeAll();
+      await rm(file, { force: true });
+      if (forkedFile !== "") await rm(forkedFile, { force: true });
     }
   });
 });

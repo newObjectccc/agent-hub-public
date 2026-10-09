@@ -35,7 +35,7 @@ export interface QueuedImage {
 }
 
 export interface QueuedSend {
-  /** 乐观占位 id（local-*），兼作 attach 通道幂等键 clientMessageId */
+  /** 乐观占位 id（local-*），兼作幂等键 clientMessageId（attach 指令队列与 parallel prompt 重发同键） */
   localId: string;
   sessionId: string;
   /** 会话 cwd（附件补上传时直接用，免去 findSession 全量扫描） */
@@ -275,13 +275,21 @@ export interface FlushQueueDeps {
     input: { sessionId?: string; cwd?: string; name: string; mimeType: string; data: string },
     signal?: AbortSignal,
   ) => Promise<{ upload: { path: string } }>;
-  sendPrompt: (id: string, text: string, mode: PromptMode, images?: string[], signal?: AbortSignal) => Promise<PromptResult>;
+  sendPrompt: (
+    id: string,
+    text: string,
+    mode: PromptMode,
+    images?: string[],
+    clientMessageId?: string,
+    signal?: AbortSignal,
+  ) => Promise<PromptResult>;
   sendPromptWithMode: (
     id: string,
     text: string,
     mode: SendMode,
     deps: { sendPrompt: FlushQueueDeps["sendPrompt"]; onNotice?: (message: string) => void },
     images?: string[],
+    clientMessageId?: string,
   ) => Promise<{ result: PromptResult }>;
   sendAttachMessage: (
     id: string,
@@ -395,35 +403,56 @@ export async function flushQueue(
       continue;
     }
 
-    // 2. 发送（非图片附件补引用提示；图片走 images 参数）
+    // 2. 发送（非图片附件补引用提示；图片走 images 参数）；
+    //    clientMessageId = localId：超时自动重试同键，server 去重防同文双发双执行
     const nonImagePaths = images.filter((img) => !img.isImage && img.path !== null).map((img) => img.path as string);
     const text = appendLocalAttachmentHints(item.text, nonImagePaths);
     const imagePaths = images.filter((img) => img.isImage && img.path !== null).map((img) => img.path as string);
-    try {
-      if (item.channel === "attach") {
+    /** 单通道发送一次（attach=终端指令队列；parallel=prompt） */
+    const sendOnce = async (channel: "parallel" | "attach"): Promise<void> => {
+      if (channel === "attach") {
         const accepted = await withTimeout(
           deps.sendAttachMessage(item.sessionId, text, item.attachMode, item.localId, timeoutSignal(timeoutMs)),
           timeoutMs,
         );
         if (accepted && accepted.accepted === false) {
-          throw Object.assign(new Error("终端未接受消息"), { status: 409 });
+          throw Object.assign(new Error("终端未接受消息"), { status: 409, code: "ATTACH_REQUIRED" });
         }
-      } else {
-        const signal = timeoutSignal(timeoutMs);
-        const outcome = await withTimeout(
-          deps.sendPromptWithMode(
-            item.sessionId,
-            text,
-            item.sendMode,
-            { sendPrompt: (id, t, mode, imgs) => deps.sendPrompt(id, t, mode, imgs, signal) },
-            imagePaths.length > 0 ? imagePaths : undefined,
-          ),
-          timeoutMs,
-        );
-        if (!outcome?.result?.accepted) {
-          throw Object.assign(new Error("消息未被接受，请重试"), { status: 409 });
-        }
+        return;
       }
+      const signal = timeoutSignal(timeoutMs);
+      const outcome = await withTimeout(
+        deps.sendPromptWithMode(
+          item.sessionId,
+          text,
+          item.sendMode,
+          {
+            sendPrompt: (id, t, mode, imgs, clientMessageId) =>
+              deps.sendPrompt(id, t, mode, imgs, clientMessageId ?? item.localId, signal),
+          },
+          imagePaths.length > 0 ? imagePaths : undefined,
+          item.localId,
+        ),
+        timeoutMs,
+      );
+      if (!outcome?.result?.accepted) {
+        throw Object.assign(new Error("消息未被接受，请重试"), { status: 409 });
+      }
+    };
+    /** 发送（含 409 ATTACH_ACTIVE 死锁自愈：终端接管中 parallel 通道停用 →
+     *  通道校正为 attach 后重发一次（同 localId 幂等），入队条目不再永卡死信） */
+    const sendWithHeal = async (): Promise<void> => {
+      try {
+        await sendOnce(item.channel);
+      } catch (e) {
+        const code = (e as { code?: unknown } | null)?.code;
+        if (code !== "ATTACH_ACTIVE" || item.channel !== "parallel") throw e;
+        store.patch(item.localId, { channel: "attach" });
+        await sendOnce("attach");
+      }
+    };
+    try {
+      await sendWithHeal();
       store.remove(item.localId);
       result.sent.push(item.localId);
     } catch (e) {

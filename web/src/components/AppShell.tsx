@@ -89,9 +89,10 @@ export function AppShell({ route, children }: AppShellProps) {
     void refreshNotifications();
   }, [refreshNotifications]);
 
-  // WS 新通知实时并入（与面板页共用一份通知数据源口径）
+  // WS 新通知实时并入（与面板页共用一份通知数据源口径）；断线重连补拉（断线期间广播全丢）
   useGlobalEvents({
     onNotification: () => void refreshNotifications(),
+    onReconnect: () => void refreshNotifications(),
   });
 
   /** 点击通知条目：标记该条已读（乐观递减角标） */
@@ -105,14 +106,14 @@ export function AppShell({ route, children }: AppShellProps) {
   }, [refreshNotifications]);
 
   const markAllRead = useCallback(async () => {
-    // 乐观清零 + 服务端持久化（失败时下次刷新对齐）
+    // 乐观清零 + 服务端持久化（失败时回滚对齐服务端状态，参照单条 markRead 的回滚模式）
     setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
     try {
       await api.markNotificationsRead();
     } catch {
-      // 持久化失败不阻塞 UI
+      void refreshNotifications();
     }
-  }, []);
+  }, [refreshNotifications]);
 
   const go = (path: string): void => {
     setDrawerOpen(false);

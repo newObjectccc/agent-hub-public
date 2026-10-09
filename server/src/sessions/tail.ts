@@ -12,8 +12,33 @@
  */
 import { open, stat } from "node:fs/promises";
 import { buildMessages, loadSessionMessages, selectActiveBranch, type RawEntry } from "./scan.js";
-import type { MessageDto } from "../types.js";
+import type { MessageDto, SessionStatus } from "../types.js";
 import type { EmitFn } from "./hub.js";
+
+/**
+ * tail 推断出的运行态回写 sink（双状态源分叉修复）：tail 的 status 事件只走 WS 广播，
+ * 不回写 hub/adapter 的内存状态源会让 WS 显示 running 而 API 返回 idle（或反之）。
+ * hub.ts / claude.ts 构造时注册，把 tail 推断出的 status 回写进各自的 statuses。
+ */
+export type TailStatusSink = (sessionId: string, status: SessionStatus) => void;
+
+const statusSinks = new Set<TailStatusSink>();
+
+/** 注册 tail 状态回写 sink（返回注销函数） */
+export function registerTailStatusSink(sink: TailStatusSink): () => void {
+  statusSinks.add(sink);
+  return () => statusSinks.delete(sink);
+}
+
+function notifyStatusSinks(sessionId: string, status: SessionStatus): void {
+  for (const sink of statusSinks) {
+    try {
+      sink(sessionId, status);
+    } catch {
+      // 单个 sink 失败不影响广播与其它 sink
+    }
+  }
+}
 
 /** 增量解析器：只吃新增完整行，产出当前应有的消息序列（调用方 knownIds 去重后推送） */
 export interface IncrementalParser {
@@ -79,16 +104,24 @@ function isCompleteJsonLine(text: string): boolean {
   }
 }
 
+/** rewrite 检测的尾部校验指纹字节数（原地重写 vs 追加的重叠区比对） */
+const TAIL_FINGERPRINT_BYTES = 64;
+
 /**
- * 读取 [from, EOF) 的新增字节 → 完整行列表 + 新偏移。
+ * 读取 [from, EOF) 的新增字节 → 完整行列表 + 新偏移 + 已消费区的尾部指纹。
  * 偏移停在完整行边界（最后一个换行符之后）；尾部残留若是完整 JSON 行（缺换行符的
  * appendFile 场景）也消费，否则留到下轮（半行不解析）。按字节切分，UTF-8 多字节字符安全。
+ * 尾部指纹（末 64 字节）供 detectChange 重叠区校验：原地重写（open "w" 截断重写）后
+ * 同偏移处字节变了 → rewrite，防止把两代数据错位拼接。
  */
-async function readNewLines(file: string, from: number): Promise<{ lines: string[]; nextOffset: number }> {
+async function readNewLines(
+  file: string,
+  from: number,
+): Promise<{ lines: string[]; nextOffset: number; tailFingerprint: Buffer }> {
   const handle = await open(file, "r");
   try {
     const size = (await handle.stat()).size;
-    if (size <= from) return { lines: [], nextOffset: from };
+    if (size <= from) return { lines: [], nextOffset: from, tailFingerprint: Buffer.alloc(0) };
     const buf = Buffer.allocUnsafe(size - from);
     let filled = 0;
     while (filled < buf.length) {
@@ -103,7 +136,12 @@ async function readNewLines(file: string, from: number): Promise<{ lines: string
     const chunk = data.subarray(0, consumed).toString("utf8");
     const lines = chunk.split("\n");
     if (chunk.endsWith("\n")) lines.pop(); // 行分隔符残留的空串
-    return { lines, nextOffset: from + consumed };
+    const fpStart = Math.max(0, consumed - TAIL_FINGERPRINT_BYTES);
+    return {
+      lines,
+      nextOffset: from + consumed,
+      tailFingerprint: Buffer.from(data.subarray(fpStart, consumed)),
+    };
   } finally {
     await handle.close();
   }
@@ -119,12 +157,22 @@ const IDLE_AFTER_MS = 60_000;
 const IDLE_AFTER_REPLY_MS = 3_000;
 /** 轮询间隔 */
 const POLL_MS = 2_000;
+/** 全量回退解析熔断：文件超过该大小时降频全量解析（无增量能力 loader 的 CPU/内存防护） */
+const FULL_REPARSE_MAX_BYTES = 10 * 1024 * 1024;
+/** 熔断后的全量解析最小间隔（大文件/高频变更时的降频目标） */
+const FULL_REPARSE_MIN_INTERVAL_MS = 10_000;
+/** 连续每轮都检测到变更达到此次数 → 视为高频写入（同样触发降频熔断） */
+const HIGH_CHURN_TICKS = 3;
 
-/** 测试可注入：轮询/静默窗口（生产用默认值） */
+/** 测试可注入：轮询/静默窗口与全量回退熔断参数（生产用默认值） */
 export interface TailOptions {
   pollMs?: number;
   idleAfterMs?: number;
   idleAfterReplyMs?: number;
+  /** 全量回退熔断的文件大小阈值（缺省 10MB） */
+  fullReparseMaxBytes?: number;
+  /** 熔断后全量解析的最小间隔（缺省 10s） */
+  fullReparseMinIntervalMs?: number;
 }
 
 interface TailState {
@@ -189,9 +237,18 @@ class SessionTail {
   private closed = false;
   /** 最近一次「assistant 回复落盘」时间；null=当前无回复静默计时（走长窗口） */
   private replyQuietMs: number | null = null;
-  /** 文件指纹（size+mtime）：未变则跳过解析（订阅静止会话零 CPU） */
+  /** 文件指纹（size+mtime+ino）：未变则跳过解析（订阅静止会话零 CPU） */
   private lastSize = -1;
   private lastMtimeMs = -1;
+  private lastIno = -1;
+  /** 已消费区尾部指纹（末 64 字节）：重叠区校验区分 append 与原地重写 */
+  private tailFingerprint: Buffer | null = null;
+  /** 最近一次全量回退解析时刻（熔断降频用） */
+  private fullParseAt = 0;
+  /** 熔断跳过的解析待重试（变更被跳过后不得丢：下次窗口到达时补解析补推） */
+  private pendingReparse = false;
+  /** 连续检测到变更的轮数（达到阈值视为高频写入，触发降频熔断） */
+  private churnStreak = 0;
   /** 重入保护：解析慢于轮询间隔时不让 tick 任务堆积（否则 CPU 高时正反馈恶化） */
   private ticking = false;
   /** 增量解析状态（loader 无增量能力时为 null → 全量解析回退） */
@@ -201,6 +258,8 @@ class SessionTail {
   private readonly pollMs: number;
   private readonly idleAfterMs: number;
   private readonly idleAfterReplyMs: number;
+  private readonly fullReparseMaxBytes: number;
+  private readonly fullReparseMinIntervalMs: number;
 
   constructor(
     private readonly sessionId: string,
@@ -212,25 +271,35 @@ class SessionTail {
     this.pollMs = options.pollMs ?? POLL_MS;
     this.idleAfterMs = options.idleAfterMs ?? IDLE_AFTER_MS;
     this.idleAfterReplyMs = options.idleAfterReplyMs ?? IDLE_AFTER_REPLY_MS;
+    this.fullReparseMaxBytes = options.fullReparseMaxBytes ?? FULL_REPARSE_MAX_BYTES;
+    this.fullReparseMinIntervalMs = options.fullReparseMinIntervalMs ?? FULL_REPARSE_MIN_INTERVAL_MS;
   }
 
-  /** 初始快照：把已有消息全部记入 known（不推送——客户端连接时已全量加载） */
+  /**
+   * 初始快照：把已有消息记入 known（客户端连接时已全量加载，不重复推送）。
+   * ⚠️ 吞消息窗口修复：快照期间外部写入的新消息（晚于连接时刻）若只记 known 不推，
+   * 本连接 UI 会永久缺消息（客户端全量加载发生在 tail 启动之前）。这类消息照常推送。
+   */
   async start(): Promise<void> {
+    const startedMs = Date.now();
     try {
       // 指纹先行：快照期间及其后的任何追加都会被下一轮变更检测捕获（不会被吞）
       const st = await stat(this.file);
       this.lastSize = st.size;
       this.lastMtimeMs = st.mtimeMs;
+      this.lastIno = st.ino;
       const createIncremental = this.loadMessages.createIncremental;
+      let snapshot: MessageDto[];
       if (createIncremental) {
         // 增量路径：从偏移 0 喂入全部完整行建立状态（首帧即增量，无全量 parse）
         this.parser = createIncremental();
-        for (const m of await this.ingestFrom(0)) this.knownIds.add(m.id);
+        snapshot = await this.ingestFrom(0);
       } else {
         // 无增量能力（注入 loader）：安全回退全量解析
-        const messages = await this.loadMessages(this.file);
-        for (const m of messages) this.knownIds.add(m.id);
+        this.fullParseAt = Date.now();
+        snapshot = await this.loadMessages(this.file);
       }
+      this.applyStartSnapshot(snapshot, startedMs);
       this.lastChangeMs = Date.now();
     } catch {
       // 文件暂不可读：下一轮重试
@@ -238,6 +307,26 @@ class SessionTail {
     this.timer = setInterval(() => void this.tick(), this.pollMs);
     // 不阻止进程退出（closeAll/stop 会主动清理）
     this.timer.unref?.();
+  }
+
+  /** 初始快照 diff：晚于连接时刻的消息照常推送，其余只记 known（客户端已有） */
+  private applyStartSnapshot(snapshot: readonly MessageDto[], startedMs: number): void {
+    let changed = false;
+    let lastNew: { role: string; text: string } | null = null;
+    for (const m of snapshot) {
+      // 严格晚于连接时刻才算快照窗口内的新消息（同毫秒落盘的历史消息不算，防重推）
+      if (m.timestamp > startedMs) {
+        changed = true;
+        lastNew = { role: m.role, text: m.text };
+        this.emit(this.sessionId, { type: "message_end", message: m });
+      }
+      this.knownIds.add(m.id);
+    }
+    if (changed) {
+      this.pushRunning();
+      this.replyQuietMs =
+        lastNew !== null && lastNew.role === "assistant" && lastNew.text.trim() !== "" ? Date.now() : null;
+    }
   }
 
   stop(): void {
@@ -248,40 +337,68 @@ class SessionTail {
 
   /** 从字节偏移喂入完整行 → 当前消息序列（无新增行则不重算，knownIds 去重在 tick 兜底） */
   private async ingestFrom(from: number): Promise<MessageDto[]> {
-    const { lines, nextOffset } = await readNewLines(this.file, from);
+    const { lines, nextOffset, tailFingerprint } = await readNewLines(this.file, from);
     this.parsedOffset = nextOffset;
     if (lines.length === 0) return [];
+    this.tailFingerprint = tailFingerprint;
     for (const line of lines) this.parser?.pushLine(line);
     return this.parser?.messages() ?? [];
   }
 
   /**
-   * 文件变更检测（size+mtime 双指纹）：
+   * 文件变更检测（size+mtime+ino 指纹 + 尾部重叠区校验）：
    * - none：未变，跳过解析
    * - append：正常追加（增量解析新增行）
-   * - rewrite：截断/尺寸未变的原地重写疑点 → 重建增量状态全量对账（knownIds 兜底不重）
+   * - rewrite：原地截断重写 / 文件替换 / 尺寸未变的原地重写 → 重建增量状态全量对账
+   *   （SDK `_rewriteFile` 是 open "w" 截断重写，新内容可能比旧内容长——只看 size 会误判
+   *   append 而把两代数据错位拼接。用已消费区尾部指纹做重叠区校验：同偏移字节变了即重写。）
    * stat 失败按 append 处理（解析兜底）。
    */
   private async detectChange(): Promise<"none" | "append" | "rewrite"> {
     let size: number;
     let mtimeMs: number;
+    let ino: number;
     try {
       const st = await stat(this.file);
       size = st.size;
       mtimeMs = st.mtimeMs;
+      ino = st.ino;
     } catch {
       this.lastSize = -1;
       this.lastMtimeMs = -1;
+      this.lastIno = -1;
       return "append";
     }
     const prevSize = this.lastSize;
     const prevMtimeMs = this.lastMtimeMs;
     this.lastSize = size;
     this.lastMtimeMs = mtimeMs;
+    if (this.lastIno !== -1 && ino !== this.lastIno) {
+      this.lastIno = ino;
+      return "rewrite"; // 文件被替换/轮转（rename 新文件顶上）
+    }
+    this.lastIno = ino;
     if (size === prevSize && mtimeMs === prevMtimeMs) return "none";
     if (this.parser === null) return "append";
     if (size < this.parsedOffset) return "rewrite"; // 截断/轮转
     if (size === prevSize && size === this.parsedOffset && mtimeMs !== prevMtimeMs) return "rewrite"; // 尺寸未变但 mtime 变：原地重写疑点
+    if (size > this.parsedOffset && this.tailFingerprint !== null && this.tailFingerprint.length > 0) {
+      // 疑似追加：校验 [parsedOffset-指纹长, parsedOffset) 与上次消费尾部一致（重叠区不变才是真 append）
+      const start = this.parsedOffset - this.tailFingerprint.length;
+      const handle = await open(this.file, "r");
+      try {
+        const buf = Buffer.allocUnsafe(this.tailFingerprint.length);
+        let filled = 0;
+        while (filled < buf.length) {
+          const { bytesRead } = await handle.read(buf, filled, buf.length - filled, start + filled);
+          if (bytesRead <= 0) break;
+          filled += bytesRead;
+        }
+        if (filled !== buf.length || !buf.equals(this.tailFingerprint)) return "rewrite";
+      } finally {
+        await handle.close();
+      }
+    }
     return "append";
   }
 
@@ -290,20 +407,37 @@ class SessionTail {
     this.ticking = true;
     try {
       const change = await this.detectChange();
-      if (change === "none") {
+      if (change === "none" && !this.pendingReparse) {
+        this.churnStreak = 0;
         // 文件未变：跳过解析，但静默推断照常推进（依赖时间而非文件内容）
         this.settleIfQuiet(Date.now());
         return;
       }
+      if (change !== "none") this.churnStreak += 1;
       let messages: MessageDto[];
       if (this.parser !== null) {
         if (change === "rewrite") {
           // 全量对账：重建增量状态从 0 重喂（历史消息走 knownIds 去重，不重复推送）
           this.parser = this.loadMessages.createIncremental?.() ?? null;
           this.parsedOffset = 0;
+          this.tailFingerprint = null;
         }
         messages = await this.ingestFrom(this.parsedOffset);
       } else {
+        // 全量回退熔断（claude/codex transcript 无增量解析）：大文件或持续高频写入时
+        // 降频全量重解析（每轮全量 parse 大会话曾是 CPU/内存尖峰源）。跳过的轮次不记
+        // knownIds，下次解析窗口到达时照常补推（不丢，只延后）。
+        const now0 = Date.now();
+        const heavy = this.lastSize > this.fullReparseMaxBytes || this.churnStreak >= HIGH_CHURN_TICKS;
+        if (heavy && now0 - this.fullParseAt < this.fullReparseMinIntervalMs) {
+          this.pendingReparse = true; // 跳过的解析不得丢：窗口到达后补推
+          this.lastChangeMs = now0;
+          this.replyQuietMs = null; // 持续写入不是回复完成
+          this.pushRunning();
+          return;
+        }
+        this.fullParseAt = now0;
+        this.pendingReparse = false;
         messages = await this.loadMessages(this.file);
       }
       let changed = false;
@@ -348,12 +482,14 @@ class SessionTail {
     this.replyQuietMs = null;
     this.emit(this.sessionId, { type: "agent_settled" });
     this.emit(this.sessionId, { type: "status", status: "idle" });
+    notifyStatusSinks(this.sessionId, "idle");
   }
 
   private pushRunning(): void {
     if (this.runningPushed) return;
     this.runningPushed = true;
     this.emit(this.sessionId, { type: "status", status: "running" });
+    notifyStatusSinks(this.sessionId, "running");
   }
 }
 

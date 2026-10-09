@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### 开源发布前审计修复批（五维度审计：安全 / 数据一致性 / 错误处理 / 资源生命周期 / 契约，P0 全清 + P1 修复）
+- [安全-P0] CORS 不再反射任意 Origin（同源 + config.allowOrigins 白名单，非白名单 403）：堵死「任意网页跨域驱动面板（远程派发 agent 指令）」
+- [安全-P0] WS upgrade 鉴权（Authorization / 子协议 / ?token=，与 HTTP 同口径）；WS 连接竞态泄漏修复（连接建立期断连不再泄漏 socket/interval）
+- [安全-P1] 锁屏门禁升级为全局 onRequest（HTTP 423/401）+ WS prompt 通道同口径拦截（子协议携带 lock-token，不进 URL/日志）；terminalUnlocked 装配补注入
+- [安全-P1] isSafeBindHost 归一化判定（`::0`/`::ffff:0.0.0.0` 等价形全拒）；`--lan` 显式 opt-in（config.allowLan:true，CLI 自动写入）
+- [安全-P1] PIN 失败指数退避（5 次起 30s 封顶 15min）+ 令牌滑动续期 + app-lock.json 0600；uploads cwd 限 workspaceRoot/会话 cwd；prompt 幂等键（clientMessageId TTL 10min）；/api/live 收紧；500 固定脱敏 internal error（git 错误不吐 stderr）
+- [进程] unhandledRejection/uncaughtException 兑底（日志 + 优雅 close，5s 强退）；shutdown `.catch`→exit(1)
+- [数据-P0] claude statuses 添 STATE_TTL 30min sweep（外部 resume 不再被永久压制 idle）
+- [数据-P1] rename 状态快照改 stat 实时 mtime（竞态不误登记）；ensureLive per-id 互斥（并发不双开）；tail rewrite 检测（ino+尾部指纹）；tail 吞消息窗口（连接后新消息照常推）；status 事件回写（WS/API 不再分叉）；dashboard 文本 Map 200 LRU；大 JSONL 50MB 尾窗降级；claude/codex tail 熔断降频（pendingReparse 不丢）
+- [web-P0] WS 权威回填保留 images（发图不再当场消失，thinking 同口径）
+- [web-P1] 流式对账不丢字（取更长文本+尾部保留）；/ws/events 重连补拉；双模式跨设备死锁自愈（ATTACH_ACTIVE→切接管 / ATTACH_REQUIRED→切平行）；sendPrompt 幂等键同键重发
+- [web-P2] refresh 序号防护（旧响应不覆盖新数据）；markAllRead 失败回滚；未知事件 dev warn
+- 测试：server 525→571、web 731→758、cli 79 全绿
+
 ### Codex 接入
 - feat(server)：Codex 会话源接入（第三个 source，与 pi/claude 平级）——rollout JSONL 解析（codex-rollout.ts：消息提取 / 工具调用折叠 / 注入包装剥离，损坏行优雅跳过）+ `codex exec resume <id> --json` 本地 spawn 流式驱动（codex-stream.ts：事件流 → 契约 WS 事件）+ abort（SIGTERM→SIGKILL 幂等）/ createSession（最小 rollout）/ forkSession（id 同步替换，原文件只读）
 - server：会话列表防全量读盘——TTL 清单缓存 + 文件级 mtime+size 快照缓存（数百 rollout 不重复 parse）+ 8 路并发解析；同一会话跨多个 rollout 分段文件（续写/压缩轮转）按 session_id 归并（计数求和/最新输出/最早命名，详情归并全量历史，tail 盯最新段）；会话名优先 `~/.codex/session_index.jsonl` 的 thread_name，缺失回退首条 user 文本

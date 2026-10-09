@@ -208,3 +208,48 @@ describe("SessionHub：feedSessions / statuses 过期清扫（AC3）", () => {
     hub.disposeAll();
   });
 });
+
+describe("SessionHub：ensureLive 并发互斥（per-id inflight 单实例）", () => {
+  it("并发 ensureLive 只创建一个 AgentSession（不双开、事件订阅不重复）", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agent-hub-inflight-"));
+    const enc = "--tmp-work-demo--";
+    await mkdir(join(dir, enc), { recursive: true });
+    await writeFile(
+      join(dir, enc, "c1.jsonl"),
+      [
+        JSON.stringify({ type: "session", version: 3, id: "c1", timestamp: "2026-02-18T09:00:00.000Z", cwd: "/tmp/work-demo" }),
+        JSON.stringify({
+          type: "message",
+          id: "u1",
+          parentId: null,
+          timestamp: "2026-02-18T10:00:00.000Z",
+          message: { role: "user", content: "hi", timestamp: Date.parse("2026-02-18T10:00:00.000Z") },
+        }),
+      ].join("\n"),
+      "utf8",
+    );
+    const created: FakeRec[] = [];
+    const hub = new SessionHub(dir, () => undefined, { createAgentSession: fakeCreate(created) });
+    try {
+      // 并发 prompt/ensureLive 会同时穿过 await findSession 的间隙：旧实现双开两个实例
+      // （事件双推送 + 潜在文件损坏）
+      const [a, b, c] = await Promise.all([hub.ensureLive("c1"), hub.ensureLive("c1"), hub.ensureLive("c1")]);
+      assert.equal(created.length, 1, "并发 ensureLive 只创建一个 AgentSession");
+      assert.equal(a, b, "并发调用拿到同一实例");
+      assert.equal(b, c, "并发调用拿到同一实例");
+      assert.ok(hub.isSdkLive("c1"));
+      // 失败路径的 inflight 不残留：不存在的会话并发调用都失败
+      await assert.rejects(
+        () => Promise.all([hub.ensureLive("nope-x"), hub.ensureLive("nope-x")]),
+        (err: unknown) => (err as { code?: string }).code === "SESSION_NOT_FOUND",
+      );
+      // 成功后走已存在实例（不重复创建）
+      const d = await hub.ensureLive("c1");
+      assert.equal(d, a);
+      assert.equal(created.length, 1, "后续调用复用已有实例");
+    } finally {
+      hub.disposeAll();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});

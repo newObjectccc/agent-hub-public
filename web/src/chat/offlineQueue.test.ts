@@ -273,6 +273,54 @@ describe("offlineQueue: flush 按序重发", () => {
     expect(sendAttachMessage.mock.calls[0][3]).toBe("l1");
     expect(store.list()).toHaveLength(0);
   });
+
+  it("幂等键：超时自动重发同 clientMessageId（= localId），server 去重防同文双发", async () => {
+    const cids: Array<string | undefined> = [];
+    let firstAttempt = true;
+    const sendPromptWithMode: FlushQueueDeps["sendPromptWithMode"] = vi.fn(
+      async (_id, _text, _mode, _d, _images, clientMessageId) => {
+        cids.push(clientMessageId);
+        if (firstAttempt) {
+          firstAttempt = false;
+          throw Object.assign(new Error("请求超时，请检查网络后重试"), { name: "TimeoutError" });
+        }
+        return { result: { accepted: true, mode: "prompt" as const } };
+      },
+    );
+    const { deps } = makeDeps({ sendPromptWithMode });
+    const store = new OfflineQueueStore(fakeStorage());
+    store.add(item({ localId: "local-idem-1" }));
+    const first = await flushQueue(store, deps);
+    expect(first.sent).toEqual([]);
+    expect(store.list(), "网络失败保留待发").toHaveLength(1);
+    // 网络恢复重发：同一幂等键（同键 server 去重，不会双发双执行）
+    const second = await flushQueue(store, deps);
+    expect(second.sent).toEqual(["local-idem-1"]);
+    expect(cids).toEqual(["local-idem-1", "local-idem-1"]);
+  });
+
+  it("409 ATTACH_ACTIVE 死锁自愈：通道校正 attach 后同键重发，不再永卡死信", async () => {
+    const sendPromptWithMode: FlushQueueDeps["sendPromptWithMode"] = vi.fn(async () => {
+      throw new ApiError(409, "ATTACH_ACTIVE", "终端接管中");
+    });
+    const sendAttachMessage = vi.fn(async (...args: unknown[]) => {
+      void args;
+      return { accepted: true };
+    });
+    const { deps } = makeDeps({ sendPromptWithMode, sendAttachMessage });
+    const store = new OfflineQueueStore(fakeStorage());
+    store.add(item({ localId: "local-heal-1", channel: "parallel" }));
+    const result = await flushQueue(store, deps);
+    expect(result.sent).toEqual(["local-heal-1"]);
+    expect(result.failed).toEqual([]);
+    expect(store.list(), "自愈成功出队，不再永卡手动重试").toHaveLength(0);
+    // attach 通道携带同一幂等键
+    expect(sendAttachMessage).toHaveBeenCalledTimes(1);
+    expect(sendAttachMessage.mock.calls[0][3]).toBe("local-heal-1");
+    // 通道校正已持久化（同条消息后续不再走 parallel 撞墙）
+    // （条目已出队，验证点在于未再次调用 sendPromptWithMode）
+    expect(sendPromptWithMode).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("getOfflineQueue 单例", () => {

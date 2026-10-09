@@ -19,7 +19,7 @@ import { ErrorCodes, HubError } from "../errors.js";
 import type { HubActivity, MessageDto, MessageRole, PromptImageAttachment, SearchResultDto, ServerEvent, SessionListItem, SessionStatus, SessionTreeDto, ToolCallStatus } from "../types.js";
 import { decidePromptAction, parsePromptMode, type PromptMode } from "./prompt-policy.js";
 import { SearchService, SEARCH_DEFAULT_LIMIT } from "./search.js";
-import { inferExternalStatus } from "./tail.js";
+import { inferExternalStatus, registerTailStatusSink } from "./tail.js";
 import { loadSessionTree } from "./tree.js";
 import {
   assistantToolCalls,
@@ -94,10 +94,14 @@ export class SessionHub {
   private listCacheInflight: Promise<SessionListItem[]> | null = null;
   private readonly searchService: SearchService;
   private readonly createSessionFn: typeof createAgentSession;
+  /** ensureLive 并发去重：per-id inflight（参照 listCacheInflight，防并发 prompt 双开 AgentSession） */
+  private readonly ensureLiveInflight = new Map<string, Promise<AgentSession>>();
   /** 扩展 live-feed 推送过的会话：id → 最后事件时间（10 分钟内视为 live，防文件 tail 双推送） */
   private readonly feedSessions = new Map<string, number>();
   private disposed = false;
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
+  /** tail 状态回写注销（disposeAll 时解除） */
+  private readonly unregisterTailStatus: () => void;
   /** 会话转 live 时回调（用于停掉文件 tail，保持单一推送源，防重复气泡） */
   onLive?: (id: string) => void;
   /** 会话运行活动回调（steering=插话/排队、done=手动中止，供通知聚合） */
@@ -119,6 +123,11 @@ export class SessionHub {
     this.emit = emit;
     this.searchService = new SearchService(sessionDir);
     this.createSessionFn = options.createAgentSession ?? createAgentSession;
+    // tail 的 status 事件只走 WS 广播，不回写 statuses 会让 API 返回陈旧状态（双状态源分叉）：
+    // 这里回写内存状态源，getStatus/findSession 与 WS 显示同源
+    this.unregisterTailStatus = registerTailStatusSink((id, status) => {
+      this.statuses.set(id, { status, at: Date.now() });
+    });
   }
 
   getStatus(id: string): SessionStatus {
@@ -431,9 +440,17 @@ export class SessionHub {
     if (!found) {
       throw new HubError(ErrorCodes.SESSION_NOT_FOUND, `会话不存在: ${id}`, 404);
     }
-    // 快照必须在写盘前取：写盘后 mtime=now 必然推断成 running，快照就失去意义
+    // 快照必须在写盘前取：写盘后 mtime=now 必然推断成 running，快照就失去意义；
+    // 且必须用实时 mtime 现算——listCache ≤5s 陈旧会漏掉刚发生的外部写入，
+    // 把真实 running 错误快照成 idle 后会压制后续状态自愈（竞态）
+    let updatedMs = Date.parse(found.updatedAt);
+    try {
+      updatedMs = (await stat(found.sessionFile)).mtimeMs;
+    } catch {
+      // stat 失败回退缓存时间戳（保守推断）
+    }
     const hadOwn = this.statuses.has(id);
-    const snapshot = this.statusWithInference(id, Date.parse(found.updatedAt));
+    const snapshot = this.statusWithInference(id, updatedMs);
     const manager = SessionManager.open(found.sessionFile);
     manager.appendSessionInfo(typeof name === "string" ? name : "");
     if (hadOwn || snapshot !== "running") {
@@ -448,13 +465,24 @@ export class SessionHub {
     return updated;
   }
 
-  /** 取得（或创建）该会话的 AgentSession 实例 */
+  /** 取得（或创建）该会话的 AgentSession 实例（per-id inflight 互斥：并发调用只创建一个） */
   async ensureLive(id: string): Promise<AgentSession> {
     const existing = this.live.get(id);
     if (existing) {
       this.touch(existing);
       return existing.session;
     }
+    const inflight = this.ensureLiveInflight.get(id);
+    if (inflight !== undefined) return inflight;
+    const creating = this.createLive(id).finally(() => {
+      this.ensureLiveInflight.delete(id);
+    });
+    this.ensureLiveInflight.set(id, creating);
+    return creating;
+  }
+
+  /** 实际创建（仅由 ensureLive 的 inflight 单实例路径调用） */
+  private async createLive(id: string): Promise<AgentSession> {
     if (this.disposed) {
       throw new HubError(ErrorCodes.INTERNAL, "server 正在关闭", 503);
     }
@@ -582,6 +610,7 @@ export class SessionHub {
   /** 进程退出：dispose 所有 AgentSession 实例 */
   disposeAll(): void {
     this.disposed = true;
+    this.unregisterTailStatus();
     if (this.sweepTimer !== null) {
       clearInterval(this.sweepTimer);
       this.sweepTimer = null;

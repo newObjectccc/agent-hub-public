@@ -34,19 +34,26 @@ export function HomePage() {
   /** 看板拉取失败的错误条（UX 审查 AC6：不再静默失败，参照 SessionsPage error-banner） */
   const [loadError, setLoadError] = useState<string | null>(null);
   const progressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** refresh 并发序号：WS 事件风暴下旧响应（序号过期）不覆盖新数据 */
+  const refreshSeq = useRef(0);
 
   const refresh = useCallback(async () => {
+    const seq = ++refreshSeq.current;
     setRefreshing(true);
     // 慢刷新才露出进度条：连续快速刷新视觉上零变化（不闪不跳）
     if (progressTimer.current) clearTimeout(progressTimer.current);
     progressTimer.current = setTimeout(() => setProgressVisible(true), PROGRESS_REVEAL_MS);
     const statsRes = await api.getDashboardStats().catch((e: unknown) => {
       // 友好文案（原始 JS 异常不裸露）：业务错误（ApiError）用服务端中文提示
-      setLoadError(e instanceof Error && e.name === "ApiError" && e.message.trim() !== "" ? e.message : "工作台数据加载失败，请重试");
+      if (seq === refreshSeq.current) {
+        setLoadError(e instanceof Error && e.name === "ApiError" && e.message.trim() !== "" ? e.message : "工作台数据加载失败，请重试");
+      }
       return null;
     });
     // Token 用量独立拉取：失败安静降级（占位），不拖垮概览其它格
     const usageRes = await api.getUsage().catch(() => null);
+    // 过期响应丢弃：不覆盖新数据、不误关新一轮刷新的状态
+    if (seq !== refreshSeq.current) return;
     if (progressTimer.current) {
       clearTimeout(progressTimer.current);
       progressTimer.current = null;
@@ -68,11 +75,13 @@ export function HomePage() {
     };
   }, [refresh]);
 
-  // 全局会话变更流：status/新通知 → 运行看板与今日概览实时联动（fs.watch 事件驱动）
+  // 全局会话变更流：status/新通知 → 运行看板与今日概览实时联动（fs.watch 事件驱动）；
+  // 断线重连补拉（断线期间广播全丢，参照 useSessionSocket 的 onReconnect 全量对账）
   useGlobalEvents({
     onSessionsChanged: () => void refresh(),
     onSessionStatus: () => void refresh(),
     onNotification: () => void refresh(),
+    onReconnect: () => void refresh(),
   });
 
   const working = stats?.workingSessions ?? [];

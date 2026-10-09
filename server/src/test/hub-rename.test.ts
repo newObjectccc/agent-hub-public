@@ -7,7 +7,7 @@
  *   「工作中/思考中」）——改名瞬间的推断状态快照显式登记进 statuses，不改变真实状态。
  */
 import { strict as assert } from "node:assert";
-import { utimes, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { appendFile, utimes, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
@@ -114,5 +114,33 @@ describe("会话改名（pi）：session_info entry + mtime 陷阱回归", () =>
     const renamed = await hub.renameSession(id, "活跃会话改名");
     assert.equal(renamed.name, "活跃会话改名");
     assert.equal(renamed.status, "running", "改名前文件活动新鲜（running 推断），改名不得翻成 idle");
+  });
+
+  it("rename 状态快照用实时 mtime 现算：listCache 陈旧不得把真实 running 错误快照成 idle（竞态回归）", async () => {
+    const dir = join(sessionDir, encodeCwdDirName(workDir));
+    await mkdir(dir, { recursive: true });
+    const id = "e".repeat(32);
+    const oldIso = new Date(Date.now() - 70_000).toISOString();
+    const file = join(dir, sessionFileName(oldIso, id));
+    await writeFile(
+      file,
+      `${JSON.stringify({ type: "session", version: 3, id, timestamp: oldIso, cwd: workDir })}\n`
+        + `${JSON.stringify({ type: "message", id: "f".repeat(32), parentId: null, timestamp: oldIso, message: { role: "user", content: "hi" } })}\n`,
+      "utf8",
+    );
+    const old = new Date(Date.now() - 70_000);
+    await utimes(file, old, old);
+    hub.invalidateList();
+    const cached = await hub.findSession(id); // 建立 listCache（此刻文件老，缓存里 updatedAt 旧）
+    assert.ok(cached);
+    assert.equal(cached.status, "idle");
+    // 外部会话开始持续写入（真实 running），但 listCache 未失效（≤5s 陈旧窗口竞态）
+    await appendFile(
+      file,
+      `\n${JSON.stringify({ type: "message", id: "0".repeat(32), parentId: null, timestamp: new Date().toISOString(), message: { role: "assistant", content: "外部新输出" } })}\n`,
+      "utf8",
+    );
+    const renamed = await hub.renameSession(id, "竞态改名");
+    assert.equal(renamed.status, "running", "快照必须基于写盘前实时 mtime：不得用陈旧缓存压制真实 running");
   });
 });

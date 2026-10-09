@@ -2,8 +2,9 @@
  * 应用锁（F1）：手机 PWA「打开面板先解锁」。
  *
  * 设计（与 config auth.token 的关系，见 docs/API_CONTRACT.md §13）：
- * - **应用锁**管 UI 解锁：PIN/口令只存 **SHA-256 加盐哈希**（data/app-lock.json，绝不存明文），
- *   解锁成功 server 发短期令牌（7 天），前端存 localStorage，过期/失效重新解锁。
+ * - **应用锁**管 UI 解锁：PIN/口令只存 **SHA-256 加盐哈希**（data/app-lock.json，0600，绝不存明文），
+ *   解锁成功 server 发短期令牌（7 天滑动过期：活跃自动续期），前端存 localStorage，过期/失效重新解锁；
+ *   PIN/口令验证失败限速（连错 5 次起指数退避临时锁定），防暴力破解。
  * - **auth.token** 管 API 鉴权（可选，live-feed / 指令通道共享密钥）。两者完全独立：
  *   应用锁令牌不进日志/URL（只走 `X-App-Lock-Token` 请求头），也不替代 auth.token。
  * - 锁屏不拉任何会话数据（前端只挂解锁屏，页面组件不挂载）。
@@ -18,13 +19,19 @@ import {
   timingSafeEqual,
   verify as cryptoVerify,
 } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { ErrorCodes, HubError } from "./errors.js";
 
 export const APP_LOCK_FILE = "app-lock.json";
-/** 解锁令牌有效期：7 天 */
+/** 解锁令牌有效期：7 天（滑动过期：活动续期） */
 export const LOCK_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+/** 滑动续期节流：距上次续期 ≥ 1 小时才落盘新过期时间（防每个请求写盘） */
+export const TOKEN_RENEW_INTERVAL_MS = 60 * 60 * 1000;
+/** PIN/口令失败限速：连错 5 次起临时锁定，指数退避 30s → 60s → … 封顶 15min */
+export const LOCK_MAX_FAILURES = 5;
+export const LOCK_BACKOFF_BASE_MS = 30_000;
+export const LOCK_BACKOFF_MAX_MS = 15 * 60 * 1000;
 
 export function sha256Hex(input: string | Buffer): string {
   return createHash("sha256").update(input).digest("hex");
@@ -297,6 +304,10 @@ const CHALLENGE_TTL_MS = 2 * 60 * 1000;
 export class AppLockStore implements AppLockStoreLike {
   private record: AppLockRecord | null = null;
   private challenges = new Map<string, PendingChallenge>();
+  /** 连续失败计数（PIN/口令/生物识别，成功即清零；进程内存态，重启重新计） */
+  private failures = 0;
+  /** 临时锁定截止（指数退避） */
+  private lockedUntil = 0;
 
   constructor(
     private readonly file: string,
@@ -321,8 +332,34 @@ export class AppLockStore implements AppLockStoreLike {
 
   private save(rec: AppLockRecord): void {
     mkdirSync(dirname(this.file), { recursive: true });
-    writeFileSync(this.file, serializeAppLockRecord(rec), "utf8");
+    // 凭据文件仅属主可读写（0600）：writeFileSync 的 mode 只在新建时生效，已有文件需 chmod 收紧
+    writeFileSync(this.file, serializeAppLockRecord(rec), { encoding: "utf8", mode: 0o600 });
+    chmodSync(this.file, 0o600);
     this.record = rec;
+  }
+
+  /** 锁定期内拒绝验证（429 + 剩余秒数） */
+  private assertNotThrottled(): void {
+    const now = this.now();
+    if (this.lockedUntil > now) {
+      const seconds = Math.ceil((this.lockedUntil - now) / 1000);
+      throw new HubError(ErrorCodes.APP_LOCK_DENIED, `尝试过于频繁，请 ${seconds} 秒后重试`, 429);
+    }
+  }
+
+  /** 验证失败计数 + 指数退避（连错 5 次锁 30s，之后每多错一次翻倍，封顶 15min） */
+  private recordFailure(): void {
+    this.failures += 1;
+    if (this.failures >= LOCK_MAX_FAILURES) {
+      const over = this.failures - LOCK_MAX_FAILURES;
+      const backoff = Math.min(LOCK_BACKOFF_BASE_MS * 2 ** over, LOCK_BACKOFF_MAX_MS);
+      this.lockedUntil = this.now() + backoff;
+    }
+  }
+
+  private recordSuccess(): void {
+    this.failures = 0;
+    this.lockedUntil = 0;
   }
 
   private issueToken(rec: AppLockRecord): IssuedLockToken {
@@ -361,9 +398,12 @@ export class AppLockStore implements AppLockStoreLike {
     if (!rec) {
       throw new HubError(ErrorCodes.APP_LOCK_NOT_CONFIGURED, "应用锁未配置", 400);
     }
+    this.assertNotThrottled();
     if (!this.verifySecret(rec, secret)) {
+      this.recordFailure();
       throw new HubError(ErrorCodes.APP_LOCK_DENIED, "PIN / 口令不正确", 401);
     }
+    this.recordSuccess();
     return this.issueToken(rec);
   }
 
@@ -372,12 +412,15 @@ export class AppLockStore implements AppLockStoreLike {
     if (!rec) {
       throw new HubError(ErrorCodes.APP_LOCK_NOT_CONFIGURED, "应用锁未配置", 400);
     }
+    this.assertNotThrottled();
     if (!this.verifySecret(rec, oldSecret)) {
+      this.recordFailure();
       throw new HubError(ErrorCodes.APP_LOCK_DENIED, "旧 PIN / 口令不正确", 401);
     }
     if (!isValidSecret(newSecret)) {
       throw new HubError(ErrorCodes.INVALID_REQUEST, secretRuleHint());
     }
+    this.recordSuccess();
     const salt = makeSecretSalt();
     // 改密同时轮换令牌（旧令牌作废）
     return this.issueToken({
@@ -394,21 +437,36 @@ export class AppLockStore implements AppLockStoreLike {
     if (!rec) {
       throw new HubError(ErrorCodes.APP_LOCK_NOT_CONFIGURED, "应用锁未配置", 400);
     }
+    this.assertNotThrottled();
     if (!this.verifySecret(rec, oldSecret)) {
+      this.recordFailure();
       throw new HubError(ErrorCodes.APP_LOCK_DENIED, "旧 PIN / 口令不正确", 401);
     }
+    this.recordSuccess();
     this.record = null;
-    // 关闭 = 记录整体作废：文件只留禁用审计壳，不保留任何凭据/哈希
+    // 关闭 = 记录整体作废：文件只留禁用审计壳，不保留任何凭据/哈希（同样 0600）
     mkdirSync(dirname(this.file), { recursive: true });
-    writeFileSync(this.file, `${JSON.stringify({ version: 1, disabled: true, updatedAt: this.now() }, null, 2)}\n`, "utf8");
+    writeFileSync(this.file, `${JSON.stringify({ version: 1, disabled: true, updatedAt: this.now() }, null, 2)}\n`, {
+      encoding: "utf8",
+      mode: 0o600,
+    });
+    chmodSync(this.file, 0o600);
   }
 
   verifyToken(token: string): { ok: boolean; expiresAt: number | null } {
     const rec = this.record;
     if (!rec || typeof token !== "string" || token === "") return { ok: false, expiresAt: null };
     if (rec.tokenHash === null || rec.tokenExpiresAt === null) return { ok: false, expiresAt: null };
-    if (rec.tokenExpiresAt <= this.now()) return { ok: false, expiresAt: null };
-    return secretEquals(hashToken(token), rec.tokenHash) ? { ok: true, expiresAt: rec.tokenExpiresAt } : { ok: false, expiresAt: null };
+    const now = this.now();
+    if (rec.tokenExpiresAt <= now) return { ok: false, expiresAt: null };
+    if (!secretEquals(hashToken(token), rec.tokenHash)) return { ok: false, expiresAt: null };
+    // 滑动过期：活动续期（节流写盘，距上次续期 ≥ TOKEN_RENEW_INTERVAL_MS 才落盘）
+    if (rec.tokenExpiresAt < now + LOCK_TOKEN_TTL_MS - TOKEN_RENEW_INTERVAL_MS) {
+      const expiresAt = now + LOCK_TOKEN_TTL_MS;
+      this.save({ ...rec, tokenExpiresAt: expiresAt, updatedAt: now });
+      return { ok: true, expiresAt };
+    }
+    return { ok: true, expiresAt: rec.tokenExpiresAt };
   }
 
   /* ---------- WebAuthn ---------- */
@@ -479,6 +537,7 @@ export class AppLockStore implements AppLockStoreLike {
     if (!rec.webauthn) {
       throw new HubError(ErrorCodes.APP_LOCK_DENIED, "未启用生物识别解锁", 401);
     }
+    this.assertNotThrottled();
     const result = checkWebAuthnAssertion(
       {
         credentialId: input.credentialId,
@@ -489,8 +548,10 @@ export class AppLockStore implements AppLockStoreLike {
       { challenge: input.challenge, rpId: input.rpId, stored: rec.webauthn },
     );
     if (!result.ok) {
+      this.recordFailure();
       throw new HubError(ErrorCodes.APP_LOCK_DENIED, `生物识别校验失败：${result.reason}`, 401);
     }
+    this.recordSuccess();
     this.save({
       ...rec,
       webauthn: { ...rec.webauthn, signCount: result.signCount },

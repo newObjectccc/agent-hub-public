@@ -30,13 +30,20 @@ function normalizeMessage(m: Partial<SessionMessage> & { id: string }): SessionM
     thinking: typeof m.thinking === "string" ? m.thinking : null,
     toolCalls: m.toolCalls ?? [],
     streaming: m.streaming === true,
+    // 图片随消息保留（WS 权威回填丢图 bug：手机发图后 message_end 不带 images 时气泡图片消失）
+    ...(m.images ? { images: m.images } : {}),
   };
 }
 
-/** 权威消息替换时保留已流式的思维链（权威数据未带 thinking 时不抹掉增量累积） */
-function withThinkingFallback(authoritative: SessionMessage, previous: SessionMessage): SessionMessage {
+/**
+ * 权威消息替换时保留前端本地已展示内容（权威数据缺省不抹掉增量累积）：
+ * - thinking：未带思维链时保留流式累积的 thinking
+ * - images：未带图片时保留占位/流式已展示的图片（手机发图 → server 落盘后 WS 权威回填不再丢图）
+ */
+function withLocalFallbacks(authoritative: SessionMessage, previous: SessionMessage): SessionMessage {
   const thinking = authoritative.thinking && authoritative.thinking !== "" ? authoritative.thinking : (previous.thinking ?? null);
-  return { ...authoritative, thinking };
+  const images = authoritative.images !== undefined ? authoritative.images : previous.images;
+  return { ...authoritative, thinking, ...(images !== undefined ? { images } : {}) };
 }
 
 /**
@@ -214,7 +221,7 @@ export function applyWsEvent(messages: SessionMessage[], event: WsEvent): Sessio
       const idx = messages.findIndex((m) => m.id === authoritative.id);
       if (idx >= 0) {
         const next = messages.slice();
-        next[idx] = withToolTiming(withThinkingFallback(authoritative, messages[idx]), messages[idx]);
+        next[idx] = withToolTiming(withLocalFallbacks(authoritative, messages[idx]), messages[idx]);
         return next;
       }
       // 纯防御去重：合并尾部连续同文本占位段内最早一条（同 role+同非空 text），
@@ -223,20 +230,49 @@ export function applyWsEvent(messages: SessionMessage[], event: WsEvent): Sessio
       const dupIdx = findTailPlaceholder(messages, authoritative);
       if (dupIdx >= 0) {
         const next = messages.slice();
-        next[dupIdx] = withToolTiming(withThinkingFallback(authoritative, messages[dupIdx]), messages[dupIdx]);
+        next[dupIdx] = withToolTiming(withLocalFallbacks(authoritative, messages[dupIdx]), messages[dupIdx]);
         return next;
       }
       return [...messages, authoritative];
     }
     default:
+      // 防新增事件静默丢：dev 环境对未知事件 type 告警（已知非消息流事件由 UI 层另行处理，不告警）
+      if (import.meta.env.DEV && !KNOWN_NON_MESSAGE_EVENTS.has(event.type)) {
+        console.warn(`[messageStream] 未知 WS 事件被忽略：${event.type}`);
+      }
       return messages;
   }
 }
 
+/** UI 层另行处理的已知非消息流事件（不参与消息 reducer，也不算未知事件） */
+const KNOWN_NON_MESSAGE_EVENTS = new Set([
+  "status",
+  "agent_settled",
+  "error",
+  "subagent_activity",
+  "attach_state",
+  "command_ack",
+  "pong",
+  "sessions_changed",
+  "notification",
+  "session_status",
+]);
+
 /** 全量对账：用 GET /api/sessions/:id 的权威消息整体替换；
- *  在途流式消息（prev.streaming）的标志按 id 回填，避免重连对账把"回复中"打回"（无内容）" */
+ *  在途流式消息（prev.streaming）按 id 保留已累积内容与标志：
+ *  - GET 快照落后于已到达的 delta 时取更长文本（不丢字/不重影），等 message_end 权威替换
+ *  - 快照里还没有的在途消息留在尾部（进行中的回复不消失） */
 export function reconcileMessages(prev: SessionMessage[], fresh: SessionMessage[]): SessionMessage[] {
-  const streamingIds = new Set(prev.filter((m) => m.streaming === true).map((m) => m.id));
-  if (streamingIds.size === 0) return fresh;
-  return fresh.map((m) => (streamingIds.has(m.id) && m.streaming !== true ? { ...m, streaming: true } : m));
+  const inFlight = new Map(prev.filter((m) => m.streaming === true).map((m) => [m.id, m] as const));
+  if (inFlight.size === 0) return fresh;
+  const freshIds = new Set(fresh.map((m) => m.id));
+  const merged = fresh.map((m) => {
+    const live = inFlight.get(m.id);
+    if (!live) return m;
+    const text = live.text.length > m.text.length ? live.text : m.text;
+    const thinking = (live.thinking?.length ?? 0) > (m.thinking?.length ?? 0) ? live.thinking : m.thinking;
+    return { ...m, text, thinking, streaming: true };
+  });
+  const tail = prev.filter((m) => m.streaming === true && !freshIds.has(m.id));
+  return tail.length === 0 ? merged : [...merged, ...tail];
 }

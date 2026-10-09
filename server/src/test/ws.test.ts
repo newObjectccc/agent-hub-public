@@ -15,6 +15,7 @@ import type { SessionTailManager } from "../sessions/tail.js";
 import type { SessionHubLike } from "../routes.js";
 import type { MessageDto, SearchResultDto, SessionListItem, SessionTreeDto, SystemInfo } from "../types.js";
 import { WsHub } from "../ws.js";
+import { fakeUnlockedAppLock } from "./fakeAppLock.js";
 
 const sessionFixture: SessionListItem = {
   id: "sess-1",
@@ -94,7 +95,7 @@ async function startServer(promptCalls: PromptCall[]) {
     dashboard: makeFakeDashboard(),
     config: { ...DEFAULT_CONFIG },
     systemInfo: async () => systemFixture,
-    webRoot: null,
+    webRoot: null, appLock: fakeUnlockedAppLock(),
     logger: false,
   });
   const wshub = new WsHub();
@@ -193,7 +194,7 @@ describe("ws: 子代理 childTails acquire/release 严格配对（AC8 回归）"
       dashboard: makeFakeDashboard(),
       config: { ...DEFAULT_CONFIG },
       systemInfo: async () => systemFixture,
-      webRoot: null,
+      webRoot: null, appLock: fakeUnlockedAppLock(),
       logger: false,
     });
     const wshub = new WsHub();
@@ -226,6 +227,151 @@ describe("ws: 子代理 childTails acquire/release 严格配对（AC8 回归）"
       for (const id of ["child-a", "child-b", "sess-1"]) {
         assert.equal(acquires.get(id), releases.get(id), `${id} acquire/release 严格配对`);
       }
+    } finally {
+      ws.terminate();
+      wshub.closeAll();
+      await app.close();
+    }
+  });
+});
+
+describe("ws: upgrade 鉴权（config.auth.enabled 时必须携带 token）", () => {
+  type OpenResult = "open" | "denied" | "timeout";
+
+  function tryOpen(url: string, opts?: { headers?: Record<string, string>; protocols?: string[] }): Promise<OpenResult> {
+    return new Promise((resolve) => {
+      const ws = opts?.protocols ? new WebSocket(url, opts.protocols, { headers: opts.headers }) : new WebSocket(url, opts);
+      const timer = setTimeout(() => {
+        ws.terminate();
+        resolve("timeout");
+      }, 2000);
+      ws.on("open", () => {
+        clearTimeout(timer);
+        ws.terminate();
+        resolve("open");
+      });
+      ws.on("error", () => {
+        clearTimeout(timer);
+        resolve("denied");
+      });
+      ws.on("unexpected-response", (_req, res) => {
+        clearTimeout(timer);
+        ws.terminate();
+        resolve(res.statusCode === 401 ? "denied" : "timeout");
+      });
+    });
+  }
+
+  async function startAuthedServer(auth: { enabled: boolean; token: string }) {
+    const app = await createApp({
+      hub: makeFakeHub([]),
+      kpi: { getCards: () => [] },
+      dashboard: makeFakeDashboard(),
+      config: { ...DEFAULT_CONFIG },
+      systemInfo: async () => systemFixture,
+      webRoot: null,
+      appLock: fakeUnlockedAppLock(),
+    });
+    const wshub = new WsHub();
+    wshub.attach(app.server, makeFakeHub([]) as unknown as SessionHub, undefined, undefined, auth);
+    await app.listen({ port: 0, host: "127.0.0.1" });
+    const { port } = app.server.address() as AddressInfo;
+    return { app, wshub, base: `ws://127.0.0.1:${port}` };
+  }
+
+  it("无 token / 错 token：会话与全局通道一律断连；query/header/子协议三种通道均可鉴权", async () => {
+    const { app, wshub, base } = await startAuthedServer({ enabled: true, token: "s3cret" });
+    try {
+      // 无 token / 错 token → 拒绝（401 断连）
+      assert.equal(await tryOpen(`${base}/ws/sessions/sess-1`), "denied", "无 token 必须拒连");
+      assert.equal(await tryOpen(`${base}/ws/sessions/sess-1?token=wrong`), "denied", "错 token 必须拒连");
+      assert.equal(
+        await tryOpen(`${base}/ws/sessions/sess-1`, { headers: { authorization: "Bearer wrong" } }),
+        "denied",
+      );
+      assert.equal(await tryOpen(`${base}/ws/events`), "denied", "全局通道同样受鉴权保护");
+      // 三种 token 通道（与 HTTP 鉴权同口径）
+      assert.equal(await tryOpen(`${base}/ws/sessions/sess-1?token=s3cret`), "open", "query ?token=");
+      assert.equal(
+        await tryOpen(`${base}/ws/sessions/sess-1`, { headers: { authorization: "Bearer s3cret" } }),
+        "open",
+        "Authorization: Bearer",
+      );
+      assert.equal(
+        await tryOpen(`${base}/ws/sessions/sess-1`, { protocols: ["bearer", "s3cret"] }),
+        "open",
+        "Sec-WebSocket-Protocol: bearer, <token>",
+      );
+      assert.equal(await tryOpen(`${base}/ws/events?token=s3cret`), "open", "全局通道带 token 可连");
+    } finally {
+      wshub.closeAll();
+      await app.close();
+    }
+  });
+
+  it("auth 未启用：不带 token 照常连接（默认行为不变）", async () => {
+    const { app, wshub, base } = await startAuthedServer({ enabled: false, token: "" });
+    try {
+      assert.equal(await tryOpen(`${base}/ws/sessions/sess-1`), "open");
+    } finally {
+      wshub.closeAll();
+      await app.close();
+    }
+  });
+});
+
+describe("ws: 连接建立期断连不泄漏 socket / childScan interval", () => {
+  it("findSession 未返回前连接即关闭：clients Map 不残留死 socket，interval 不启动", async () => {
+    const promptCalls: PromptCall[] = [];
+    let childScans = 0;
+    const hub = {
+      ...makeFakeHub(promptCalls),
+      isLive: () => false,
+      // 只有 childScan interval 泄漏才会被调用（ready 前关闭的连接不该走到这里）
+      listChildren: async () => {
+        childScans += 1;
+        return [];
+      },
+    } as unknown as SessionHub;
+    const app = await createApp({
+      hub: hub as unknown as SessionHubLike,
+      kpi: { getCards: () => [] },
+      dashboard: makeFakeDashboard(),
+      config: { ...DEFAULT_CONFIG },
+      systemInfo: async () => systemFixture,
+      webRoot: null,
+      appLock: fakeUnlockedAppLock(),
+    });
+    const wshub = new WsHub();
+    wshub.childScanMs = 30;
+    const acquireIds: string[] = [];
+    const fakeTails = {
+      acquire: (id: string) => acquireIds.push(id),
+      release: () => undefined,
+      detach: () => undefined,
+      stopAll: () => undefined,
+    };
+    // findSession 延迟 200ms：制造 close 先于 IIFE 继续执行的竞态窗口
+    const delayedHub = {
+      ...hub,
+      findSession: () => new Promise((r) => setTimeout(() => r(sessionFixture), 200)),
+    } as unknown as SessionHub;
+    wshub.attach(app.server, delayedHub, fakeTails as unknown as SessionTailManager);
+    await app.listen({ port: 0, host: "127.0.0.1" });
+    const { port } = app.server.address() as AddressInfo;
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws/sessions/sess-1`);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        ws.on("open", () => resolve());
+        ws.on("error", reject);
+      });
+      ws.terminate(); // 立刻断连：close 先于 findSession(200ms) 返回
+      await new Promise((r) => setTimeout(r, 500)); // 跨过 IIFE 恢复与至少 10 个 scan 周期
+
+      const clients = (wshub as unknown as { clients: Map<string, Set<unknown>> }).clients;
+      assert.equal(clients.size, 0, "死 socket 不得永驻 clients Map");
+      assert.equal(childScans, 0, "childScan interval 不得启动/泄漏（否则 listChildren 持续被扫）");
+      assert.deepEqual(acquireIds, [], "断连后不得 acquire tail（防 ref 泄漏）");
     } finally {
       ws.terminate();
       wshub.closeAll();

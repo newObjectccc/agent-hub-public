@@ -117,9 +117,15 @@ export class SessionRegistry {
     }
   }
 
-  /** 文件变更（presence）时标记过期：旧值秒回 + 下次刷新（SWR） */
-  invalidateList(): void {
+  /** 文件变更（presence）时标记过期：旧值秒回 + 下次刷新（SWR）；写路径传 immediate 立即可见 */
+  invalidateList(options: { immediate?: boolean } = {}): void {
     this.cacheListAt = 0;
+    if (options.immediate === true) {
+      // 写路径联动（改名/新建/复制）：清空缓存 + 放行最小重扫间隔，下次查询同步拿到新数据
+      // （否则 SWR 旧值秒回 + 5s 最小重扫间隔会让写入滞后 5-20s 才可见）
+      this.cacheList = null;
+      this.lastScanAt = 0;
+    }
   }
 
   private static readonly LIST_CACHE_TTL_MS = 15_000;
@@ -189,25 +195,29 @@ export class SessionRegistry {
     return loadSessionMessages(sessionFile);
   }
 
-  /** 新建会话按 source 分发（缺省 pi；非法 source 由 routes 层拦截） */
-  createSession(cwd: string, name?: string, source: SessionSource = "pi"): Promise<SessionListItem> {
+  /** 新建会话按 source 分发（缺省 pi；非法 source 由 routes 层拦截）；写路径联动缓存立即可见 */
+  async createSession(cwd: string, name?: string, source: SessionSource = "pi"): Promise<SessionListItem> {
     const adapter = source === "claude" ? this.claude : source === "codex" ? this.codex : this.pi;
     if (!adapter || !adapter.createSession) {
       throw new HubError(ErrorCodes.INVALID_REQUEST, `来源 ${source} 不支持新建会话`, 400);
     }
-    return adapter.createSession(cwd, name);
+    const created = await adapter.createSession(cwd, name);
+    this.invalidateList({ immediate: true });
+    return created;
   }
 
-  /** 复制会话（fork）按 id 归属分发 */
+  /** 复制会话（fork）按 id 归属分发；写路径联动缓存立即可见 */
   async forkSession(id: string): Promise<SessionListItem> {
     const adapter = await this.resolve(id);
     if (!adapter) {
       throw new HubError(ErrorCodes.SESSION_NOT_FOUND, `会话不存在: ${id}`, 404);
     }
-    return adapter.forkSession(id);
+    const forked = await adapter.forkSession(id);
+    this.invalidateList({ immediate: true });
+    return forked;
   }
 
-  /** 重命名会话按 id 归属分发（pi：session_info entry；claude：ai-title 行；不支持的源报 400） */
+  /** 重命名会话按 id 归属分发（pi：session_info entry；claude：ai-title 行；不支持的源报 400）；写路径联动缓存立即可见 */
   async renameSession(id: string, name: string): Promise<SessionListItem> {
     const adapter = await this.resolve(id);
     if (!adapter) {
@@ -216,7 +226,9 @@ export class SessionRegistry {
     if (!adapter.renameSession) {
       throw new HubError(ErrorCodes.INVALID_REQUEST, `来源 ${adapter.source} 暂不支持重命名会话`, 400);
     }
-    return adapter.renameSession(id, name);
+    const updated = await adapter.renameSession(id, name);
+    this.invalidateList({ immediate: true });
+    return updated;
   }
 
   async prompt(

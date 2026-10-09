@@ -76,6 +76,16 @@ export function isTokenFresh(token: LockToken | null, now: number = Date.now()):
 }
 
 /**
+ * WS 子协议（携带解锁令牌；子协议不进 URL/日志，遵守 token 不落 URL 约定）。
+ * 未解锁/令牌不新鲜时返回 undefined（服务端锁屏门禁会拒绝发送）。
+ */
+export function wsLockProtocols(storage: StorageLike | null): string[] | undefined {
+  const token = loadLockToken(storage);
+  if (token === null || !isTokenFresh(token)) return undefined;
+  return [`lock-token.${token.token}`];
+}
+
+/**
  * 错误 → 用户可读文案（UX 审查 AC3 错误裸露修复）：
  * 只信任服务端业务错误（ApiError）的中文提示；其余 JS 异常（TypeError、
  * JSON 解析错等）一律映射为 fallback，绝不把原始异常渲染给用户。

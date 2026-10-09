@@ -20,6 +20,7 @@ import type {
   SessionTreeDto,
   SystemInfo,
 } from "../types.js";
+import { fakeUnlockedAppLock } from "./fakeAppLock.js";
 
 const sessionFixture: SessionListItem = {
   id: "sess-1",
@@ -78,7 +79,7 @@ describe("attach 路由：指令通道安全（仅本机回环 + token）", () =
       kpi: { getCards: () => [] },
       config: { ...DEFAULT_CONFIG, auth: { enabled: true, token: "secret-token" } } as HubConfig,
       systemInfo: async () => systemFixture,
-      webRoot: null,
+      webRoot: null, appLock: fakeUnlockedAppLock(),
       agents,
     });
   });
@@ -176,7 +177,7 @@ describe("attach 路由：生命周期 / 冲突保护 / terminal 状态注入", 
       kpi: { getCards: () => [] },
       config: { ...DEFAULT_CONFIG } as HubConfig,
       systemInfo: async () => systemFixture,
-      webRoot: null,
+      webRoot: null, appLock: fakeUnlockedAppLock(),
       agents,
     });
   });

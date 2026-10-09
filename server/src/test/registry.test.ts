@@ -303,3 +303,49 @@ describe("registry: compact / getStatus 归属", () => {
     assert.equal(registry.isLive("p1"), false);
   });
 });
+
+describe("registry: 写路径联动缓存立即可见（改名/新建不滞后 5-20s）", () => {
+  it("renameSession/createSession 后 listSessions 立即返回新数据（不走 SWR 旧值）", async () => {
+    const items = [makeItem("p1", "pi", "2026-02-18T12:00:00.000Z")];
+    const pi = makeFakeAdapter("pi", items);
+    Object.assign(pi, {
+      renameSession: async (id: string, name: string) => {
+        pi.calls.push({ method: "renameSession", args: [id, name] });
+        items[0] = { ...items[0], name: name === "" ? null : name };
+        return items[0];
+      },
+      createSession: async (cwd: string, name?: string) => {
+        pi.calls.push({ method: "createSession", args: [cwd, name] });
+        const created = makeItem("p-new", "pi", "2026-02-18T12:30:00.000Z");
+        created.name = name ?? null;
+        items.push(created);
+        return created;
+      },
+    });
+    const registry = new SessionRegistry(pi, makeFakeAdapter("claude", []));
+
+    const first = await registry.listSessions();
+    assert.equal(first.find((s) => s.id === "p1")?.name, null, "初始缓存 name 为空");
+
+    // 改名（写路径）：旧实现 SWR 旧值秒回 + 最小重扫间隔 → 名字滞后 5-20s 才可见
+    const renamed = await registry.renameSession("p1", "新名字");
+    assert.equal(renamed.name, "新名字");
+    const afterRename = await registry.listSessions();
+    assert.equal(afterRename.find((s) => s.id === "p1")?.name, "新名字", "改名后列表立即可见（不等 TTL）");
+
+    // 新建（写路径）同理
+    const created = await registry.createSession("/tmp/demo", "崭新会话");
+    assert.equal(created.id, "p-new");
+    const afterCreate = await registry.listSessions();
+    assert.ok(afterCreate.some((s) => s.id === "p-new" && s.name === "崭新会话"), "新建后列表立即可见（不等 TTL）");
+  });
+
+  it("presence 的 invalidateList()（无参）仍走 SWR：旧值秒回不被清空", async () => {
+    const pi = makeFakeAdapter("pi", [makeItem("p1", "pi", "2026-02-18T12:00:00.000Z")]);
+    const registry = new SessionRegistry(pi, makeFakeAdapter("claude", []));
+    const first = await registry.listSessions();
+    registry.invalidateList(); // 文件变更（presence）高频路径：必须保持秒回语义
+    const second = await registry.listSessions();
+    assert.deepEqual(second, first, "SWR 语义不变：旧缓存秒回（后台再刷新）");
+  });
+});

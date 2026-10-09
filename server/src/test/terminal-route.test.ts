@@ -13,10 +13,16 @@ import { WebSocket, WebSocketServer } from "ws";
 import { DEFAULT_CONFIG } from "../config.js";
 import { createApp } from "../index.js";
 import type { SessionHubLike } from "../routes.js";
-import { TerminalService, type TerminalChildProcess, type TerminalSpawnFn } from "../terminal.js";
+import {
+  TerminalService,
+  type TerminalChildProcess,
+  type TerminalRuntime,
+  type TerminalSpawnFn,
+} from "../terminal.js";
 import type { MessageDto, SearchResultDto, SessionListItem, SystemInfo } from "../types.js";
 import { WsHub } from "../ws.js";
 import { makeFakeDashboard } from "./fakeDashboard.js";
+import { fakeUnlockedAppLock } from "./fakeAppLock.js";
 
 const sessionFixture: SessionListItem = {
   id: "sess-1",
@@ -203,7 +209,7 @@ describe("terminal: 路由 + 同源反代（mock ttyd 链路）", () => {
       dashboard: makeFakeDashboard(),
       terminal: svc,
       terminalUnlocked: () => unlocked,
-      webRoot: null,
+      webRoot: null, appLock: fakeUnlockedAppLock(),
     });
     // WsHub 在反代之后挂载（与 startHub 顺序一致）：验证 /terminal/ws 不被 hub upgrade 处理器误杀
     const wshub = new WsHub();
@@ -341,7 +347,7 @@ describe("terminal: 未安装降级（路由）", () => {
       systemInfo: async () => systemFixture,
       dashboard: makeFakeDashboard(),
       terminal: svc,
-      webRoot: null,
+      webRoot: null, appLock: fakeUnlockedAppLock(),
     });
     await app.listen({ port: 0, host: "127.0.0.1" });
     const base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`;
@@ -367,12 +373,58 @@ describe("terminal: 未安装降级（路由）", () => {
       config: DEFAULT_CONFIG,
       systemInfo: async () => systemFixture,
       dashboard: makeFakeDashboard(),
-      webRoot: null,
+      webRoot: null, appLock: fakeUnlockedAppLock(),
     });
     try {
       const injected = await app.inject({ method: "GET", url: "/api/terminal/status" });
       assert.equal(injected.statusCode, 503);
       assert.equal(injected.json().error.code, "TERMINAL_UNAVAILABLE");
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe("terminal: terminalUnlocked 门禁接收 X-App-Lock-Token（F1 注入回归）", () => {
+  it("无令牌/错令牌拒绝签发；有效解锁令牌放行（token 经请求头传入门禁）", async () => {
+    const seen: Array<string | undefined> = [];
+    const fakeTerminal = {
+      status: async () => ({ supported: true, installed: true, running: false, version: "1.7.7", degraded: false }),
+      ensureSession: async () => ({ url: "/terminal/", token: "ttyd-token" }),
+      stop: async () => undefined,
+      validateToken: (t: string | null | undefined) => t === "ttyd-token",
+      touch: () => undefined,
+      proxyTarget: () => null,
+    } as unknown as TerminalRuntime;
+    const app = await createApp({
+      hub: makeFakeHub(),
+      kpi: { getCards: () => [] },
+      config: DEFAULT_CONFIG,
+      systemInfo: async () => systemFixture,
+      dashboard: makeFakeDashboard(),
+      terminal: fakeTerminal,
+      terminalUnlocked: (lockToken) => {
+        seen.push(lockToken);
+        return lockToken === "good-lock-token";
+      },
+      webRoot: null, appLock: fakeUnlockedAppLock(),
+    });
+    try {
+      const denied = await app.inject({ method: "POST", url: "/api/terminal/session" });
+      assert.equal(denied.statusCode, 401, "无解锁令牌拒绝签发终端凭证");
+      const wrong = await app.inject({
+        method: "POST",
+        url: "/api/terminal/session",
+        headers: { "x-app-lock-token": "forged" },
+      });
+      assert.equal(wrong.statusCode, 401);
+      const ok = await app.inject({
+        method: "POST",
+        url: "/api/terminal/session",
+        headers: { "x-app-lock-token": "good-lock-token" },
+      });
+      assert.equal(ok.statusCode, 201, "有效解锁令牌放行");
+      assert.deepEqual(seen, ["", "forged", "good-lock-token"], "门禁收到请求头里的解锁令牌（无头 = 空串）");
     } finally {
       await app.close();
     }

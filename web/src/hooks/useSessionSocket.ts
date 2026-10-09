@@ -6,6 +6,7 @@
  */
 import { useEffect, useRef } from "react";
 import type { WsEvent } from "../chat/messageStream";
+import { wsLockProtocols } from "../utils/appLock";
 
 const BASE_DELAY_MS = 1000;
 const MAX_DELAY_MS = 30_000;
@@ -41,7 +42,8 @@ export function useSessionSocket({ sessionId, onEvent, onReconnect, onStatusChan
     const connect = () => {
       if (closed) return;
       try {
-        ws = new WebSocket(wsUrl(sessionId));
+        // 子协议携带解锁令牌（服务端锁屏门禁对 WS prompt 同口径拦截）；未解锁时服务端拒发不拒连
+        ws = new WebSocket(wsUrl(sessionId), wsLockProtocols(window.localStorage));
       } catch {
         scheduleReconnect();
         return;

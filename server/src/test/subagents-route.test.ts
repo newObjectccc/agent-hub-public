@@ -12,6 +12,7 @@ import { createApp } from "../index.js";
 import type { SessionHubLike } from "../routes.js";
 import type { MessageDto, SearchResultDto, SessionListItem, SessionTreeDto, SystemInfo } from "../types.js";
 import type { PromptResult } from "../sessions/hub.js";
+import { fakeUnlockedAppLock } from "./fakeAppLock.js";
 
 const systemFixture: SystemInfo = {
   platform: "darwin",
@@ -111,7 +112,7 @@ describe("GET /api/sessions/:id/agents（子代理活动快照）", () => {
       dashboard: makeFakeDashboard(),
       config: { ...DEFAULT_CONFIG },
       systemInfo: async () => systemFixture,
-      webRoot: null,
+      webRoot: null, appLock: fakeUnlockedAppLock(),
       logger: false,
     });
   });

@@ -25,7 +25,8 @@ export function flushOfflineQueue(options: FlushNowOptions = {}): Promise<FlushR
         getOfflineQueue(),
         {
           uploadFile: (input, signal) => api.uploadFile(input, signal),
-          sendPrompt: (id, text, mode, images, signal) => api.sendPrompt(id, text, mode, images, signal),
+          sendPrompt: (id, text, mode, images, clientMessageId, signal) =>
+            api.sendPrompt(id, text, mode, images, clientMessageId, signal),
           sendPromptWithMode,
           sendAttachMessage: (id, text, mode, clientMessageId, signal) =>
             api.sendAttachMessage(id, text, mode, clientMessageId, signal),

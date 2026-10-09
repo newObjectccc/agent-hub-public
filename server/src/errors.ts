@@ -29,6 +29,8 @@ export const ErrorCodes = {
   APP_LOCK_EXISTS: "APP_LOCK_EXISTS",
   APP_LOCK_NOT_CONFIGURED: "APP_LOCK_NOT_CONFIGURED",
   APP_LOCK_DENIED: "APP_LOCK_DENIED",
+  /** 锁屏状态全局门禁：未提供解锁令牌（423 Locked） */
+  APP_LOCKED: "APP_LOCKED",
   // ttyd Web 终端（契约 §13）
   TERMINAL_UNAVAILABLE: "TERMINAL_UNAVAILABLE",} as const;
 
@@ -46,6 +48,9 @@ export class HubError extends Error {
   }
 }
 
+/** 500 信封固定文案：非 HubError 的内部错误绝不回真实 message（只进服务端日志） */
+export const INTERNAL_ERROR_MESSAGE = "internal error";
+
 export function toErrorEnvelope(err: unknown): { statusCode: number; body: { error: { code: string; message: string } } } {
   if (err instanceof HubError) {
     return {
@@ -55,9 +60,13 @@ export function toErrorEnvelope(err: unknown): { statusCode: number; body: { err
   }
   const message = err instanceof Error ? err.message : String(err);
   // Fastify 框架层错误（body 超限 FST_ERR_CTP_BODY_TOO_LARGE 等）携带 statusCode：
-  // 保留 4xx 语义，避免把客户端错误误报成 500
+  // 保留 4xx 语义，避免把客户端错误误报成 500（5xx 一律隐藏内部 message）
   const fastifyLike = (typeof err === "object" && err !== null ? err : {}) as { statusCode?: unknown; code?: unknown };
-  if (typeof fastifyLike.statusCode === "number" && fastifyLike.statusCode >= 400 && fastifyLike.statusCode < 600) {
+  if (
+    typeof fastifyLike.statusCode === "number" &&
+    fastifyLike.statusCode >= 400 &&
+    fastifyLike.statusCode < 500
+  ) {
     const code = typeof fastifyLike.code === "string" && fastifyLike.code !== "" ? fastifyLike.code : ErrorCodes.INVALID_REQUEST;
     return {
       statusCode: fastifyLike.statusCode,
@@ -66,6 +75,6 @@ export function toErrorEnvelope(err: unknown): { statusCode: number; body: { err
   }
   return {
     statusCode: 500,
-    body: { error: { code: ErrorCodes.INTERNAL, message } },
+    body: { error: { code: ErrorCodes.INTERNAL, message: INTERNAL_ERROR_MESSAGE } },
   };
 }

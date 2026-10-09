@@ -7,7 +7,7 @@
  *   encoded-cwd = `--${cwd 去掉前导分隔符并把 / \ : 换成 -}--`
  */
 import { createReadStream } from "node:fs";
-import { readdir, stat } from "node:fs/promises";
+import { open, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { MessageDto, MessageImage, MessageRole, SessionListItem, ToolCallDto } from "../types.js";
 
@@ -379,7 +379,9 @@ export function buildSessionSummary(file: string, parsed: ParsedSession, mtimeMs
 
   let messageCount = 0;
   for (const entry of entries) {
-    if (entry.type === "message") messageCount += 1;
+    // 口径与 chat 渲染对齐（buildMessages）：message + custom_message 都是聊天气泡，都要计数；
+    // compaction/branch_summary 属元数据行（渲染为 custom 提示）不计消息数。
+    if (entry.type === "message" || entry.type === "custom_message") messageCount += 1;
   }
 
   const active = selectActiveBranch(entries);
@@ -450,8 +452,49 @@ export async function findSessionFiles(sessionDir: string, maxDepth = 3): Promis
   return results;
 }
 
-/** 逐行流式读取（供 detail 场景；单测直接用 parseSessionJsonl） */
-export async function readSessionFile(file: string): Promise<string> {
+/** 超大 JSONL 解析窗口上限（防全量读入内存 OOM）：超过只取尾部窗口内的完整行解析 */
+export const MAX_JSONL_PARSE_BYTES = 50 * 1024 * 1024;
+
+/**
+ * 尾部窗口读取：只读 [size-maxBytes, size) 的字节，跳到第一个完整行边界（窗口起点可能是半行）
+ * 后解析。窗口外的前部历史被舍弃（大文件降级取舍：保尾部近期消息，防 OOM 优先）。
+ */
+async function readTailWindow(file: string, size: number, maxBytes: number): Promise<string> {
+  const handle = await open(file, "r");
+  try {
+    const start = size - maxBytes;
+    const buf = Buffer.allocUnsafe(maxBytes);
+    let filled = 0;
+    while (filled < buf.length) {
+      const { bytesRead } = await handle.read(buf, filled, buf.length - filled, start + filled);
+      if (bytesRead <= 0) break;
+      filled += bytesRead;
+    }
+    const data = buf.subarray(0, filled);
+    const firstNl = data.indexOf(0x0a);
+    if (firstNl < 0) return ""; // 窗口内无完整行：降级为空（下轮窗口滑过后可解析）
+    return data.subarray(firstNl + 1).toString("utf8");
+  } finally {
+    await handle.close();
+  }
+}
+
+/**
+ * 读会话文件全文（供 detail 场景；单测直接用 parseSessionJsonl）。
+ * maxBytes 缺省不截断；传入后超过该大小只读尾部窗口（从完整行边界开始）——
+ * 超大 JSONL 不再全量驻留内存（OOM 防护），代价是窗口外的前部历史不可见。
+ */
+export async function readSessionFile(file: string, options: { maxBytes?: number } = {}): Promise<string> {
+  const maxBytes = options.maxBytes;
+  if (typeof maxBytes === "number" && maxBytes > 0) {
+    let size = 0;
+    try {
+      size = (await stat(file)).size;
+    } catch {
+      size = 0; // stat 失败走全量读（错误由 read 抛出）
+    }
+    if (size > maxBytes) return readTailWindow(file, size, maxBytes);
+  }
   const chunks: Buffer[] = [];
   await new Promise<void>((resolvePromise, rejectPromise) => {
     const stream = createReadStream(file);
@@ -509,9 +552,13 @@ export async function findSessionById(sessionDir: string, id: string, options: S
   return all.find((item) => item.id === id) ?? null;
 }
 
-/** 会话详情消息（active branch） */
-export async function loadSessionMessages(file: string): Promise<MessageDto[]> {
-  const parsed = parseSessionJsonl(await readSessionFile(file));
+/**
+ * 会话详情消息（active branch）。
+ * maxBytes（缺省 50MB）：超过只解析尾部窗口——超大 JSONL 不全量读入内存（防 OOM），
+ * 窗口外前部历史被舍弃（大文件降级取舍）。
+ */
+export async function loadSessionMessages(file: string, maxBytes: number = MAX_JSONL_PARSE_BYTES): Promise<MessageDto[]> {
+  const parsed = parseSessionJsonl(await readSessionFile(file, { maxBytes }));
   return buildMessages(selectActiveBranch(parsed.entries));
 }
 

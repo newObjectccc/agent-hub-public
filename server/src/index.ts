@@ -17,7 +17,8 @@ import { CodexAdapter } from "./adapters/codex.js";
 import { findClaudeSessionFiles } from "./adapters/claude-transcript.js";
 import { PiAdapter } from "./adapters/pi.js";
 import { SessionRegistry } from "./adapters/registry.js";
-import { loadHubConfig, type HubConfig } from "./config.js";
+import { loadHubConfig, isAllowedCrossOrigin, isSameOrigin, type HubConfig } from "./config.js";
+import { createAppLockStore } from "./appLock.js";
 import { DashboardService } from "./dashboard.js";
 import { ErrorCodes } from "./errors.js";
 import { KpiService } from "./kpi.js";
@@ -49,7 +50,26 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
   // 响应压缩（brotli 优先）：弱网/移动网络下 JSON 与静态资源体积降约 70%；
   // 仅在请求带 Accept-Encoding 时生效（WS upgrade / 终端反代不受影响）
   await app.register(fastifyCompress, { encodings: ["br", "gzip", "deflate"] });
-  await app.register(fastifyCors, { origin: true });
+
+  // CORS 安全（P0）：绝不反射任意 Origin。同源请求放行（面板与 API 同源部署，
+  // Vite dev 走 proxy 也是同源）；跨域只放 config.allowOrigins 白名单（默认空 = 拒绝一切跨域），
+  // 其余带 Origin 的请求直接 403（错误信封），防恶意网页跨域读会话/发 prompt。
+  const allowOrigins = options.config.allowOrigins ?? [];
+  const crossOriginAllowed = (origin: string | undefined, host: string | undefined, protocol?: string): boolean =>
+    isSameOrigin(origin, host, protocol) || isAllowedCrossOrigin(origin, allowOrigins);
+  // 拒绝 hook 先于 CORS 插件注册：恶意 preflight OPTIONS 也一律 403
+  app.addHook("onRequest", async (req, reply) => {
+    const origin = req.headers.origin;
+    if (typeof origin !== "string" || origin === "") return; // 非浏览器/同源导航：无 CORS 问题
+    if (crossOriginAllowed(origin, req.headers.host, req.protocol)) return;
+    return reply.status(403).send({ error: { code: ErrorCodes.UNAUTHORIZED, message: "cross-origin request denied" } });
+  });
+  await app.register(fastifyCors, {
+    delegator: (req, cb) => {
+      const origin = req.headers.origin;
+      cb(null, { origin: crossOriginAllowed(origin, req.headers.host, req.protocol) ? (origin ?? false) : false });
+    },
+  });
 
   await registerRoutes(app, {
     hub: options.hub,
@@ -160,6 +180,8 @@ export async function startHub(): Promise<StartedHub> {
   const kpi = new KpiService({ configDir, kpiRefreshMinutes: config.kpiRefreshMinutes });
   // ttyd Web 终端服务（F2）：生命周期归 server 管（关闭时回收 ttyd）
   const terminalService = new TerminalService();
+  // 应用锁存储：路由门禁与终端门禁共用同一实例（令牌校验口径一致）
+  const appLock = createAppLockStore(dataDir);
   const systemInfo = createSystemInfoProvider({
     sessionDir: config.sessionDir,
     workspaceRoot: config.workspaceRoot,
@@ -186,6 +208,9 @@ export async function startHub(): Promise<StartedHub> {
     logger: true,
     // ttyd Web 终端（F2）：按需拉起 + 同源反代（POSIX；win32 自动降级为提示）
     terminal: terminalService,
+    appLock,
+    // 终端门禁（F1）：应用锁已配置且未解锁时拒绝签发 ttyd token（未配置锁 = 视为已解锁）
+    terminalUnlocked: (lockToken) => !appLock.status().configured || appLock.verifyToken(lockToken ?? "").ok,
     systemInfo: async () => ({
       ...(await systemInfo()),
       terminal: await terminalService.status(),
@@ -202,11 +227,13 @@ export async function startHub(): Promise<StartedHub> {
   const tails = new SessionTailManager((sessionId, event) => emit(sessionId, event));
   // 会话一旦由本进程接管（live），停掉文件 tail，避免双推送源产生重复气泡
   hub.onLive = (sid) => tails.detach(sid);
-  // attach 接管期间拒绝 WS parallel 发送（与 REST /prompt 同一冲突保护）
-  wshub.attach(app.server, hub, tails, (id) =>
-    agents.isAttached(id)
-      ? { code: ErrorCodes.ATTACH_ACTIVE, message: "终端接管中：平行发送已停用（切回 📱 平行模式可恢复）" }
-      : null,
+  // attach 接管期间拒绝 WS parallel 发送（与 REST /prompt 同一冲突保护）；锁屏时拒绝 WS 发送（与 HTTP 门禁同口径）
+  wshub.attach(app.server, hub, tails, (id, lockToken) =>
+    appLock.status().configured && !appLock.verifyToken(lockToken ?? "").ok
+      ? { code: ErrorCodes.APP_LOCKED, message: "应用已锁定：请先解锁" }
+      : agents.isAttached(id)
+        ? { code: ErrorCodes.ATTACH_ACTIVE, message: "终端接管中：平行发送已停用（切回 📱 平行模式可恢复）" }
+        : null,
   );
   // 全局存在感知：任一会话文件（pi / claude）变化 → 广播 sessions_changed + 搜索索引失效（fs.watch 事件驱动）
   const presence = new PresenceWatcher(
@@ -256,10 +283,32 @@ async function main(): Promise<void> {
 
   const shutdown = (signal: string): void => {
     console.log(`[agent-hub] received ${signal}, shutting down...`);
-    void started.close().then(() => process.exit(0));
+    void started
+      .close()
+      .then(() => process.exit(0))
+      .catch((err) => {
+        console.error("[agent-hub] shutdown failed:", err);
+        process.exit(1);
+      });
   };
   process.once("SIGINT", () => shutdown("SIGINT"));
   process.once("SIGTERM", () => shutdown("SIGTERM"));
+
+  // 崩溃兜底（P0）：未处理 Promise 拒绝 / 未捕获异常 → 记日志 + 优雅关闭，不裸崩；
+  // 关闭卡死 5s 兜底强退（同样 exit(1)）
+  const crashExit = (kind: string, err: unknown): void => {
+    console.error(`[agent-hub] ${kind}:`, err instanceof Error ? (err.stack ?? err.message) : err);
+    const force = setTimeout(() => process.exit(1), 5_000);
+    void started
+      .close()
+      .catch(() => undefined)
+      .finally(() => {
+        clearTimeout(force);
+        process.exit(1);
+      });
+  };
+  process.on("unhandledRejection", (reason) => crashExit("unhandledRejection", reason));
+  process.on("uncaughtException", (err) => crashExit("uncaughtException", err));
 }
 
 // 直接执行时启动（被 import 时不自启，便于测试）

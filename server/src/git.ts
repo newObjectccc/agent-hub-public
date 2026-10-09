@@ -64,7 +64,9 @@ export const runGit: GitRunner = async (cwd, args, opts) => {
       return e.stdout ?? "";
     }
     const detail = (e.stderr ?? e.message ?? String(err)).trim().slice(0, 400);
-    throw new HubError(ErrorCodes.GIT_FAILED, `git ${args[0] ?? ""} 失败: ${detail}`, 500);
+    // 真实 stderr/错误详情只进服务端日志，HTTP 错误信封只回 `git <cmd> 失败`（不泄内部细节）
+    console.error(`[agent-hub] git ${args[0] ?? ""} failed: ${detail}`);
+    throw new HubError(ErrorCodes.GIT_FAILED, `git ${args[0] ?? ""} 失败`, 500);
   }
 };
 

@@ -17,6 +17,7 @@ import type { SessionHubLike } from "../routes.js";
 import type { SessionHub } from "../sessions/hub.js";
 import type { MessageDto, ServerEvent, SessionListItem, SystemInfo } from "../types.js";
 import { WsHub } from "../ws.js";
+import { fakeUnlockedAppLock } from "./fakeAppLock.js";
 
 const sessionFixture: SessionListItem = {
   id: "sess-1",
@@ -209,7 +210,7 @@ describe("live: POST /api/live/:sessionId → WS 广播（fake WS 断言）", ()
       config: { ...DEFAULT_CONFIG, auth: { enabled: false, token } },
       systemInfo: async () => systemFixture,
       live: ingest,
-      webRoot: null,
+      webRoot: null, appLock: fakeUnlockedAppLock(),
       logger: false,
     });
     wshub.attach(app.server, makeFakeHub() as unknown as SessionHub);

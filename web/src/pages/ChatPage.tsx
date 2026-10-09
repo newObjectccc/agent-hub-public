@@ -213,6 +213,16 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
   const [attachMode, setAttachMode] = useState<AttachMode>(() => loadAttachMode(safeStorage(), sessionId));
   const attachModeRef = useRef<AttachMode>(attachMode);
   attachModeRef.current = attachMode;
+  /** 本地 attachMode 校正（server 是事实源）：只同步本地状态与持久化，不做 attach 握手 */
+  const applyAttachMode = useCallback(
+    (mode: AttachMode) => {
+      if (attachModeRef.current === mode) return;
+      attachModeRef.current = mode;
+      setAttachMode(mode);
+      saveAttachMode(safeStorage(), sessionId, mode);
+    },
+    [sessionId],
+  );
   /** 终端 pi 在线/接管状态（server 真值，WS attach_state 实时更新） */
   const [terminal, setTerminal] = useState<TerminalAttachInfo | null>(null);
   /** 发送后归属确认一行小字（独立状态字，不侵入 E1 阶段状态条） */
@@ -314,6 +324,11 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
       setHasMore(Boolean(detail.hasMore));
       setStatus(detail.session.status);
       setTerminal(detail.session.terminal ?? null);
+      // 双模式跨设备校正（server 是事实源）：电脑已 attach 接管而本机 localStorage 还是平行模式时，
+      // parallel 发送会被 409 ATTACH_ACTIVE 挡死 → 按 server terminal.attached 校正本地模式
+      const attachedFlag = detail.session.terminal?.attached;
+      if (attachedFlag === true) applyAttachMode("attach");
+      else if (attachedFlag === false) applyAttachMode("parallel");
       // 首次进入可双模式会话：一次性说明 sheet（记住选择，用完即走，不常驻）
       if (!introCheckedRef.current) {
         introCheckedRef.current = true;
@@ -340,7 +355,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
     } finally {
       setLoading(false);
     }
-  }, [sessionId]);
+  }, [sessionId, applyAttachMode]);
 
   useEffect(() => {
     setLoading(true);
@@ -1000,9 +1015,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
           const online = event.terminalOnline === true;
           setTerminal({ online, attached });
           if (!attached && attachModeRef.current === "attach") {
-            attachModeRef.current = "parallel";
-            setAttachMode("parallel");
-            saveAttachMode(safeStorage(), sessionId, "parallel");
+            applyAttachMode("parallel");
             setNotice("终端已退出接管（心跳超时或主动断开），已切回 📱 平行模式");
           }
           break;
@@ -1026,7 +1039,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
           break;
       }
     },
-    [sessionId],
+    [sessionId, applyAttachMode],
   );
 
   useSessionSocket({
@@ -1129,6 +1142,8 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
           onNotice: setNotice,
         },
         imagePaths.length > 0 ? imagePaths : undefined,
+        // 幂等键 = 乐观占位 id：超时重发同键，server 去重防同文双发双执行
+        localId,
       );
       if (!outcome.result.accepted) {
         enqueueFailedSend(localId, text, atts, channel, false, "消息未被接受，请稍后重试");
@@ -1142,6 +1157,31 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
         vibrate(10);
       }
     } catch (e) {
+      // duck-type 读错误码（测试 mock 的 client 模块未必导出 ApiError 类）
+      const rawCode = (e as { code?: unknown } | null)?.code;
+      const code = typeof rawCode === "string" ? rawCode : null;
+      if (code === "ATTACH_ACTIVE" || code === "ATTACH_REQUIRED") {
+        // 双模式跨设备死锁自愈（server 是事实源）：通道与 server 接管态对齐后自动补发
+        // （同 localId 幂等），不再入手动重试死信；提示告知现状与出路
+        const healChannel: "parallel" | "attach" = code === "ATTACH_ACTIVE" ? "attach" : "parallel";
+        applyAttachMode(healChannel);
+        enqueueFailedSend(
+          localId,
+          text,
+          atts,
+          healChannel,
+          true,
+          code === "ATTACH_ACTIVE" ? "终端接管中，消息已改发往电脑终端" : "终端未接管，消息已改由 server 处理",
+        );
+        setNotice(
+          code === "ATTACH_ACTIVE"
+            ? "🖥 终端接管中：已自动切到 🖥 接管模式，消息改由电脑终端 pi 执行（如需手机平行发送，请在电脑终端退出接管）"
+            : "终端已退出接管：已自动切回 📱 平行模式，消息由 server 的 pi 继续处理",
+        );
+        endWait();
+        void flushOfflineQueue({ notify: true });
+        return;
+      }
       // 网络错误 / 5xx → 自动重试；4xx 业务拒绝 → 手动重试（均持久化，刷新不丢）
       const message = e instanceof Error ? e.message : "发送失败";
       enqueueFailedSend(localId, text, atts, channel, classifySendError(e) === "network", message);

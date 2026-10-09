@@ -13,7 +13,7 @@ import {
 } from "./appLock.js";
 import type { CommandsApi } from "./commands.js";
 import { createCommandsApi } from "./commands.js";
-import type { HubConfig } from "./config.js";
+import { expandPath, type HubConfig } from "./config.js";
 import type { DashboardServiceLike } from "./dashboard.js";
 import { ErrorCodes, HubError, toErrorEnvelope } from "./errors.js";
 import { listDir, type ListDirOptions } from "./fs-tree.js";
@@ -29,6 +29,7 @@ import { loadClaudeSubAgents } from "./adapters/claude-transcript.js";
 import type { TerminalServiceLike } from "./terminal.js";
 import { parseDaysParam, UsageService, type UsageServiceLike } from "./usage.js";
 import {
+  isUnderRoot,
   loadImageAttachments,
   MAX_ATTACHMENTS_PER_MESSAGE,
   MAX_UPLOAD_BODY_BYTES,
@@ -93,8 +94,8 @@ export interface RouteDeps {
   appLock?: AppLockStoreLike;
   /** ttyd Web 终端服务（F2；可注入 mock，缺省时 /api/terminal/* 返回 503） */
   terminal?: TerminalServiceLike;
-  /** 应用锁门禁（F1 预留）：返回 false 时拒绝签发终端 token；缺省视为已解锁 */
-  terminalUnlocked?: () => boolean | Promise<boolean>;}
+  /** 应用锁门禁（F1）：传入请求的 X-App-Lock-Token，返回 false 时拒绝签发终端 token；缺省视为已解锁 */
+  terminalUnlocked?: (lockToken?: string) => boolean | Promise<boolean>;}
 
 /** 会话项注入终端驱动状态（仅 pi 会话；agents 未启用时原样返回） */
 function stampTerminal(session: SessionListItem, agents?: AgentLinkLike): SessionListItem {
@@ -116,6 +117,10 @@ function tokenMatches(headerValue: string, expected: string): boolean {
 
 function handle(reply: FastifyReply, err: unknown): void {
   const { statusCode, body } = toErrorEnvelope(err);
+  // 内部错误的真实 message/堆栈只进服务端日志（信封已固定为 "internal error"）
+  if (statusCode >= 500) {
+    console.error("[agent-hub] internal error:", err instanceof Error ? (err.stack ?? err.message) : err);
+  }
   void reply.status(statusCode).send(body);
 }
 
@@ -132,6 +137,53 @@ function requireAbsoluteCwd(body: unknown): { cwd: string; name?: string } {
   return { cwd, name };
 }
 
+/**
+ * prompt 幂等键去重（sessionId + clientMessageId，TTL 10min）：
+ * 防弱网重发双执行；首次占位防并发双发，失败释放允许重试。
+ */
+export class PromptIdempotencyStore {
+  private readonly entries = new Map<string, { expiresAt: number; mode: string | null }>();
+
+  constructor(
+    private readonly ttlMs = 10 * 60 * 1000,
+    private readonly now: () => number = Date.now,
+  ) {}
+
+  /** 首次/已过期 → 占位返回 false（可执行）；重复（处理中/已完成未过期）→ true（重放） */
+  begin(key: string): boolean {
+    const now = this.now();
+    for (const [k, entry] of this.entries) {
+      if (entry.expiresAt <= now) this.entries.delete(k);
+    }
+    const hit = this.entries.get(key);
+    if (hit && hit.expiresAt > now) return true;
+    this.entries.set(key, { expiresAt: now + this.ttlMs, mode: null });
+    return false;
+  }
+
+  /** 处理成功：记录受理 mode，重发时重放同语义响应 */
+  complete(key: string, mode: string): void {
+    const hit = this.entries.get(key);
+    if (hit) hit.mode = mode;
+  }
+
+  /** 处理失败：释放占位允许客户端重试（不缓存错误结果） */
+  release(key: string): void {
+    this.entries.delete(key);
+  }
+
+  modeOf(key: string): string | null {
+    return this.entries.get(key)?.mode ?? null;
+  }
+}
+
+/** 锁屏门禁豁免：解锁/设置/登录（/api/app-lock/*）+ 静态资源（非 /api） */
+export function isAppLockExempt(url: string): boolean {
+  const path = url.split("?")[0];
+  if (!path.startsWith("/api")) return true;
+  return path === "/api/app-lock" || path.startsWith("/api/app-lock/");
+}
+
 export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Promise<void> {
   const { hub, kpi, config, dashboard } = deps;
   const git = deps.git ?? createGitApi();
@@ -141,6 +193,8 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   const usageService: UsageServiceLike = deps.usage ?? new UsageService({ sessionDir: config.sessionDir });
   const panelDriven: PanelDrivenStoreLike = deps.panelDriven ?? createPanelDrivenStore(dataDir);
   const appLock: AppLockStoreLike = deps.appLock ?? createAppLockStore(dataDir);
+  /** prompt 幂等键（sessionId + clientMessageId）：弱网重发不双执行 */
+  const promptIdem = new PromptIdempotencyStore();
   /** 会话 DTO 附加最后驱动来源（契约 §1，面板驱动过即 panel） */
   const decorateSession = (s: SessionListItem): SessionListItem => ({
     ...s,
@@ -325,15 +379,26 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
     }
   });
 
-  // POST /api/sessions/:id/prompt（images：上传图片相对路径数组，pi 直接附图，契约 §1/§11）
+  // POST /api/sessions/:id/prompt（images：上传图片相对路径数组，pi 直接附图，契约 §1/§11；
+  // clientMessageId 可选幂等键：同 (sessionId, clientMessageId) 重发只执行一次，重放首次受理响应）
   app.post<{ Params: { id: string } }>("/api/sessions/:id/prompt", async (req, reply) => {
+    const body = (typeof req.body === "object" && req.body !== null ? req.body : {}) as {
+      text?: unknown;
+      mode?: unknown;
+      images?: unknown;
+      clientMessageId?: unknown;
+    };
+    const clientMessageId =
+      typeof body.clientMessageId === "string" && body.clientMessageId !== "" && body.clientMessageId.length <= 128
+        ? body.clientMessageId
+        : undefined;
+    const idemKey = clientMessageId === undefined ? null : `${req.params.id}:${clientMessageId}`;
+    if (idemKey !== null && promptIdem.begin(idemKey)) {
+      // 弱网重发：直接重放首次受理结果，不再次驱动 agent（防双执行）
+      return reply.status(202).send({ accepted: true, mode: promptIdem.modeOf(idemKey) ?? "prompt", deduplicated: true });
+    }
     try {
       rejectIfAttached(req.params.id);
-      const body = (typeof req.body === "object" && req.body !== null ? req.body : {}) as {
-        text?: unknown;
-        mode?: unknown;
-        images?: unknown;
-      };
       const text = body.text;
       // pi slash 命令 `/compact [instructions]`：SDK prompt() 不处理内置命令（实测透传成普通消息），
       // 改走官方 SDK session.compact() 通道（契约 §8）；其余命令原样作为 prompt 文本发送
@@ -356,6 +421,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
               throw err;
             }
             await panelDriven.mark(req.params.id);
+            if (idemKey !== null) promptIdem.complete(idemKey, "prompt");
             return reply.status(202).send({ accepted: true, mode: "prompt", handled: "compact" });
           }
         }
@@ -380,8 +446,11 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
       }
       // 面板驱动标注（心理预期管理）：接受 prompt 即记入“面板驱动过”集合
       await panelDriven.mark(req.params.id);
+      if (idemKey !== null) promptIdem.complete(idemKey, result.mode);
       return reply.status(202).send({ accepted: true, mode: result.mode });
     } catch (err) {
+      // 失败不缓存：释放占位允许客户端带同一 clientMessageId 重试
+      if (idemKey !== null) promptIdem.release(idemKey);
       return handle(reply, err);
     }
   });
@@ -416,14 +485,17 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   });
 
   // POST /api/live/:sessionId：pi 扩展 live-feed 事件接入（契约 §6，fire-and-forget）
-  // 共享密钥：config auth.token 非空则校验 Bearer，空则放行（tailnet 场景）
+  // 鉴权与 auth 同口径：token 非空（或 auth.enabled）必须 Bearer 匹配；无共享密钥时仅限本机回环，
+  // 防局域网/恶意网页注入伪造会话消息
   app.post<{ Params: { sessionId: string } }>("/api/live/:sessionId", async (req, reply) => {
     try {
-      if (config.auth.token !== "") {
+      if (config.auth.token !== "" || config.auth.enabled) {
         const header = req.headers.authorization ?? "";
         if (!tokenMatches(header, `Bearer ${config.auth.token}`)) {
           throw new HubError(ErrorCodes.UNAUTHORIZED, "invalid or missing shared token", 401);
         }
+      } else if (!isLoopbackAddr(req.ip) && !isLoopbackAddr(req.socket?.remoteAddress)) {
+        throw new HubError(ErrorCodes.UNAUTHORIZED, "live 接入仅限本机回环（或配置 auth.token 共享密钥）", 401);
       }
       const sessionId = req.params.sessionId;
       if (typeof sessionId !== "string" || sessionId === "" || sessionId.length > 256) {
@@ -600,9 +672,9 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   });
 
   // POST /api/terminal/session：按需拉起 ttyd 并签发同源反代 URL（token 能力凭证）
-  app.post("/api/terminal/session", async (_req, reply) => {
+  app.post("/api/terminal/session", async (req, reply) => {
     try {
-      if (deps.terminalUnlocked && !(await deps.terminalUnlocked())) {
+      if (deps.terminalUnlocked && !(await deps.terminalUnlocked(lockTokenOf(req)))) {
         throw new HubError(ErrorCodes.UNAUTHORIZED, "应用已锁定：解锁后可用终端", 401);
       }
       const session = await requireTerminal().ensureSession();
@@ -771,15 +843,27 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
         data?: unknown;
       };
       // cwd 优先取 sessionId 归属会话（防前端伪造任意写入目录）；无 sessionId 时要求显式绝对路径 cwd
+      // 且必须落在 workspaceRoot 或已知会话 cwd 内（防任意目录写入）
       let cwd: string | null = null;
+      const allowedCwdRoots: string[] = [expandPath(config.workspaceRoot, process.cwd())];
       if (typeof body.sessionId === "string" && body.sessionId !== "") {
         const session = await hub.findSession(body.sessionId);
         if (!session) {
           throw new HubError(ErrorCodes.SESSION_NOT_FOUND, `会话不存在: ${body.sessionId}`, 404);
         }
         cwd = session.cwd;
+        allowedCwdRoots.push(session.cwd);
       } else if (typeof body.cwd === "string" && body.cwd.trim() !== "") {
         const { cwd: abs } = requireAbsoluteCwd({ cwd: body.cwd });
+        if (!isUnderRoot(allowedCwdRoots[0], abs)) {
+          // workspaceRoot 外：仅允许落在已知会话 cwd 内（含自身，不接受其父级）
+          const known = await hub.listSessions();
+          const hit = known.find((s) => isUnderRoot(s.cwd, abs));
+          if (!hit) {
+            throw new HubError(ErrorCodes.INVALID_CWD, "cwd 不在 workspaceRoot 或已知会话目录内", 400);
+          }
+          allowedCwdRoots.push(hit.cwd);
+        }
         cwd = abs;
       }
       const upload: UploadDto = await saveUpload({
@@ -788,6 +872,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
         name: body.name,
         mimeType: body.mimeType,
         data: body.data,
+        allowedCwdRoots,
       });
       return reply.status(201).send({ upload });
     } catch (err) {
@@ -819,6 +904,19 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
     const value = Array.isArray(raw) ? raw[0] : raw;
     return typeof value === "string" ? value : "";
   };
+
+  // 全局锁屏门禁（onRequest）：已配置应用锁且未解锁时，除解锁/设置/登录（/api/app-lock/*）
+  // 与静态资源外的全部 API 一律拒绝（无令牌 423 / 错令牌 401，统一错误信封）
+  app.addHook("onRequest", async (req, reply) => {
+    if (isAppLockExempt(req.url)) return;
+    if (!appLock.status().configured) return;
+    const token = lockTokenOf(req);
+    if (appLock.verifyToken(token).ok) return;
+    if (token === "") {
+      return reply.status(423).send({ error: { code: ErrorCodes.APP_LOCKED, message: "应用已锁定：请先解锁" } });
+    }
+    return reply.status(401).send({ error: { code: ErrorCodes.APP_LOCK_DENIED, message: "应用锁未解锁或令牌过期" } });
+  });
 
   const requireUnlocked = (req: FastifyRequest): void => {
     if (!appLock.verifyToken(lockTokenOf(req)).ok) {

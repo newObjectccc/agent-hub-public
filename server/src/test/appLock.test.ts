@@ -6,7 +6,7 @@
  * - WebAuthn 断言验签（合成 EC P-256 密钥）：挑战/origin/rpIdHash/标志位/计数器/签名
  */
 import { createHash, generateKeyPairSync, sign as cryptoSign, type KeyObject } from "node:crypto";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { strict as assert } from "node:assert";
@@ -137,17 +137,77 @@ describe("appLock: setup / unlock / change / disable 生命周期", () => {
     assert.equal(store.status().configured, true);
   });
 
-  it("令牌校验：7 天内有效、过期无效、伪造令牌无效", () => {
+  it("令牌校验：滑动过期（活动续期）、闲置超 7 天过期、伪造令牌无效", () => {
     let now = 0;
     const { store } = tmpStore(() => now);
     const { token } = store.setup("1234");
     assert.equal(store.verifyToken(token).ok, true);
     assert.equal(store.verifyToken("forged-token").ok, false);
     assert.equal(store.verifyToken("").ok, false);
-    now = LOCK_TOKEN_TTL_MS - 1;
-    assert.equal(store.verifyToken(token).ok, true);
-    now = LOCK_TOKEN_TTL_MS + 1;
-    assert.equal(store.verifyToken(token).ok, false, "超过 7 天必须过期");
+    // 活动续期：6 天后仍活跃 → 过期时间前移（总存活 > 7 天）
+    now = 6 * 24 * 60 * 60 * 1000;
+    assert.equal(store.verifyToken(token).ok, true, "活动续期内不过期");
+    now += 6 * 24 * 60 * 60 * 1000;
+    const renewed = store.verifyToken(token);
+    assert.equal(renewed.ok, true, "滑动过期：活跃期间持续有效");
+    assert.ok((renewed.expiresAt ?? 0) > LOCK_TOKEN_TTL_MS, "过期时间已滑动前移");
+
+    // 闲置过期：全程不活动 → 超 7 天必须过期
+    let idleNow = 0;
+    const { store: idle } = tmpStore(() => idleNow);
+    const idleToken = idle.setup("1234").token;
+    idleNow = LOCK_TOKEN_TTL_MS + 1;
+    assert.equal(idle.verifyToken(idleToken).ok, false, "闲置超过 7 天必须过期");
+  });
+
+  it("PIN 失败限速：连错 5 次锁 30s（429），指数退避翻倍，成功解锁清零", () => {
+    let now = 1_000_000;
+    const { store } = tmpStore(() => now);
+    store.setup("1234");
+    for (let i = 0; i < 5; i += 1) {
+      assert.throws(
+        () => store.unlock("0000"),
+        (err: unknown) => err instanceof HubError && err.code === "APP_LOCK_DENIED" && err.statusCode === 401,
+        `第 ${i + 1} 次错误 PIN 应 401`,
+      );
+    }
+    // 锁定期内：正确 PIN 也拒绝（429 + 剩余秒数）
+    assert.throws(
+      () => store.unlock("1234"),
+      (err: unknown) => err instanceof HubError && err.statusCode === 429 && /秒后重试/.test(err.message),
+    );
+    // 30s 后解锁锁定；再错一次 → 锁定翻倍到 60s（指数退避）
+    now += 31_000;
+    assert.throws(
+      () => store.unlock("0000"),
+      (err: unknown) => err instanceof HubError && err.statusCode === 401,
+    );
+    assert.throws(
+      () => store.unlock("1234"),
+      (err: unknown) => err instanceof HubError && err.statusCode === 429,
+    );
+    // 60s 后正确 PIN 解锁成功并清零计数：后续 4 次错误不再受限
+    now += 61_000;
+    assert.ok(store.unlock("1234").token.length > 20);
+    for (let i = 0; i < 4; i += 1) {
+      assert.throws(
+        () => store.unlock("0000"),
+        (err: unknown) => err instanceof HubError && err.statusCode === 401,
+      );
+    }
+    assert.ok(store.unlock("1234").token.length > 20, "4 次错误未达阈值，不受限");
+  });
+
+  it("凭据文件 chmod 0600（save / disable 均收紧）", () => {
+    const { store, file } = tmpStore();
+    store.setup("1234");
+    assert.equal(statSync(file).mode & 0o777, 0o600, "setup 落盘 0600");
+    // 人为放宽后再次写盘（滑动续期）应重新收紧
+    chmodSync(file, 0o644);
+    assert.equal(store.verifyToken(store.unlock("1234").token).ok, true);
+    assert.equal(statSync(file).mode & 0o777, 0o600, "写盘即收紧");
+    store.disable("1234");
+    assert.equal(statSync(file).mode & 0o777, 0o600, "disable 落盘同样 0600");
   });
 
   it("未配置时 unlock/change/disable → APP_LOCK_NOT_CONFIGURED", () => {

@@ -16,6 +16,8 @@ import {
   isSubAgentName,
   isSubAgentSession,
   parentSessionIdFromPath,
+  readSessionFile,
+  loadSessionMessages,
   MAX_MESSAGE_IMAGES,  parseSessionJsonl,
   resetSessionCaches,
   scanSessionInsights,
@@ -564,6 +566,89 @@ describe("scan: 洞察计数与 per-file 增量缓存（AC2/AC3/AC4 基准）", 
       await scanSubAgentLineage(dir, { ttlMs: 0 });
       await scanSubAgentLineage(dir, { ttlMs: 0 });
       assert.equal(sessionCacheStats().fileReads, 2, "重扫不重读未变文件");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("scan: messageCount 口径与超大文件降级（数据一致性审计）", () => {
+  it("messageCount 含 custom_message（与 chat 渲染口径对齐，compaction 等元数据不计）", () => {
+    const parsed = parseSessionJsonl(
+      [
+        JSON.stringify(header),
+        JSON.stringify({
+          type: "message",
+          id: "c1",
+          parentId: null,
+          timestamp: "2026-02-18T10:00:01.000Z",
+          message: { role: "user", content: "问题", timestamp: 1733234401000 },
+        }),
+        JSON.stringify({
+          type: "custom_message",
+          id: "c2",
+          parentId: "c1",
+          timestamp: "2026-02-18T10:00:02.000Z",
+          content: "自定义事件",
+        }),
+        JSON.stringify({
+          type: "message",
+          id: "c3",
+          parentId: "c2",
+          timestamp: "2026-02-18T10:00:03.000Z",
+          message: { role: "assistant", content: "回答", timestamp: 1733234403000 },
+        }),
+        JSON.stringify({ type: "compaction", id: "c4", parentId: "c3", timestamp: "2026-02-18T10:00:04.000Z", summary: "压缩" }),
+      ].join("\n"),
+    );
+    const summary = buildSessionSummary("/tmp/x.jsonl", parsed, Date.now());
+    assert.ok(summary);
+    // 2 条 message + 1 条 custom_message = 3（chat 渲染同口径）；compaction 属元数据不计
+    assert.equal(summary.messageCount, 3);
+    assert.equal(buildMessages(parsed.entries).length, 4, "chat 渲染 4 条（含 compaction 提示），messageCount 只计消息");
+  });
+
+  it("readSessionFile/loadSessionMessages 超过 maxBytes 截尾部窗口（防 OOM 降级），小文件不受影响", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agent-hub-scan-big-"));
+    const file = join(dir, "big.jsonl");
+    try {
+      const headText = `前部历史-${"H".repeat(400)}`;
+      await writeFile(
+        file,
+        [
+          JSON.stringify(header),
+          JSON.stringify({
+            type: "message",
+            id: "head-msg",
+            parentId: null,
+            timestamp: "2026-02-18T10:00:01.000Z",
+            message: { role: "user", content: headText, timestamp: 1733234401000 },
+          }),
+          JSON.stringify({
+            type: "message",
+            id: "tail-msg",
+            parentId: "head-msg",
+            timestamp: "2026-02-18T10:00:02.000Z",
+            message: { role: "assistant", content: "尾部近期消息", timestamp: 1733234402000 },
+          }),
+        ].join("\n") + "\n",
+        "utf8",
+      );
+      // 小窗口（200 字节）：只解析尾部窗口内的完整行——前部历史被舍弃（防 OOM 取舍）
+      const tailOnly = await loadSessionMessages(file, 200);
+      assert.deepEqual(tailOnly.map((m) => m.id), ["tail-msg"], "尾部窗口外的前部历史被舍弃");
+      // 窗口内断链安全（parentId 指向窗口外的 entry 按断链保留）
+      assert.equal(tailOnly[0].role, "assistant");
+      // 窗口够大：全量解析，消息不缺
+      const all = await loadSessionMessages(file, 100_000);
+      assert.deepEqual(all.map((m) => m.id), ["head-msg", "tail-msg"]);
+      // readSessionFile 的 maxBytes 同语义（尾部窗口从完整行边界开始）
+      const text = await readSessionFile(file, { maxBytes: 200 });
+      assert.ok(!text.includes("前部历史"), "窗口内不含前部行");
+      assert.ok(text.includes("tail-msg"));
+      // 不传 maxBytes 保持全量（向后兼容）
+      const full = await readSessionFile(file);
+      assert.ok(full.includes("head-msg") && full.includes("tail-msg"));
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

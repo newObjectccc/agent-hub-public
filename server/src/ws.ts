@@ -3,6 +3,7 @@
  * 连接即订阅；重连后客户端走 GET /api/sessions/:id 全量对账（不做增量恢复）。
  */
 import type { IncomingMessage, Server as HttpServer } from "node:http";
+import { timingSafeEqual } from "node:crypto";
 import type { Duplex } from "node:stream";
 import { WebSocket, WebSocketServer } from "ws";
 import { loadClaudeSessionMessages } from "./adapters/claude-transcript.js";
@@ -15,6 +16,81 @@ import type { ServerEvent, SessionListItem } from "./types.js";
 
 const WS_PATH_RE = /^\/ws\/sessions\/([^/]+)$/;
 const WS_EVENTS_PATH = "/ws/events";
+
+/** WS upgrade 鉴权配置（与 routes.ts HTTP Bearer 鉴权同口径） */
+export interface WsAuthConfig {
+  enabled: boolean;
+  token: string;
+}
+
+/**
+ * 提取 upgrade 请求的 token（三种通道，与 HTTP 鉴权同口径）：
+ * 1. `Authorization: Bearer <token>`（非浏览器客户端）
+ * 2. `Sec-WebSocket-Protocol: bearer, <token>` / `bearer.<token>`（浏览器 WS 不能自定义头）
+ * 3. query `?token=<token>`（最后手段）
+ */
+export function extractWsToken(req: Pick<IncomingMessage, "headers" | "url">): string | null {
+  const authz = req.headers.authorization;
+  if (typeof authz === "string") {
+    const m = /^Bearer\s+(.+)$/i.exec(authz.trim());
+    if (m) return m[1].trim();
+  }
+  const proto = req.headers["sec-websocket-protocol"];
+  if (typeof proto === "string") {
+    const parts = proto
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => s !== "");
+    for (let i = 0; i < parts.length; i += 1) {
+      const p = parts[i];
+      const dot = p.indexOf(".");
+      if (dot > 0) {
+        const scheme = p.slice(0, dot).toLowerCase();
+        if (scheme === "bearer" || scheme === "token" || scheme === "access_token") return p.slice(dot + 1);
+      }
+      const lower = p.toLowerCase();
+      if ((lower === "bearer" || lower === "token" || lower === "access_token") && i + 1 < parts.length) {
+        return parts[i + 1];
+      }
+    }
+  }
+  try {
+    const q = new URL(req.url ?? "", "http://localhost").searchParams.get("token");
+    if (q !== null && q !== "") return q;
+  } catch {
+    /* 非法 URL：无 token */
+  }
+  return null;
+}
+
+/**
+ * 解锁令牌（app lock，与 auth token 独立）：header `x-app-lock-token`（非浏览器客户端）
+ * / 子协议 `lock-token.<t>`（浏览器 WS 不带自定义头；子协议不进 URL/日志）/ query `lockToken` 兼容。
+ */
+export function extractWsLockToken(req: Pick<IncomingMessage, "headers" | "url">): string | undefined {
+  const header = req.headers["x-app-lock-token"];
+  if (typeof header === "string" && header !== "") return header.trim();
+  const proto = req.headers["sec-websocket-protocol"];
+  if (typeof proto === "string") {
+    for (const part of proto.split(",").map((s) => s.trim()).filter((s) => s !== "")) {
+      const dot = part.indexOf(".");
+      if (dot > 0 && part.slice(0, dot).toLowerCase().replace(/_/g, "-") === "lock-token") return part.slice(dot + 1);
+    }
+  }
+  try {
+    const q = new URL(req.url ?? "", "http://localhost").searchParams.get("lockToken");
+    if (q !== null && q !== "") return q;
+  } catch {
+    /* 非法 URL：无 token */
+  }
+  return undefined;
+}
+
+function safeTokenEquals(a: string, b: string): boolean {
+  const ba = Buffer.from(a);
+  const bb = Buffer.from(b);
+  return ba.length === bb.length && ba.length > 0 && timingSafeEqual(ba, bb);
+}
 
 /**
  * tail 解析器按 source 注入：pi 走默认 loader（session-format v3），
@@ -49,8 +125,10 @@ export class WsHub {
   private tails: SessionTailManager | null = null;
   /** 子代理会话增量发现间隔（默认 10s；测试可注入短值） */
   childScanMs = 10_000;
-  /** prompt 冲突保护（E3：attach 接管期间拒绝 parallel 发送，防双写） */
-  private promptGuard: ((sessionId: string) => { code: string; message: string } | null) | null = null;
+  /** prompt 冲突保护（E3：attach 接管期间拒绝 parallel 发送，防双写）+ 锁屏门禁（lockToken） */
+  private promptGuard: ((sessionId: string, lockToken?: string) => { code: string; message: string } | null) | null = null;
+  /** upgrade 鉴权（config.auth.enabled 时校验 token，无/错 token 直接断连） */
+  private auth: WsAuthConfig | null = null;
 
   /** hub 广播出口（构造 SessionHub 时注入） */
   broadcast(sessionId: string, event: ServerEvent): void {
@@ -99,14 +177,18 @@ export class WsHub {
     server: HttpServer,
     hub: WsSessionHub,
     tailManager?: SessionTailManager,
-    promptGuard?: (sessionId: string) => { code: string; message: string } | null,
+    promptGuard?: (sessionId: string, lockToken?: string) => { code: string; message: string } | null,
+    auth?: WsAuthConfig,
   ): void {
     const wss = new WebSocketServer({ noServer: true });
     this.wss = wss;
     this.tails = tailManager ?? null;
     this.promptGuard = promptGuard ?? null;
+    this.auth = auth ?? null;
 
     server.on("upgrade", (req: IncomingMessage, socket: Duplex, head: Buffer) => {
+      // 鉴权在 upgrade 阶段完成（与 HTTP Bearer 同口径）：无/错 token 直接断连，不进 handleUpgrade
+      if (!this.authorizeUpgrade(req, socket)) return;
       const url = (req.url ?? "").split("?")[0];
       // 全局事件通道：会话列表变更通知（presence）
       if (url === WS_EVENTS_PATH) {
@@ -125,10 +207,26 @@ export class WsHub {
         return;
       }
       const sessionId = decodeURIComponent(match[1]);
+      const lockToken = extractWsLockToken(req);
       wss.handleUpgrade(req, socket, head, (ws) => {
-        this.handleConnection(ws, sessionId, hub);
+        this.handleConnection(ws, sessionId, hub, lockToken);
       });
     });
+  }
+
+  /**
+   * upgrade 鉴权：config.auth.enabled 且 token 非空时必须携带合法 token
+   * （Authorization / Sec-WebSocket-Protocol / ?token=，与 routes.ts HTTP 鉴权同口径）。
+   * 失败直接 401 + 断连（不进 WebSocket 握手）。
+   */
+  private authorizeUpgrade(req: IncomingMessage, socket: Duplex): boolean {
+    const auth = this.auth;
+    if (!auth || !auth.enabled || auth.token === "") return true;
+    const provided = extractWsToken(req);
+    if (provided !== null && safeTokenEquals(provided, auth.token)) return true;
+    socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
+    socket.destroy();
+    return false;
   }
 
   private handleGlobalConnection(socket: WebSocket): void {
@@ -172,7 +270,7 @@ export class WsHub {
    * 同步注册消息监听；findSession 解析完成前到达的消息进 pending 队列，
    * 握手后统一消费。修复“连接即发的消息静默丢失”竞态。
    */
-  private handleConnection(socket: WebSocket, sessionId: string, hub: WsSessionHub): void {
+  private handleConnection(socket: WebSocket, sessionId: string, hub: WsSessionHub, lockToken?: string): void {
     const pending: string[] = [];
     let ready = false;
     let acquired = false;
@@ -182,7 +280,7 @@ export class WsHub {
     const childTails = new Set<string>();
     const cleanupFns: Array<() => void> = [];
     const process = (text: string): void => {
-      void this.handleClientMessage(socket, sessionId, hub, text);
+      void this.handleClientMessage(socket, sessionId, hub, text, lockToken);
     };
 
     const cleanup = (): void => {
@@ -217,6 +315,8 @@ export class WsHub {
         socket.close(1008, ErrorCodes.SESSION_NOT_FOUND);
         return;
       }
+      // 连接建立期已断开（close 先于 findSession 返回）：不再注册，防死 socket 永驻 clients Map
+      if (closed) return;
 
       this.add(sessionId, socket);
       // 契约：连接后首条握手确认
@@ -275,7 +375,13 @@ export class WsHub {
         // 增量发现：订阅期间新派生的子代理（面板开着不刷新也能看到新卡片）
         const childScan = setInterval(syncChildren, this.childScanMs); // 发现上界（轻量血缘扫描毫秒级；测试可注入短值）
         childScan.unref?.();
-        cleanupFns.push(() => clearInterval(childScan));
+        // cleanup 可能已执行过（cleanupFns 被 splice 清空，后 push 的回调永不触发）：
+        // closed 时立即 clear，防 interval 泄漏持续扫盘
+        if (closed) {
+          clearInterval(childScan);
+        } else {
+          cleanupFns.push(() => clearInterval(childScan));
+        }
       }
 
       ready = true;
@@ -284,7 +390,7 @@ export class WsHub {
     })();
   }
 
-  private async handleClientMessage(socket: WebSocket, sessionId: string, hub: WsSessionHub, raw: string): Promise<void> {
+  private async handleClientMessage(socket: WebSocket, sessionId: string, hub: WsSessionHub, raw: string, lockToken?: string): Promise<void> {
     let parsed: ClientMessage;
     try {
       parsed = JSON.parse(raw) as ClientMessage;
@@ -312,7 +418,7 @@ export class WsHub {
       }
       case "prompt": {
         try {
-          const blocked = this.promptGuard?.(sessionId) ?? null;
+          const blocked = this.promptGuard?.(sessionId, lockToken) ?? null;
           if (blocked) {
             this.send(socket, { type: "error", code: blocked.code, message: blocked.message });
             return;

@@ -406,6 +406,8 @@ export function deriveDashboard(insights: SessionInsight[], options: DeriveDashb
 export const LIVE_TEXT_LIMIT = 2000;
 /** read 标记内存上限（对齐 saveReadMarks 的磁盘 1000 上限） */
 export const READ_IDS_MAX = 1000;
+/** 会话文本 Map（lastAssistantText/lastUserText）条目上限（照 liveItems 同款逐出最老） */
+export const TEXT_MAP_MAX = 200;
 
 /** 驻留文本截断（保留前缀——通知摘要只用开头；纯函数可测） */
 export function clampResidentText(text: string): string {
@@ -415,6 +417,20 @@ export function clampResidentText(text: string): string {
 /** read 标记集合裁剪：只保留最近 max 条（与 saveReadMarks 的磁盘口径一致） */
 export function capReadIds(readIds: ReadonlySet<string>, max: number = READ_IDS_MAX): Set<string> {
   return readIds.size <= max ? new Set(readIds) : new Set([...readIds].slice(-max));
+}
+
+/**
+ * 会话文本 Map 写入（LRU 语义）：同 key 重写刷新插入序，超上限逐出最久未写入的条目
+ * （照 liveItems 的 200 上限逐出模式，防长跑 server 的文本 Map 无界增长）。
+ */
+export function setResidentText(map: Map<string, string>, key: string, value: string, max: number = TEXT_MAP_MAX): void {
+  map.delete(key);
+  map.set(key, value);
+  while (map.size > max) {
+    const oldest = map.keys().next().value;
+    if (oldest === undefined) break;
+    map.delete(oldest);
+  }
 }
 
 // ---------- 服务编排（IO） ----------
@@ -609,12 +625,12 @@ export class DashboardService implements DashboardServiceLike {
     switch (event.type) {
       case "message_end": {
         if (event.message.text.trim() === "") break;
-        // 驻留只留前缀（摘要只需开头）：超长输出不常驻内存（AC6）
+        // 驻留只留前缀（摘要只需开头）：超长输出不常驻内存（AC6）；条目数同样有上限（LRU 逐出最老）
         if (event.message.role === "assistant") {
-          this.lastAssistantText.set(sessionId, clampResidentText(event.message.text));
+          setResidentText(this.lastAssistantText, sessionId, clampResidentText(event.message.text));
         } else if (event.message.role === "user") {
           // 任务名语义：settled/steering 摘要优先用本轮最后一条 user 消息
-          this.lastUserText.set(sessionId, clampResidentText(event.message.text));
+          setResidentText(this.lastUserText, sessionId, clampResidentText(event.message.text));
         }
         break;
       }

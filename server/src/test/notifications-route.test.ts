@@ -11,6 +11,7 @@ import { createApp } from "../index.js";
 import type { SessionHubLike } from "../routes.js";
 import type { MessageDto, NotificationItem, SearchResultDto, SessionListItem, SessionTreeDto, SystemInfo } from "../types.js";
 import type { PromptResult } from "../sessions/hub.js";
+import { fakeUnlockedAppLock } from "./fakeAppLock.js";
 
 const sessionFixture: SessionListItem = {
   id: "sess-1",
@@ -94,7 +95,7 @@ describe("POST /api/notifications/read（单条/多条/全部已读）", () => {
       }),
       config: { ...DEFAULT_CONFIG },
       systemInfo: async () => systemFixture,
-      webRoot: null,
+      webRoot: null, appLock: fakeUnlockedAppLock(),
       logger: false,
     });
   });

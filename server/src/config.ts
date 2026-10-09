@@ -5,6 +5,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
+import { isIPv4, isIPv6 } from "node:net";
 
 export interface HubConfig {
   port: number;
@@ -16,6 +17,10 @@ export interface HubConfig {
     enabled: boolean;
     token: string;
   };
+  /** 跨域白名单（精确 origin，如 https://app.example.com）；空数组 = 拒绝一切跨域 */
+  allowOrigins: string[];
+  /** 显式 opt-in 局域网暴露（允许 host 绑定通配地址）；默认 false = 绝不通配绑定 */
+  allowLan: boolean;
 }
 
 export const DEFAULT_CONFIG: HubConfig = {
@@ -25,6 +30,8 @@ export const DEFAULT_CONFIG: HubConfig = {
   workspaceRoot: "~/Workspace",
   kpiRefreshMinutes: 5,
   auth: { enabled: false, token: "" },
+  allowOrigins: [],
+  allowLan: false,
 };
 
 /** 展开 `~` 前缀为用户主目录；相对路径按 baseDir 解析。 */
@@ -34,12 +41,88 @@ export function expandPath(p: string, baseDir: string, home = homedir()): string
   return isAbsolute(p) ? p : resolve(baseDir, p);
 }
 
-/** 拒绝通配绑定（0.0.0.0 / :: / * / 空字符串）——绝不明文暴露公网。 */
-export function isSafeBindHost(host: string): boolean {
+/**
+ * 通配/未指定地址判定（归一化后判定，防简写绕过）：
+ * 0.0.0.0、* 与 IPv6 未指定地址的任意简写（:: / ::0 / 0:0:0:0:0:0:0:0 / 0:0::0）
+ * 以及 IPv4-mapped 通配 ::ffff:0.0.0.0（含 ::ffff:0:0 写法）——全部绑定全接口。
+ * 解析不了的 IPv6 字面量保守按通配拒绝。
+ */
+function isUnspecifiedBindAddress(host: string): boolean {
   const h = host.trim().toLowerCase();
-  if (h === "") return false;
-  if (h === "0.0.0.0" || h === "::" || h === "[::]" || h === "*") return false;
-  return true;
+  if (h === "" || h === "*") return true;
+  const bare = h.replace(/^\[/, "").replace(/\]$/, "");
+  if (isIPv4(bare)) return bare === "0.0.0.0";
+  if (!isIPv6(bare)) return false; // 主机名 / 具体 IP 字符串：非通配
+  // WHATWG URL 归一化 IPv6 简写（::0 → [::]、::ffff:0.0.0.0 → [::ffff:0:0]）
+  let normalized = bare;
+  try {
+    normalized = new URL(`http://[${bare}]/`).hostname.replace(/^\[/, "").replace(/\]$/, "");
+  } catch {
+    return true;
+  }
+  return normalized === "::" || normalized === "::ffff:0:0";
+}
+
+/** 拒绝通配绑定（0.0.0.0 / :: 及其任意简写 / IPv4-mapped 通配 / * / 空字符串）——绝不明文暴露公网。 */
+export function isSafeBindHost(host: string): boolean {
+  return !isUnspecifiedBindAddress(host);
+}
+
+/** 提取 host[:port] 的 hostname（兼容 [::1]:port 形式） */
+function hostnameOfHostPort(hostPort: string): string {
+  const h = hostPort.trim().toLowerCase();
+  if (h.startsWith("[")) {
+    const end = h.indexOf("]");
+    return end > 0 ? h.slice(1, end) : h;
+  }
+  return h.split(":")[0];
+}
+
+/** 本机回环主机名（dev proxy 跨端口同源判定用） */
+function isLoopbackHostname(hostname: string): boolean {
+  return (
+    hostname === "localhost" ||
+    hostname.startsWith("127.") ||
+    hostname === "::1" ||
+    hostname === "0:0:0:0:0:0:0:1"
+  );
+}
+
+/**
+ * 同源判定：Origin 的 host[:port] 与请求 Host 头一致（默认端口归一化）；
+ * 提供连接 protocol 时 scheme 也必须一致（https 页面请求 http 接口也是跨域）。
+ * 本机 dev 例外：Origin 与 Host 都是回环地址（仅端口不同，如 Vite 5173 → proxy 7700）
+ * 视为同源（面板与 API 生产同源部署、开发期 proxy 同源语义）；远程访问不适用。
+ */
+export function isSameOrigin(origin: string | undefined, hostHeader: string | undefined, protocol?: string): boolean {
+  if (typeof origin !== "string" || origin === "" || typeof hostHeader !== "string" || hostHeader === "") {
+    return false;
+  }
+  const normalizeHostPort = (hostPort: string, scheme: string): string => {
+    const lower = hostPort.trim().toLowerCase();
+    if (scheme === "http" && lower.endsWith(":80")) return lower.slice(0, -3);
+    if (scheme === "https" && lower.endsWith(":443")) return lower.slice(0, -4);
+    return lower;
+  };
+  try {
+    const url = new URL(origin);
+    const scheme = url.protocol.replace(":", "").toLowerCase();
+    const hostHeader0 = hostHeader.split(",")[0];
+    if (normalizeHostPort(url.host, scheme) === normalizeHostPort(hostHeader0, scheme)) {
+      return protocol === undefined || scheme === protocol.toLowerCase();
+    }
+    // 本机 dev proxy（回环 ↔ 回环，仅端口/主机名写法不同）：同机浏览器访问同机服务
+    return isLoopbackHostname(url.hostname.replace(/^\[|\]$/g, "")) && isLoopbackHostname(hostnameOfHostPort(hostHeader0));
+  } catch {
+    return false; // "null" / 非法 Origin 一律不认同源
+  }
+}
+
+/** 跨域白名单精确匹配（大小写不敏感）；白名单空 = 拒绝一切跨域。 */
+export function isAllowedCrossOrigin(origin: string | undefined, allowOrigins: readonly string[]): boolean {
+  if (typeof origin !== "string" || origin === "" || allowOrigins.length === 0) return false;
+  const lower = origin.trim().toLowerCase();
+  return allowOrigins.some((allowed) => allowed.trim().toLowerCase() === lower);
 }
 
 interface RawConfig {
@@ -49,6 +132,8 @@ interface RawConfig {
   workspaceRoot?: unknown;
   kpiRefreshMinutes?: unknown;
   auth?: { enabled?: unknown; token?: unknown };
+  allowOrigins?: unknown;
+  allowLan?: unknown;
 }
 
 export interface LoadedConfig {
@@ -77,11 +162,37 @@ export function loadHubConfig(configDir: string, home = homedir()): LoadedConfig
     warnings.push(`hub.config.json 的 port 非法，使用默认 ${DEFAULT_CONFIG.port}`);
   }
 
+  config.allowLan = raw.allowLan === true;
   if (typeof raw.host === "string" && raw.host.trim() !== "") {
-    if (isSafeBindHost(raw.host)) {
-      config.host = raw.host.trim();
+    const host = raw.host.trim();
+    if (isSafeBindHost(host)) {
+      config.host = host;
+    } else if (config.allowLan) {
+      // --lan 语义 = 显式 opt-in 局域网：config 显式确认（allowLan: true）后才允许通配绑定
+      config.host = host;
+      warnings.push(
+        `hub.config.json 已显式开启 allowLan：host "${host}" 将监听所有网络接口（含局域网/公网），请确认所在网络可信`,
+      );
     } else {
-      warnings.push(`hub.config.json 的 host "${raw.host}" 是通配/公网绑定地址，已拒绝并回落到 127.0.0.1`);
+      warnings.push(
+        `hub.config.json 的 host "${host}" 是通配/公网绑定地址，已拒绝并回落到 127.0.0.1（如需局域网访问请同时设置 "allowLan": true）`,
+      );
+    }
+  }
+
+  if (raw.allowOrigins !== undefined) {
+    if (Array.isArray(raw.allowOrigins)) {
+      const valid: string[] = [];
+      for (const item of raw.allowOrigins) {
+        if (typeof item === "string" && item.trim() !== "") {
+          valid.push(item.trim());
+        } else {
+          warnings.push(`hub.config.json 的 allowOrigins 含非法条目（${String(item)}），已忽略`);
+        }
+      }
+      config.allowOrigins = valid;
+    } else {
+      warnings.push("hub.config.json 的 allowOrigins 必须是字符串数组，已忽略（跨域全部拒绝）");
     }
   }
 
