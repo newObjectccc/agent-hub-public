@@ -197,6 +197,22 @@ pm2 save && pm2 startup        # 开机自启
 - `config/hub.config.json`：端口/目录（setup 生成）
 - `config/kpi-sources.json`：可选指标卡数据源（`${ENV_VAR}` 引用密钥）
 
+## 安全须知（部署前必读）
+
+本项目默认**零鉴权**，信任边界是你的私有网络——部署形态决定安全性：
+
+| 部署形态 | 安全 | 需要做什么 |
+|---|---|---|
+| 本机 `127.0.0.1`（默认） | ✅ | 无 |
+| Tailscale / headscale / 私有局域网 | ✅ | 无（推荐形态） |
+| 公网 VPS / 公网 IP 直接暴露 | ❌ | **必须**开启 `auth.token`（见下），否则任何能访问到端口的人都能驱使你机器上的 pi/Claude agent 执行指令 |
+
+- **开启 API 鉴权**：`config/hub.config.json` 里 `"auth": { "enabled": true, "token": "<长随机串>" }`——开启后全部 API 与 WS 均需 `Authorization: Bearer <token>`
+- `auth.enabled` 默认 `false` 是刻意设计（tailnet 内免 token 的顺手体验）；暴露公网前请务必开启
+- **应用锁（PIN / WebAuthn）是界面锁**，防的是旁人物理接触你的手机/电脑，不是网络鉴权——两层防护独立生效，不要混用
+- `host` 默认 `127.0.0.1` 且拒绝通配绑定；局域网开放需显式 `"allowLan": true`（或 `start -- --lan`）
+- 发现安全问题请**勿公开 issue**，通过仓库 About 页的联系方式私下告知
+
 ## License
 
 [MIT](LICENSE) © 2026 newObjectccc
