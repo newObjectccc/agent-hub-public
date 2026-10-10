@@ -191,16 +191,6 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
   });
   // DNS rebinding 防护（P2）：非法 Host（非 localhost/IP/ts.net/local/显式信任名）→ 403，
   // 先于一切业务路由/静态托管；WS upgrade 不走 onRequest hook，在下方单独把关
-  const extraHostNames = options.config.allowOrigins
-    .map((origin) => {
-      try {
-        return new URL(origin).hostname;
-      } catch {
-        return "";
-      }
-    })
-    .filter((h) => h !== "");
-  const hostOptions = { bindHost: options.config.host, extraHosts: extraHostNames };
   app.addHook("onRequest", async (req, reply) => {
     if (isAllowedHostHeader(req.headers.host, hostOptions)) return;
     return reply.status(403).send({ error: { code: ErrorCodes.UNAUTHORIZED, message: "host not allowed (dns rebinding guard)" } });
@@ -220,38 +210,36 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
   const allowOrigins = options.config.allowOrigins ?? [];
   const crossOriginAllowed = (origin: string | undefined, host: string | undefined, protocol?: string): boolean =>
     isSameOrigin(origin, host, protocol) || isAllowedCrossOrigin(origin, allowOrigins);
-  // 反代感知：tailscale serve 等本机回环代理会把 https 降为 http 上游，同源判定若不采信
-  // X-Forwarded-Proto/Host，HTTPS 面板每笔 fetch 都会被判「协议不匹配跨域」→ 403（真机踩坑）。
-  // 安全边界：仅信任**回环对端**带来的转发头，外部伪造一律不采信，跨域防线不松动。
-  const isLoopbackPeer = (addr: string | undefined): boolean => {
-    if (!addr) return false;
-    const a = addr.replace(/^::ffff:/, "");
-    return a === "127.0.0.1" || a === "::1" || a === "localhost";
-  };
-  const effectiveHostProto = (req: FastifyRequest): { host: string | undefined; protocol: string | undefined } => {
-    if (!isLoopbackPeer(req.socket.remoteAddress)) {
-      return { host: req.headers.host, protocol: req.protocol };
-    }
-    const fwdProto = req.headers["x-forwarded-proto"];
-    const fwdHost = req.headers["x-forwarded-host"];
-    return {
-      host: typeof fwdHost === "string" && fwdHost !== "" ? fwdHost.split(",")[0].trim() : req.headers.host,
-      protocol: typeof fwdProto === "string" && fwdProto !== "" ? fwdProto.split(",")[0].trim() : req.protocol,
-    };
+  // 反代感知（安全版）：tailscale serve 等反代会把 https 降为 http 上游，同源判定若强制比对协议，
+  // HTTPS 面板每笔 fetch 都会被判「协议不匹配跨域」→ 403（真机踩坑）。
+  // 安全边界：只看 **Host 头**（浏览器不可伪造）是否在信任名单（*/ts.net/localhost/IP/bindHost/allowOrigins）；
+  // 信任则跳过协议比对；**绝不采信 X-Forwarded-* **（fetch 可自定义，恶意页可伪造 → 同源判定整体沦陷）。
+  const hostOptions = {
+    bindHost: options.config.host,
+    extraHosts: allowOrigins
+      .map((o) => {
+        try {
+          return new URL(o).hostname;
+        } catch {
+          return "";
+        }
+      })
+      .filter((h) => h !== ""),
   };
   // 拒绝 hook 先于 CORS 插件注册：恶意 preflight OPTIONS 也一律 403
   app.addHook("onRequest", async (req, reply) => {
     const origin = req.headers.origin;
     if (typeof origin !== "string" || origin === "") return; // 非浏览器/同源导航：无 CORS 问题
-    const { host, protocol } = effectiveHostProto(req);
-    if (crossOriginAllowed(origin, host, protocol)) return;
+    const trustedHost = isAllowedHostHeader(req.headers.host, hostOptions);
+    if (crossOriginAllowed(origin, req.headers.host, trustedHost ? undefined : req.protocol)) return;
     return reply.status(403).send({ error: { code: ErrorCodes.UNAUTHORIZED, message: "cross-origin request denied" } });
   });
   await app.register(fastifyCors, {
     delegator: (req, cb) => {
       const origin = req.headers.origin;
-      const { host, protocol } = effectiveHostProto(req);
-      cb(null, { origin: crossOriginAllowed(origin, host, protocol) ? (origin ?? false) : false });
+      const trustedHost = isAllowedHostHeader(req.headers.host, hostOptions);
+      const ok = crossOriginAllowed(origin, req.headers.host, trustedHost ? undefined : req.protocol);
+      cb(null, { origin: ok ? (origin ?? false) : false });
     },
   });
 

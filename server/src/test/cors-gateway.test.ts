@@ -251,3 +251,39 @@ describe("CORS：回环反代（tailscale serve）场景（真机踩坑：HTTPS 
     }
   });
 });
+
+describe("CORS：转发头伪造防线（X-Forwarded-Host 不可信）", () => {
+  it("恶意页伪造 X-Forwarded-Host 试图冒充同源 → 仍 403（Host 头才是信任根）", async () => {
+    const app = await makeApp();
+    try {
+      const res = await app.inject({
+        method: "GET",
+        url: "/api/sessions",
+        headers: {
+          origin: "https://evil.example.com",
+          host: "127.0.0.1:7700",
+          "x-forwarded-proto": "https",
+          "x-forwarded-host": "evil.example.com",
+        },
+        remoteAddress: "127.0.0.1",
+      });
+      assert.equal(res.statusCode, 403, "转发头不参与同源判定，伪造无效");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("allowOrigins 的 hostname 进入 Host 白名单（自定义域名/隧道域名部署路径）", async () => {
+    const app = await makeApp({ allowOrigins: ["https://tunnel.example.com"] });
+    try {
+      const res = await app.inject({
+        method: "GET",
+        url: "/api/sessions",
+        headers: { origin: "https://tunnel.example.com", host: "tunnel.example.com" },
+      });
+      assert.notEqual(res.statusCode, 403, "显式信任的域名放行");
+    } finally {
+      await app.close();
+    }
+  });
+});
