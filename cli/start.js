@@ -148,6 +148,16 @@ export async function main(argv = [], deps = {}) {
       }
       const res = runPackageManagerScript(pm, 'build', { cwd: step.cwd, env, platform });
       if (!res.ok) {
+        // 降级：构建失败不阻塞启动（弱网 pnpm 超时 / 并发锁场景实测踩坑）——
+        // 产物存在则用现有构建继续，仅无产物才退出（自启时宁可跑旧版也不躺平）
+        const artifact = step.cwd.endsWith('web')
+          ? path.join(step.cwd, 'dist', 'index.html')
+          : path.join(step.cwd, 'dist', 'index.js');
+        if (fs.existsSync(artifact)) {
+          log(`${colors.warn} ${step.label} 失败（${res.error || res.stderr.trim() || '未知原因'}）`);
+          log(`${colors.warn} 检测到已有构建产物，降级用现有构建继续启动（稍后可手动 npm run build 更新）`);
+          continue;
+        }
         log(`${colors.fail} ${step.label} 失败: ${res.error || res.stderr.trim() || res.stdout.trim()}`);
         return 1;
       }

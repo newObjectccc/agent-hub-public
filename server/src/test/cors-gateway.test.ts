@@ -209,3 +209,45 @@ describe("/api/live 收紧：无共享密钥不得注入伪造消息（P2）", (
     }
   });
 });
+
+describe("CORS：回环反代（tailscale serve）场景（真机踩坑：HTTPS 面板全量 403）", () => {
+  it("回环反代带 X-Forwarded-Proto: https → 同源放行（协议降级不再误判跨域）", async () => {
+    const app = await makeApp();
+    try {
+      const res = await app.inject({
+        method: "GET",
+        url: "/api/sessions",
+        headers: {
+          origin: "https://hub.example.ts.net",
+          host: "hub.example.ts.net",
+          "x-forwarded-proto": "https",
+          "x-forwarded-host": "hub.example.ts.net",
+        },
+        remoteAddress: "127.0.0.1",
+      });
+      assert.notEqual(res.statusCode, 403, "反代后的 HTTPS 同源请求不得被判跨域");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("非回环对端伪造转发头 → 仍拒绝（转发头信任边界不松动）", async () => {
+    const app = await makeApp();
+    try {
+      const res = await app.inject({
+        method: "GET",
+        url: "/api/sessions",
+        headers: {
+          origin: "https://hub.example.ts.net",
+          host: "127.0.0.1:7700",
+          "x-forwarded-proto": "https",
+          "x-forwarded-host": "hub.example.ts.net",
+        },
+        remoteAddress: "203.0.113.5",
+      });
+      assert.equal(res.statusCode, 403, "外部对端的转发头不可信，跨域防线保持");
+    } finally {
+      await app.close();
+    }
+  });
+});

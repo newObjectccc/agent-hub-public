@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## v0.2.0（2026-10-10）首个开源版本
+
+### 功能批（国际化 / codex 桌面 app / 首页分源统计）
+- i18n 国际化基础设施（轻量自研，零新依赖）：`t()` 插值 + `Intl.PluralRules` 复数 + zh/en 语言包 + MessageKey TS 类型防错 + 漏翻守护测试；设置页语言三态切换（跟随系统/中文/English）持久化 + `<html lang>` 同步；AppShell 菜单/标题示范 key 化（全量提取后续批次）
+- codex 桌面 app 会话完整支持：event_msg 活动流（CommandExecution/FileChange/McpToolCall → 工具卡片，parsed_cmd 语义映射 read/write/delete_file）、token_usage_record 用量入账（多根源含归档）、compacted 压缩边界安全、archived_sessions/ 归档扫描（列表尾部 📦 徽章）
+- 工作台首页按来源分统计：DashboardStats.bySource（今日消息/今日完成/工作中/等你处理 × pi/claude/codex，细分和=总量）+ 今日概览细分小字 + 工作中/等你处理来源过滤 chips
 
 ### 性能（tailnet 慢链路优化批，真机体感问题）
 - 弱 ETag 协商缓存：GET JSON 响应带 W/ ETag + no-cache，重复打开命中 If-None-Match → 304 零字节体（二次打开关键优化）；identity 哈希，注册于压缩前
