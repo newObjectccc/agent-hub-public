@@ -1949,6 +1949,19 @@ button.syschip.terminal-entry:hover {
   accent-color: var(--primary);
 }
 
+/* 设置页语言选择（i18n）：与 settings-row 同高的原生 select，触控友好 */
+.locale-select {
+  width: 100%;
+  min-height: 40px;
+  padding: 6px 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--foreground);
+  background: var(--background);
+  border: var(--bw) solid var(--border);
+  border-radius: 8px;
+}
+
 .theme-row {
   display: flex;
   flex-wrap: wrap;

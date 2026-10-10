@@ -2,6 +2,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import { ErrorBoundary } from "./components/ErrorBoundary";
+import { I18nProvider } from "./i18n/provider";
 import { installUnhandledRejectionGuard } from "./utils/unhandledRejection";
 import "./styles.css";
 import "./d-polish.css";
@@ -12,9 +13,11 @@ import "./j1-header.css"; /* J1 顶栏图标按钮统一规范（后加载覆盖
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <ErrorBoundary>
-      <App />
-    </ErrorBoundary>
+    <I18nProvider>
+      <ErrorBoundary>
+        <App />
+      </ErrorBoundary>
+    </I18nProvider>
   </StrictMode>,
 );
 

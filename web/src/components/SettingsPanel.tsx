@@ -11,6 +11,8 @@ import {
   type NotifySettings,
 } from "../utils/notify";
 import { applyTheme, loadTheme, saveTheme, type ThemeSetting } from "../utils/theme";
+import { useLocale, useT } from "../i18n/provider";
+import type { LocaleSetting } from "../i18n";
 import { AppLockSettings } from "./AppLockSettings";
 import { Button } from "./ui/button";
 
@@ -45,6 +47,8 @@ function ToggleRow({
 export function SettingsPanel() {
   const [settings, setSettings] = useState<NotifySettings>(DEFAULT_NOTIFY_SETTINGS);
   const [theme, setTheme] = useState<ThemeSetting>("system");
+  const t = useT();
+  const { setting: localeSetting, setSetting: setLocale } = useLocale();
 
   useEffect(() => {
     const storage = typeof localStorage !== "undefined" ? localStorage : null;
@@ -84,6 +88,23 @@ export function SettingsPanel() {
             </Button>
           ))}
         </div>
+      </section>
+
+      {/* 语言三态（i18n）：跟随系统 / 中文 / English，localStorage 持久化 + <html lang> 同步 */}
+      <section className="card settings-section" aria-label={t("settings.locale")}>
+        <div className="notif-panel-head">
+          <span className="notif-panel-title">{t("settings.locale")}</span>
+        </div>
+        <select
+          className="locale-select"
+          value={localeSetting}
+          onChange={(e) => setLocale(e.target.value as LocaleSetting)}
+          aria-label={t("settings.locale")}
+        >
+          <option value="system">{t("settings.locale.system")}</option>
+          <option value="zh">{t("settings.locale.zh")}</option>
+          <option value="en">{t("settings.locale.en")}</option>
+        </select>
       </section>
 
       <section className="card settings-section" aria-label="提醒">

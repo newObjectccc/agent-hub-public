@@ -28,31 +28,33 @@ import { SearchPanel } from "./SearchPanel";
 import { MenuIcon, PlusIcon, SearchIcon, CloseIcon } from "./icons";
 import { Button } from "./ui/button";
 import { cn } from "@/lib/utils";
+import { useT } from "../i18n/provider";
+import type { MessageKey } from "../i18n";
 
 export interface NavItem {
   path: string;
   icon: string;
-  label: string;
+  label: MessageKey;
   routeName: Route["name"];
 }
 
-/** 一级菜单（drawer / sidebar 共用） */
+/** 一级菜单（drawer / sidebar 共用）：label 为 i18n key，渲染时 t() 出文案 */
 export const NAV_ITEMS: ReadonlyArray<NavItem> = [
-  { path: HOME_PATH, icon: "🏠", label: "工作台", routeName: "home" },
-  { path: SESSIONS_PATH, icon: "💬", label: "会话", routeName: "sessions" },
-  { path: SYSTEM_PATH, icon: "🖥", label: "系统", routeName: "system" },
-  { path: TERMINAL_PATH, icon: "⌨️", label: "终端", routeName: "terminal" },
-  { path: SETTINGS_PATH, icon: "⚙️", label: "设置", routeName: "settings" },
+  { path: HOME_PATH, icon: "🏠", label: "nav.home", routeName: "home" },
+  { path: SESSIONS_PATH, icon: "💬", label: "nav.sessions", routeName: "sessions" },
+  { path: SYSTEM_PATH, icon: "🖥", label: "nav.system", routeName: "system" },
+  { path: TERMINAL_PATH, icon: "⌨️", label: "nav.terminal", routeName: "terminal" },
+  { path: SETTINGS_PATH, icon: "⚙️", label: "nav.settings", routeName: "settings" },
 ];
 
-export const PAGE_TITLES: Record<Route["name"], string> = {
-  home: "工作台",
-  sessions: "会话",
-  system: "系统",
-  terminal: "终端",
-  settings: "设置",
-  chat: "会话详情",
-  tree: "会话分支",
+export const PAGE_TITLES: Record<Route["name"], MessageKey> = {
+  home: "page.title.home",
+  sessions: "page.title.sessions",
+  system: "page.title.system",
+  terminal: "page.title.terminal",
+  settings: "page.title.settings",
+  chat: "page.title.chat",
+  tree: "page.title.tree",
 };
 
 /** 右滑关闭阈值（px） */
@@ -65,6 +67,7 @@ export interface AppShellProps {
 
 export function AppShell({ route, children }: AppShellProps) {
   const isMobile = useIsMobile();
+  const t = useT();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
@@ -160,7 +163,7 @@ export function AppShell({ route, children }: AppShellProps) {
         ) : (
           <span className="shell-burger-slot" aria-hidden />
         )}
-        <h1 className="shell-title">{PAGE_TITLES[activeName]}</h1>
+        <h1 className="shell-title">{t(PAGE_TITLES[activeName])}</h1>
         <Button
           type="button"
           variant="secondary"
@@ -209,7 +212,7 @@ export function AppShell({ route, children }: AppShellProps) {
                 <span className="nav-icon" aria-hidden>
                   {item.icon}
                 </span>
-                <span>{item.label}</span>
+                <span>{t(item.label)}</span>
               </button>
             </li>
           ))}
@@ -257,7 +260,7 @@ export function AppShell({ route, children }: AppShellProps) {
                     <span className="nav-icon" aria-hidden>
                       {item.icon}
                     </span>
-                    <span>{item.label}</span>
+                    <span>{t(item.label)}</span>
                   </button>
                 </li>
               ))}
