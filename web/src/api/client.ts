@@ -2,6 +2,7 @@
  * REST 客户端：严格按 docs/API_CONTRACT.md 调用。
  * 错误统一为 { error: { code, message } }，这里归一为 ApiError。
  */
+import { currentLockHeaders } from "../utils/appLock";
 import type {
   AttachMessageResult,
   AttachResult,
@@ -109,8 +110,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const signal = init?.signal ?? watchdog!.signal;
   try {
     const res = await fetch(path, {
-      headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
+      // init 先展开、headers 后合并：调用方 headers 不会被整体覆盖，且可覆盖默认头
       ...init,
+      headers: {
+        "Content-Type": "application/json",
+        // 全 API 自动携带应用锁令牌（服务端锁屏门禁；调用方显式传入同名头时优先）
+        ...currentLockHeaders(),
+        ...(init?.headers ?? {}),
+      },
       signal,
     });
     let body: unknown = null;

@@ -76,6 +76,17 @@ export function isTokenFresh(token: LockToken | null, now: number = Date.now()):
 }
 
 /**
+ * 全 API 请求自动携带的应用锁头（request() 统一注入）。
+ * 修复：服务端锁屏门禁（P2 加固）要求非 /api/app-lock/* 全部请求带 X-App-Lock-Token，
+ * 而主请求封装此前未注入 → 解锁后仍全体 423（真机现象：加载中→失败）。
+ * SSR / 无令牌 / 过期令牌：返回空对象（服务端会以 423/401 拒绝，前端走解锁屏）。
+ */
+export function currentLockHeaders(now: number = Date.now()): Record<string, string> {
+  const token = loadLockToken(typeof localStorage === "undefined" ? null : localStorage);
+  return isTokenFresh(token, now) && token !== null ? { "X-App-Lock-Token": token.token } : {};
+}
+
+/**
  * WS 子协议（携带解锁令牌；子协议不进 URL/日志，遵守 token 不落 URL 约定）。
  * 未解锁/令牌不新鲜时返回 undefined（服务端锁屏门禁会拒绝发送）。
  */
