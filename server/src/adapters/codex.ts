@@ -48,6 +48,8 @@ export type EmitFn = (sessionId: string, event: ServerEvent) => void;
 export interface CodexAdapterOptions {
   /** ~/.codex/sessions（rollout 会话文件树） */
   sessionsDir: string;
+  /** ~/.codex/archived_sessions（归档会话，平铺；可缺省不扫） */
+  archivedSessionsDir?: string;
   /** ~/.codex/session_index.jsonl（id → thread_name 会话名索引） */
   sessionIndexFile: string;
   emit: EmitFn;
@@ -107,6 +109,7 @@ interface RunningRun {
 export class CodexAdapter implements SessionAdapter {
   readonly source = "codex" as const;
   private readonly sessionsDir: string;
+  private readonly archivedSessionsDir: string | undefined;
   private readonly sessionIndexFile: string;
   private readonly emit: EmitFn;
   private readonly spawnFn: typeof spawn;
@@ -133,6 +136,7 @@ export class CodexAdapter implements SessionAdapter {
 
   constructor(options: CodexAdapterOptions) {
     this.sessionsDir = options.sessionsDir;
+    this.archivedSessionsDir = options.archivedSessionsDir;
     this.sessionIndexFile = options.sessionIndexFile;
     this.emit = options.emit;
     this.spawnFn = options.spawnFn ?? spawn;
@@ -240,6 +244,7 @@ export class CodexAdapter implements SessionAdapter {
     const { items, segments } = await scanCodexSessions(this.sessionsDir, index, {
       statusOf: (id, updatedMs) => this.statusWithInference(id, updatedMs),
       cache: this.fileCache,
+      archivedDir: this.archivedSessionsDir,
     });
     this.segmentsById = segments;
     return items;

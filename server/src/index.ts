@@ -318,9 +318,16 @@ export async function startHub(): Promise<StartedHub> {
   const claudeHistoryFile = join(homedir(), ".claude", "history.jsonl");
   const claudeAdapter = new ClaudeAdapter({ projectsDir: claudeProjectsDir, historyFile: claudeHistoryFile, emit });
   // Codex 会话来源：~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl + session_index.jsonl（与桌面 app/CLI 共享）
+  // 归档会话：~/.codex/archived_sessions/（平铺，列表标注归档并排尾）
   const codexSessionsDir = join(homedir(), ".codex", "sessions");
+  const codexArchivedDir = join(homedir(), ".codex", "archived_sessions");
   const codexSessionIndexFile = join(homedir(), ".codex", "session_index.jsonl");
-  const codexAdapter = new CodexAdapter({ sessionsDir: codexSessionsDir, sessionIndexFile: codexSessionIndexFile, emit });
+  const codexAdapter = new CodexAdapter({
+    sessionsDir: codexSessionsDir,
+    archivedSessionsDir: codexArchivedDir,
+    sessionIndexFile: codexSessionIndexFile,
+    emit,
+  });
   const hub = new SessionRegistry(new PiAdapter(piHub), claudeAdapter, config.sessionDir, codexAdapter);
   // 子代理血缘路由器（emit 闭包延迟引用：事件只可能在 startHub 装配完成后到达）
   const subAgentRouter = new SubAgentRouter(
@@ -336,8 +343,9 @@ export async function startHub(): Promise<StartedHub> {
     onNotification: (item) => wshub.broadcastGlobal({ type: "notification", notification: item }),
   });
   piHub.onActivity = (sessionId, activity) => dashboard.recordActivity(sessionId, activity);
-  // Token 用量汇总（契约 §15，pi 源）：按文件 mtime+size 增量重读，presence 变更时失效
-  const usage = new UsageService({ sessionDir: config.sessionDir });
+  // Token 用量汇总（契约 §14，pi + codex 源）：按文件 mtime+size 增量重读，presence 变更时失效；
+  // codex 的 token_usage_record 在解析层计数（含归档目录）
+  const usage = new UsageService({ sessionDir: config.sessionDir, codexSessionDirs: [codexSessionsDir, codexArchivedDir] });
   const kpi = new KpiService({ configDir, kpiRefreshMinutes: config.kpiRefreshMinutes });
   // ttyd Web 终端服务（F2）：生命周期归 server 管（关闭时回收 ttyd）
   const terminalService = new TerminalService();

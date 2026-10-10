@@ -35,7 +35,7 @@ Base URL: `http://<host>:<port>/api`（默认端口 7700）
   ]
 }
 ```
-排序：`updatedAt` 倒序（跨来源统一排序；同刻按 id 稳定排序）。`status` 由 server 内存中的运行态决定
+排序：`updatedAt` 倒序（跨来源统一排序；同刻按 id 稳定排序）；归档会话（`archived: true`）整体排列表尾部。`status` 由 server 内存中的运行态决定
 （本进程启动的 prompt 才可能是 `running`），否则按文件活动推断（60s 内有写盘 = running）。
 
 `source` 为 v0 新增契约字段：列表项与详情里的 `session` 均带该字段；前端按其渲染来源徽章。
@@ -58,6 +58,10 @@ header 的 `parentSession`（文件路径）解析出的父会话 id（文件名
 命中即 `"panel"`，否则 `"terminal"`；缺省按 `"terminal"` 容错。语义：手机面板发消息 =
 server 进程的 pi SDK 实例驱动**同一会话文件**追加，电脑终端 pi 需 `pi --resume` 重开
 才能看到；前端按其渲染 📱 面板驱动 / 🖥 终端驱动 徽章与预期提示条。
+
+`archived` 为归档会话标注契约字段（列表项与详情里的 `session` 均带，可缺省）：codex 归档
+目录 `~/.codex/archived_sessions/` 扫描出的会话为 `true`（任一分段在归档目录即视为归档），
+列表标注「📦 归档」并排列表尾部；非归档 / 旧 server 缺省，前端按 `!== true` 容错为非归档。
 
 ### GET /api/sessions/:id
 会话详情 + **active branch** 的消息历史（渲染 chat 用）。
@@ -844,10 +848,15 @@ Linux `sudo apt install ttyd`）。与 §12 的「终端接管」是两回事：
 - 鉴权：token 能力凭证（`?t=` 查询串）或 `hub-terminal-token` HttpOnly Cookie（Path=/terminal）。
   无效/过期 → 401 信封；ttyd 未运行 → 503。token 校验不过的 upgrade 直接断连。
 - 与 §6 的 SPA 路由 `/terminal`（无斜杠）不冲突：`/terminal` 回前端页面，`/terminal/*` 走反代。
-## 14. Token 用量统计（GET /api/usage，pi 源新增）
+## 14. Token 用量统计（GET /api/usage，pi + codex 源）
 
 pi 会话 JSONL 中每条 assistant 消息的 `message.usage` 记录一次 API 调用的用量，
-聚合即逐条求和（坏行 / 缺 usage 字段优雅跳过）。**仅 pi 源**（claude 源延后）。
+聚合即逐条求和（坏行 / 缺 usage 字段优雅跳过）。codex 源：rollout JSONL 每条
+`token_usage_record` 的 `payload.usage` 记录一次 API 调用用量（input_tokens /
+output_tokens / cached_input_tokens / cache_write_input_tokens /
+reasoning_output_tokens / total_tokens 映射同名维度，无费用数据 `costTotal` 恒 `null`），
+含 `~/.codex/sessions/` 与 `~/.codex/archived_sessions/`（含归档会话）；同一会话跨多个
+rollout 分段文件时采样合并为一条会话汇总。claude 源延后。
 
 ### GET /api/usage（全局汇总）
 
@@ -876,7 +885,7 @@ pi 会话 JSONL 中每条 assistant 消息的 `message.usage` 记录一次 API �
 - `range`：仅带 `?days=N` 时返回，最近 N 个自然日（含今日，N 为 1..3650 整数）
 - `costTotal`：`cost.total` 求和；数据源全程无 `cost` 字段时为 `null`（`0` 是有效金额，勿混淆）
 - `sessions`：仅含有 usage 采样的会话，`updatedAt` 倒序（采样时间与文件 mtime 取新），
-  `usage` 为该会话全量汇总；单文件损坏 / 无采样会话不影响整体
+  `usage` 为该会话全量汇总（codex 跨分段文件合并）；单文件损坏 / 无采样会话不影响整体
 
 ### GET /api/usage?sessionId=（单会话汇总）
 

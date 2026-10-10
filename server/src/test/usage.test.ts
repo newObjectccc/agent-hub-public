@@ -338,3 +338,98 @@ describe("usage: 大数组汇总（OOM 审计 AC7）", () => {
     assert.equal(out.length, 400_000, "40 万采样全部汇总（spread 实现会 RangeError）");
   });
 });
+
+// ---------- codex 源（token_usage_record，真实 app 会话行结构 fixture） ----------
+
+describe("usage: codex 源（token_usage_record 计入，解析层补计数）", () => {
+  const CSID = "019e67ea-c861-78a1-b429-119496dac86e";
+  const CSID2 = "019e1a99-10c7-73a1-ba76-f3c152539e1d";
+  const CUSAGE_1 = { input_tokens: 100, cached_input_tokens: 30, cache_write_input_tokens: 0, output_tokens: 20, reasoning_output_tokens: 7, total_tokens: 127 };
+  const CUSAGE_2 = { input_tokens: 50, cached_input_tokens: 10, cache_write_input_tokens: 0, output_tokens: 10, reasoning_output_tokens: 0, total_tokens: 60 };
+
+  /** session_meta 行（真实结构） */
+  function codexMetaLine(sid: string, ts = "2026-10-07T11:44:29.000Z"): string {
+    return JSON.stringify({
+      timestamp: ts,
+      ordinal: 0,
+      type: "session_meta",
+      payload: { session_id: sid, id: sid, timestamp: ts, cwd: "/tmp/demo", originator: "codex_work_desktop", cli_version: "0.159.0-alpha.12.1" },
+    });
+  }
+
+  /** token_usage_record 行（真实键集）：usage 是本次调用，turn/thread_token_usage 是累计不叠加 */
+  function codexUsageLine(ts: string, usage: Record<string, unknown>, sid = CSID): string {
+    return JSON.stringify({
+      timestamp: ts,
+      ordinal: 16,
+      type: "token_usage_record",
+      payload: {
+        thread_id: sid,
+        turn_id: "01a1162e-49bd-78b0-8d08-435d228e665b",
+        session_id: sid,
+        root_turn_id: "01a1162e-49bd-78b0-8d08-435d228e665b",
+        response_id: "resp_0fd66a932985d764016ac630bd187087d0831b42540f06e702",
+        usage,
+        turn_token_usage: { ...usage },
+        thread_token_usage: { ...usage },
+      },
+    });
+  }
+
+  it("UsageService：codex 采样计入（sessions + archived_sessions 两根），同会话分段归并一条", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agent-hub-usage-codex-"));
+    try {
+      const piDir = join(root, "pi");
+      const codexDir = join(root, "codex", "sessions");
+      const archivedDir = join(root, "codex", "archived_sessions");
+      await mkdir(join(codexDir, "2026", "10", "07"), { recursive: true });
+      await mkdir(archivedDir, { recursive: true });
+      // 同会话两个 rollout 分段（段内只含新增轮次，文件名 uuid 可能只是实例 id）→ 归并一条
+      await writeFile(join(codexDir, "2026", "10", "07", `rollout-2026-10-07T11-44-29-${CSID}.jsonl`), [codexMetaLine(CSID), codexUsageLine("2026-10-07T11:45:09.691Z", CUSAGE_1)].join("\n"));
+      await writeFile(join(codexDir, "2026", "10", "07", `rollout-2026-10-07T12-00-00-${CSID2}.jsonl`), [codexMetaLine(CSID), codexUsageLine("2026-10-07T12:01:00.000Z", CUSAGE_2)].join("\n"));
+      // 归档会话（~/.codex/archived_sessions 平铺）同样计入
+      await writeFile(join(archivedDir, `rollout-2026-05-12T13-11-39-${CSID2}.jsonl`), [codexMetaLine(CSID2, "2026-05-12T13:11:39.790Z"), codexUsageLine("2026-05-12T13:12:00.000Z", CUSAGE_2, CSID2)].join("\n"));
+
+      const service = new UsageService({
+        sessionDir: piDir,
+        codexSessionDirs: [codexDir, archivedDir],
+        ttlMs: 60_000,
+        minRescanMs: 0,
+        refreshWaitMs: 5_000,
+      });
+      const out = await service.overview(NOW);
+      assert.equal(out.sessions.length, 2, "分段归并一条 + 归档一条（无 pi 会话）");
+      const merged = out.sessions.find((s) => s.sessionId === CSID);
+      assert.ok(merged);
+      assert.equal(merged.usage.totalTokens, 187, "分段采样逐条求和（127 + 60）");
+      assert.equal(merged.usage.input, 150);
+      assert.equal(merged.usage.cacheRead, 40);
+      assert.equal(merged.usage.cacheWrite, 0);
+      assert.equal(merged.usage.reasoning, 7);
+      assert.equal(merged.usage.costTotal, null, "codex 无费用数据恒 null");
+      const archived = out.sessions.find((s) => s.sessionId === CSID2);
+      assert.ok(archived);
+      assert.equal(archived.usage.totalTokens, 60);
+      assert.equal(out.windows.all.totalTokens, 247, "全局窗口同口径求和（含归档）");
+      // 单会话查询：分段归并后的汇总
+      const detail = await service.session(CSID, NOW);
+      assert.ok(detail);
+      assert.equal(detail.windows.all.totalTokens, 187);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("UsageService：缺省 codexSessionDirs 行为不变（只扫 pi 会话目录）", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agent-hub-usage-nocodex-"));
+    try {
+      await writeFile(join(root, "only.jsonl"), codexMetaLine(CSID) + "\n" + codexUsageLine("2026-10-07T11:45:09.691Z", CUSAGE_1));
+      const service = new UsageService({ sessionDir: root, ttlMs: 60_000, minRescanMs: 0, refreshWaitMs: 5_000 });
+      const out = await service.overview(NOW);
+      assert.equal(out.sessions.length, 0, "codex 行结构不是 pi 会话 JSONL → 不计入（旧行为）");
+      assert.equal(out.windows.all.totalTokens, 0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});

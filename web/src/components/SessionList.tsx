@@ -62,10 +62,11 @@ function priorityRank(s: SessionSummary, priority?: SessionSortPriority): number
 /**
  * 排序（与契约一致）：
  * 1) 等你处理 > 工作中 > 其他（priorityRank，任意 tab 均生效，含"全部"）
- * 2) 子代理跟随父会话：已归组子代理（parentSessionId 命中列表内主会话）不单独占
+ * 2) 归档会话（archived）整体排列表尾部（锚点级，不拆散子代理组）
+ * 3) 子代理跟随父会话：已归组子代理（parentSessionId 命中列表内主会话）不单独占
  *    优先级位，排序键取父会话的；同组内主行在前、子代理按 updatedAt desc + id
- * 3) 未归组子代理整体靠后（主会话排前，R3 行为不变）
- * 4) 组内 updatedAt 倒序 + id 升序确定性 tiebreaker（AC3-a：刷新绝不重排）
+ * 4) 未归组子代理整体靠后（主会话排前，R3 行为不变）
+ * 5) 组内 updatedAt 倒序 + id 升序确定性 tiebreaker（AC3-a：刷新绝不重排）
  */
 export function sortSessions(sessions: SessionSummary[], priority?: SessionSortPriority): SessionSummary[] {
   const byId = new Map(sessions.map((s) => [s.id, s]));
@@ -88,6 +89,10 @@ export function sortSessions(sessions: SessionSummary[], priority?: SessionSortP
     const ra = priorityRank(anchorA, priority);
     const rb = priorityRank(anchorB, priority);
     if (ra !== rb) return ra - rb;
+    // 归档会话排尾（锚点级：归档子代理随组，不单独占位）
+    const archA = isArchived(anchorA) ? 1 : 0;
+    const archB = isArchived(anchorB) ? 1 : 0;
+    if (archA !== archB) return archA - archB;
     if (anchorA === anchorB) {
       // 同组：主行在前，子代理组内 updatedAt desc + id tiebreaker
       const subA = a === anchorA ? 0 : 1;
@@ -127,6 +132,11 @@ function isSubAgent(s: SessionSummary): boolean {
   return s.isSubAgent === true;
 }
 
+/** 归档会话（codex archived_sessions）：列表标注 + 排尾；缺省按非归档（旧 server 容错） */
+function isArchived(s: SessionSummary): boolean {
+  return s.archived === true;
+}
+
 interface SessionRowProps {
   session: SessionSummary;
   index: number;
@@ -159,6 +169,11 @@ function SessionRow({ session: s, index, isNew, now, runningSince, usage, onSele
           {isSubAgent(s) && (
             <span className="badge subagent" title="pi-subagents 派生的子代理会话">
               🤖
+            </span>
+          )}
+          {isArchived(s) && (
+            <span className="badge" title="归档会话（codex archived_sessions）">
+              📦 归档
             </span>
           )}
           {/* 驱动来源徽章（心理预期管理）：📱 面板驱动 / 🖥 终端驱动 */}

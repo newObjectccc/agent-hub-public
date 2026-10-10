@@ -1,16 +1,19 @@
 /**
- * pi 会话 Token 用量统计（docs/API_CONTRACT.md §15，pi 源专用，claude 源延后）。
+ * 会话 Token 用量统计（docs/API_CONTRACT.md §14，pi 源 + codex 源）。
  *
- * 事实源是 ~/.pi/agent/sessions/ 下的 JSONL：每条 assistant 消息 entry 的
+ * 事实源：pi 为 ~/.pi/agent/sessions/ 下的 JSONL——每条 assistant 消息 entry 的
  * `message.usage` 记录一次 API 调用的用量（input/output/cacheRead/cacheWrite/
- * reasoning/totalTokens/cost.total），聚合即逐条求和。坏行 / 缺 usage 字段优雅跳过，
- * 单条失败不影响整体（与 sessions/scan.ts 同口径）。
+ * reasoning/totalTokens/cost.total），聚合即逐条求和；codex 为 ~/.codex/sessions +
+ * archived_sessions 下的 rollout JSONL——每条 `token_usage_record` 的 payload.usage
+ * 是一次调用用量（字段映射见 codex-rollout.ts，解析层补计数）。坏行 / 缺 usage 字段
+ * 优雅跳过，单条失败不影响整体（与 sessions/scan.ts 同口径）。
  *
  * 纯函数（usageFromRaw / usageSamplesFromEntries / sumUsage / usageWindows / parseDaysParam）
  * 与 IO（UsageService：按文件 mtime+size 增量重读 + TTL 缓存，不全量重读 JSONL）分层，便于单测。
  */
 import { stat } from "node:fs/promises";
 import { startOfDay } from "./dashboard.js";
+import { findCodexSessionFiles, parseCodexUsageFile, sessionIdFromRolloutFileName } from "./adapters/codex-rollout.js";
 import { ErrorCodes, HubError } from "./errors.js";
 import { findSessionFiles, parseSessionJsonl, readSessionFile, sessionName, type RawEntry } from "./sessions/scan.js";
 import type {
@@ -197,6 +200,11 @@ export interface UsageServiceLike {
 
 export interface UsageServiceOptions {
   sessionDir: string;
+  /**
+   * codex 源（可选，可多根：~/.codex/sessions + ~/.codex/archived_sessions）：
+   * rollout 的 token_usage_record 计入用量；缺省不扫（旧配置行为不变）
+   */
+  codexSessionDirs?: string[];
   /** 注入读文件（单测计数读盘次数）；缺省 readSessionFile */
   readFile?: (file: string) => Promise<string>;
   /** 缓存 TTL（默认 30s，与 dashboard 洞察缓存同量级） */
@@ -215,6 +223,25 @@ interface FileUsageEntry {
   /** 会话最后更新时间（采样时间与文件 mtime 取新） */
   updatedAtMs: number;
   samples: UsageSample[];
+}
+
+/** 单文件解析结果（pi / codex 两源归一，refresh 共用 updatedAt/缓存逻辑） */
+interface ParsedUsageFile {
+  sessionId: string | null;
+  name: string | null;
+  samples: UsageSample[];
+}
+
+/** pi 会话 JSONL → 采样（header.id 为会话 id，sessionName 首条 user 文本） */
+function parsePiUsageFile(content: string): ParsedUsageFile {
+  const parsed = parseSessionJsonl(content);
+  const entries = parsed.entries;
+  return {
+    sessionId:
+      parsed.header && typeof parsed.header.id === "string" && parsed.header.id !== "" ? parsed.header.id : null,
+    name: sessionName(entries),
+    samples: usageSamplesFromEntries(entries),
+  };
 }
 
 const USAGE_CACHE_TTL_MS = 30_000;
@@ -291,7 +318,13 @@ export class UsageService implements UsageServiceLike {
   }
 
   private async refresh(now: number): Promise<void> {
-    const files = await findSessionFiles(this.options.sessionDir);
+    const piFiles = await findSessionFiles(this.options.sessionDir);
+    const codexFiles: string[] = [];
+    for (const dir of this.options.codexSessionDirs ?? []) {
+      codexFiles.push(...(await findCodexSessionFiles(dir)));
+    }
+    const codexSet = new Set(codexFiles);
+    const files = [...piFiles, ...codexFiles];
     const seen = new Set(files);
     for (const known of [...this.cache.keys()]) {
       if (!seen.has(known)) this.cache.delete(known); // 文件删除：清账
@@ -307,9 +340,12 @@ export class UsageService implements UsageServiceLike {
             if (cached !== undefined && cached.mtimeMs === fileStat.mtimeMs && cached.size === fileStat.size) {
               return; // 未变更：跳过读盘
             }
-            const parsed = parseSessionJsonl(await this.readFile(file));
-            const entries = parsed.entries;
-            const samples = usageSamplesFromEntries(entries);
+            const content = await this.readFile(file);
+            // codex：rollout 的 token_usage_record 计入（解析层轻量解析）；pi：message.usage 采样
+            const parsed = codexSet.has(file)
+              ? parseCodexUsageFile(content, sessionIdFromRolloutFileName(file.split("/").pop() ?? "") ?? undefined)
+              : parsePiUsageFile(content);
+            const samples = parsed.samples;
             // 会话最后更新时间：最后一条采样时间优先，全部缺失回退文件 mtime（与 scan.ts 同口径）
             let updatedAtMs = 0;
             for (const s of samples) {
@@ -319,8 +355,8 @@ export class UsageService implements UsageServiceLike {
             this.cache.set(file, {
               mtimeMs: fileStat.mtimeMs,
               size: fileStat.size,
-              sessionId: parsed.header && typeof parsed.header.id === "string" && parsed.header.id !== "" ? parsed.header.id : null,
-              name: sessionName(entries),
+              sessionId: parsed.sessionId,
+              name: parsed.name,
               updatedAtMs,
               samples,
             });
@@ -333,9 +369,26 @@ export class UsageService implements UsageServiceLike {
     this.lastScanAt = now;
   }
 
-  /** 全部会话快照（updatedAt 倒序 + sessionId 确定性 tiebreaker） */
+  /**
+   * 全部会话快照（updatedAt 倒序 + sessionId 确定性 tiebreaker）：
+   * 同 sessionId 多文件（codex 跨 rollout 分段）归并为一条，采样逐条合并
+   * （禁 push(...samples) 大数组 spread，OOM 审计 AC7）。
+   */
   private snapshots(): FileUsageEntry[] {
-    const out = [...this.cache.values()].filter((e) => e.sessionId !== null);
+    const merged = new Map<string, FileUsageEntry>();
+    for (const entry of this.cache.values()) {
+      const id = entry.sessionId;
+      if (id === null) continue;
+      const cur = merged.get(id);
+      if (cur === undefined) {
+        merged.set(id, { ...entry, samples: [...entry.samples] });
+        continue;
+      }
+      for (const s of entry.samples) cur.samples.push(s);
+      if (entry.updatedAtMs > cur.updatedAtMs) cur.updatedAtMs = entry.updatedAtMs;
+      if (cur.name === null) cur.name = entry.name;
+    }
+    const out = [...merged.values()];
     out.sort((a, b) => {
       const d = b.updatedAtMs - a.updatedAtMs;
       if (d !== 0) return d;

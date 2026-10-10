@@ -4,19 +4,42 @@
  * ── 调研结论（2026-10-09，基于本机 codex-cli 0.130~0.159 真实 rollout + 0.143 实测）──
  * 1. 目录布局：`~/.codex/sessions/YYYY/MM/DD/rollout-<ISO 时间>-<session-uuid>.jsonl`，
  *    桌面 app 与 CLI 共享此目录；会话文件可达数百个，列表扫描必须走 mtime 快照缓存
- *    （见 scanCodexSessions）。
+ *    （见 scanCodexSessions）。归档会话在平铺的 `~/.codex/archived_sessions/
+ *    rollout-*.jsonl`（与 sessions/ 同级，非日期子目录）：扫描合并进列表，标
+ *    `archived: true` 并排列表尾部（scanCodexSessions options.archivedDir）。
  *    ⚠️ 分段坑（实测）：同一会话可跨多个 rollout 文件（续写/压缩后轮转新文件，段内只含
  *    新增轮次）：命名 `rollout-<ts>-<uuid>[_<uuid2>].jsonl` 或换新实例 uuid 的普通命名，
  *    段内 session_meta.session_id 始终是同一会话 id（文件名 uuid 可能只是实例 id）。
  *    故会话身份一律以 session_meta 为准，列表/详情按 id 归并分段（groupCodexSegments）。
  * 2. 一行一个 JSON：`{timestamp, ordinal?, type, payload}`。顶层 type 至少有：
  *    - `session_meta`：payload 含 `session_id`/`id`（同一 uuid）、`timestamp`、`cwd`、
- *      `originator`（codex-tui/codex_exec）、`cli_version`
+ *      `originator`（codex-tui/codex_exec/codex_work_desktop）、`cli_version`
  *    - `response_item`：消息与工具调用（见下）
- *    - `event_msg`：生命周期（task_started/task_complete/token_count/user_message/
- *      item_completed…），不进 chat 渲染
+ *    - `event_msg`：app/CLI 的活动流（见 2.1）
+ *    - `token_usage_record`：每次 API 调用的 token 用量（见 2.2）
+ *    - `compacted`：上下文压缩边界（见 2.3）
  *    - `turn_context` / `world_state`：上下文快照，跳过
  *    未识别 type 一律优雅跳过。
+ * 2.1. `event_msg`（实测桌面 app rollout 占比最大的行）payload.type 有 item_completed /
+ *    task_started / task_complete / token_count / turn_aborted / thread_settings_applied。
+ *    其中 `item_completed` 的 `payload.item` 是活动流（桌面 app 的「正在运行命令/已读取
+ *    文件」来源）：`CommandExecution`（shell 命令，`parsed_cmd` 带语义 read/write…、
+ *    path、cmd；`command` 为 ["/bin/zsh","-lc","<shell>"]；status completed/failed；
+ *    stdout/stderr）、`FileChange`（apply_patch 结果，changes: {path: {type,
+ *    unified_diff}}）、`McpToolCall`（server/tool/arguments/status/result）、`Extension`
+ *    （kind:"web.search"、query）。这些映射为活动 toolCalls 折叠进所属 assistant
+ *    （与 pi/claude 的工具活动同口径，见 activityFromEventPayload）；Reasoning /
+ *    AgentMessage / UserMessage / ImageView / ContextCompaction 与 response_item
+ *    重复或非活动，跳过；其余 event_msg（生命周期）不进 chat。
+ * 2.2. `token_usage_record` payload.usage 是**本次调用**用量（input_tokens /
+ *    cached_input_tokens / cache_write_input_tokens / output_tokens /
+ *    reasoning_output_tokens / total_tokens），逐条求和即会话总量（与 pi 的
+ *    message.usage 同口径）；turn_token_usage / thread_token_usage 是累计值，不求和。
+ *    事件流里的 token_count 是同数据的 UI 快照，不重复计数。
+ * 2.3. `compacted`：上下文压缩边界（payload.replacement_history 是压缩后的上下文快照，
+ *    与压缩前已解析的 response_item 重复，**不再解析为消息**）。识别到边界时清空
+ *    call_id 折叠状态（防 output 归并跨越压缩点挂错 assistant），并插一条 `[context
+ *    compacted]` 轻量 custom 条目（与 pi 的 compaction 条目同口径）。
  * 3. `response_item` payload.type === "message"：`{role:"user"|"assistant"|"developer",
  *    content:[{type:"input_text"|"output_text"|"input_image", text|image_url}], phase?}`。
  *    - developer 角色是注入的指令/上下文（permissions instructions、AGENTS.md…），跳过
@@ -39,7 +62,8 @@
 import { createReadStream } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
-import type { MessageDto, MessageImage, SessionListItem, ToolCallDto } from "../types.js";
+import type { MessageDto, MessageImage, SessionListItem, ToolCallDto, ToolCallStatus } from "../types.js";
+import type { UsageSample } from "../usage.js";
 import {
   LAST_MESSAGE_LIMIT,
   MAX_MESSAGE_IMAGES,
@@ -130,6 +154,8 @@ const IMAGE_PLACEHOLDER = "[image]";
 export interface ParsedCodexRollout {
   /** 按文件顺序排列的消息（工具折叠进所属 assistant 后） */
   messages: MessageDto[];
+  /** token_usage_record 采样（每次 API 调用一条，逐条求和即会话用量） */
+  usageSamples: UsageSample[];
   /** session_meta 的 session_id/id（同 uuid）；缺失时 null */
   sessionId: string | null;
   /** session_meta 的 cwd */
@@ -153,9 +179,10 @@ export function parseCodexRollout(
   let name: string | null = fallback.name ?? null;
   let updatedAtMs: number | null = null;
   const messages: MessageDto[] = [];
+  const usageSamples: UsageSample[] = [];
   // call_id → 所属 assistant 消息的 toolCall DTO（折叠 output 用）
   const toolCallOwners = new Map<string, ToolCallDto>();
-  // 当前 assistant 消息（最近一条 user 之后）：工具调用折叠进它；无则新建空消息承接
+  // 当前 assistant 消息（最近一条 user 之后）：工具调用/活动折叠进它；无则新建空消息承接
   let currentAssistant: MessageDto | null = null;
   let autoId = 0;
 
@@ -164,6 +191,15 @@ export function parseCodexRollout(
     // idPrefix = 文件级稳定前缀（idPrefixForFile）：同一文件在单段解析/归并解析下 id 一致，
     // 多段合并后全局唯一（tail 增量与全量加载不会因 id 漂移重复气泡）
     return fallback.idPrefix ? `codex-${fallback.idPrefix}-${prefix}-${autoId}` : `codex-${prefix}-${autoId}`;
+  };
+
+  /** 当前 assistant（无则建空消息承接工具/活动，与 pi/claude 同口径） */
+  const ensureAssistant = (ts: number): MessageDto => {
+    if (currentAssistant === null) {
+      currentAssistant = { id: nextId("asst"), role: "assistant", timestamp: ts, text: "", toolCalls: [] };
+      messages.push(currentAssistant);
+    }
+    return currentAssistant;
   };
 
   for (const line of content.split("\n")) {
@@ -181,6 +217,7 @@ export function parseCodexRollout(
       const t = Date.parse(row.timestamp);
       if (!Number.isNaN(t)) updatedAtMs = t;
     }
+    const timestamp = typeof row.timestamp === "string" ? Date.parse(row.timestamp) || 0 : 0;
 
     if (row.type === "session_meta") {
       const payload = isRecord(row.payload) ? row.payload : {};
@@ -189,12 +226,32 @@ export function parseCodexRollout(
       if (typeof payload.cwd === "string" && payload.cwd !== "" && cwd === null) cwd = payload.cwd;
       continue;
     }
-    // event_msg / turn_context / world_state 等：生命周期与上下文快照，不进 chat 渲染
+    // event_msg.item_completed：app/CLI 活动流（正在运行命令/已读取文件…）→ 活动 toolCalls
+    if (row.type === "event_msg") {
+      const activity = activityFromEventPayload(row.payload);
+      if (activity !== null) ensureAssistant(timestamp).toolCalls.push(activity);
+      continue;
+    }
+    // token_usage_record：每次 API 调用的 token 用量采样（usage 体系逐条求和）
+    if (row.type === "token_usage_record") {
+      const sample = usageSampleFromTokenUsageRow(row);
+      if (sample !== null) usageSamples.push(sample);
+      continue;
+    }
+    // compacted：上下文压缩边界（replacement_history 是压缩后上下文快照，与压缩前已解析的
+    // response_item 重复，不再解析）——清空 call_id 折叠状态防 output 归并跨压缩点挂错，
+    // 并插一条与 pi 同口径的 `[context compacted]` 轻量条目标记边界（消息连续性可见）
+    if (row.type === "compacted") {
+      toolCallOwners.clear();
+      currentAssistant = null;
+      messages.push({ id: nextId("compacted"), role: "custom", timestamp, text: "[context compacted]", toolCalls: [] });
+      continue;
+    }
+    // turn_context / world_state 等：上下文快照，不进 chat 渲染
     if (row.type !== "response_item") continue;
 
     const payload = row.payload;
     if (!isRecord(payload)) continue;
-    const timestamp = typeof row.timestamp === "string" ? Date.parse(row.timestamp) || 0 : 0;
 
     switch (payload.type) {
       case "message": {
@@ -281,7 +338,198 @@ export function parseCodexRollout(
     }
   }
 
-  return { messages, sessionId, cwd, name, updatedAtMs };
+  return { messages, usageSamples, sessionId, cwd, name, updatedAtMs };
+}
+
+// ---------- event_msg 活动映射（实测结构见文件头 2.1） ----------
+
+/** 命令输出文本（stdout/stderr 是 string；宽容取值） */
+function outputText(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+/**
+ * event_msg.payload → 活动 toolCall（对齐 pi/claude 的工具活动语义，折叠进所属 assistant）。
+ * 只认 item_completed 的活动项；其余（生命周期 / Reasoning / AgentMessage / UserMessage /
+ * ImageView / ContextCompaction 等，与 response_item 重复或非活动）返回 null 不进 chat。
+ */
+export function activityFromEventPayload(payload: unknown): ToolCallDto | null {
+  if (!isRecord(payload) || payload.type !== "item_completed") return null;
+  const item = payload.item;
+  if (!isRecord(item)) return null;
+  // item_completed 是完成事件：failed → error，其余 → done
+  const status: ToolCallStatus = item.status === "failed" ? "error" : "done";
+  switch (item.type) {
+    case "CommandExecution":
+      return commandExecutionActivity(item, status);
+    case "FileChange":
+      return fileChangeActivity(item, status);
+    case "McpToolCall":
+      return mcpToolCallActivity(item, status);
+    case "Extension":
+      return extensionActivity(item, status);
+    default:
+      return null;
+  }
+}
+
+/**
+ * CommandExecution → 活动：parsed_cmd[0] 带语义（read/write…、path、cmd）取语义工具名 + 路径
+ * （「read_file /path/file」即「已读取文件」语义，工具名对齐 pi 口径）；无 parsed_cmd / 未知
+ * 语义退化为 type 原文或 exec_command + shell 文本。预览取 stdout（失败取 stderr）。
+ */
+function commandExecutionActivity(item: Record<string, unknown>, status: ToolCallStatus): ToolCallDto {
+  const parsed = Array.isArray(item.parsed_cmd) ? item.parsed_cmd.filter(isRecord) : [];
+  const first = parsed[0];
+  const cmdType = first !== undefined && typeof first.type === "string" && first.type !== "" ? first.type : "";
+  // 语义工具名（pi 口径）：read/write/delete → read_file/write_file/delete_file；未知 type 原文；无 → exec_command
+  const name =
+    cmdType === "read"
+      ? "read_file"
+      : cmdType === "write" || cmdType === "edit" || cmdType === "apply"
+        ? "write_file"
+        : cmdType === "delete"
+          ? "delete_file"
+          : cmdType !== ""
+            ? cmdType
+            : "exec_command";
+  const cmdText = first !== undefined && typeof first.cmd === "string" ? first.cmd : "";
+  const path =
+    first !== undefined && typeof first.path === "string" && first.path !== ""
+      ? first.path
+      : first !== undefined && typeof first.name === "string"
+        ? first.name
+        : "";
+  const shell = Array.isArray(item.command) ? item.command.filter((c): c is string => typeof c === "string") : [];
+  const shellText = shell.length > 0 ? shell[shell.length - 1] : "";
+  const summary = name === "exec_command" ? shellText || cmdText : path || cmdText || shellText;
+  const preview = status === "error" ? outputText(item.stderr) || outputText(item.stdout) : outputText(item.stdout);
+  return {
+    name,
+    summary: truncateText(summary, LAST_MESSAGE_LIMIT),
+    status,
+    resultPreview: truncateText(preview, RESULT_PREVIEW_LIMIT) || null,
+  };
+}
+
+/** FileChange → 活动：changes 的文件路径（含 create/update/delete 类型）摘要 */
+function fileChangeActivity(item: Record<string, unknown>, status: ToolCallStatus): ToolCallDto {
+  const changes = isRecord(item.changes) ? item.changes : {};
+  const parts: string[] = [];
+  for (const [path, change] of Object.entries(changes)) {
+    if (parts.length >= 5) {
+      parts.push("…");
+      break;
+    }
+    const kind = isRecord(change) && typeof change.type === "string" ? change.type : "update";
+    parts.push(`${path} (${kind})`);
+  }
+  return {
+    name: "apply_patch",
+    summary: truncateText(parts.join(", "), LAST_MESSAGE_LIMIT),
+    status,
+    resultPreview: truncateText(outputText(item.stdout), RESULT_PREVIEW_LIMIT) || null,
+  };
+}
+
+/** McpToolCall → 活动：tool 名（如 linear.list_projects）+ 参数共用摘要 + result 文本预览 */
+function mcpToolCallActivity(item: Record<string, unknown>, status: ToolCallStatus): ToolCallDto {
+  const name = typeof item.tool === "string" && item.tool !== "" ? item.tool : "mcp_tool";
+  const preview = isRecord(item.result) ? joinTextBlocks(item.result.content) : "";
+  return {
+    name,
+    summary: summarizeToolCall(name, item.arguments),
+    status,
+    resultPreview: truncateText(preview, RESULT_PREVIEW_LIMIT) || null,
+  };
+}
+
+/** Extension → 活动：kind（如 web.search）+ query 摘要（results 是预览素材，不入折叠卡） */
+function extensionActivity(item: Record<string, unknown>, status: ToolCallStatus): ToolCallDto {
+  const name = typeof item.kind === "string" && item.kind !== "" ? item.kind : "extension";
+  return {
+    name,
+    summary: truncateText(typeof item.query === "string" ? item.query : "", LAST_MESSAGE_LIMIT),
+    status,
+    resultPreview: null,
+  };
+}
+
+// ---------- token_usage_record 用量采样（实测结构见文件头 2.2） ----------
+
+function numField(source: Record<string, unknown>, key: string): number {
+  const v = source[key];
+  return typeof v === "number" && Number.isFinite(v) ? v : 0;
+}
+
+/**
+ * token_usage_record 行 → 一次 API 调用的 usage 采样（字段映射对齐 pi 的 message.usage）。
+ * 只取 payload.usage（本次调用）；turn_token_usage / thread_token_usage 是累计值不求和。
+ */
+export function usageSampleFromTokenUsageRow(row: unknown): UsageSample | null {
+  if (!isRecord(row) || row.type !== "token_usage_record") return null;
+  const payload = isRecord(row.payload) ? row.payload : {};
+  const usage = payload.usage;
+  if (!isRecord(usage)) return null;
+  const t = typeof row.timestamp === "string" ? Date.parse(row.timestamp) : NaN;
+  return {
+    timestampMs: Number.isNaN(t) ? 0 : t,
+    totalTokens: numField(usage, "total_tokens"),
+    input: numField(usage, "input_tokens"),
+    output: numField(usage, "output_tokens"),
+    cacheRead: numField(usage, "cached_input_tokens"),
+    cacheWrite: numField(usage, "cache_write_input_tokens"),
+    reasoning: numField(usage, "reasoning_output_tokens"),
+    costTotal: null,
+  };
+}
+
+/** rollout 内容 → 会话用量采样（UsageService 增量重读的轻量解析，不构建消息） */
+export interface CodexUsageFile {
+  sessionId: string | null;
+  /** 首条真实 user 文本（截断）；无则 null */
+  name: string | null;
+  samples: UsageSample[];
+}
+
+/**
+ * rollout 内容 → 用量采样（只看 session_meta / 首条 user / token_usage_record 行）。
+ * 会话身份以 session_meta 为准（文件名 uuid 兜底由调用方传入）；坏行优雅跳过绝不抛错。
+ */
+export function parseCodexUsageFile(content: string, fallbackSessionId?: string): CodexUsageFile {
+  let sessionId: string | null = fallbackSessionId ?? null;
+  let name: string | null = null;
+  const samples: UsageSample[] = [];
+  for (const line of content.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed === "") continue;
+    let row: unknown;
+    try {
+      row = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+    if (!isRecord(row) || typeof row.type !== "string") continue;
+    if (row.type === "session_meta") {
+      const payload = isRecord(row.payload) ? row.payload : {};
+      const id = typeof payload.session_id === "string" ? payload.session_id : typeof payload.id === "string" ? payload.id : "";
+      if (id !== "") sessionId = id;
+      continue;
+    }
+    if (row.type === "token_usage_record") {
+      const sample = usageSampleFromTokenUsageRow(row);
+      if (sample !== null) samples.push(sample);
+      continue;
+    }
+    if (row.type === "response_item" && name === null) {
+      const payload = row.payload;
+      if (isRecord(payload) && payload.type === "message" && payload.role === "user") {
+        const text = extractUserText(payload.content);
+        if (text !== "") name = truncateText(text, LAST_MESSAGE_LIMIT);
+      }
+    }
+  }
+  return { sessionId, name, samples };
 }
 
 function tryParseJson(text: string): unknown {
@@ -595,6 +843,8 @@ export function groupCodexSegments(entries: CodexSegmentEntry[]): CodexSessionGr
         lastUserMessage,
         lastAssistantMessage,
         sessionFile: last.sessionFile,
+        // 任一分段在归档目录 → 整会话视为归档（归档是会话级操作）
+        archived: list.some((s) => s.summary.archived === true),
       },
       files: list.map((s) => s.file),
     });
@@ -604,6 +854,8 @@ export function groupCodexSegments(entries: CodexSegmentEntry[]): CodexSessionGr
 
 /**
  * 扫描 ~/.codex/sessions/（递归找 rollout-*.jsonl，目录不存在/不可读 → 空列表）。
+ * options.archivedDir：归档目录（~/.codex/archived_sessions/，平铺）一并扫描，
+ * 来自归档目录的段标 `archived: true`（列表标注 + 排尾）。
  * options.cache：mtime+size 快照缓存——数百个会话文件不重复全量 parse（防全量读盘）；
  * 8 路并发解析；同一会话的多个分段归并为一条（groupCodexSegments）。
  * 返回 items（列表）+ segments（id → 时间序分段文件，详情/消息全量加载用）。
@@ -614,13 +866,17 @@ export async function scanCodexSessions(
   options: {
     statusOf?: (id: string, updatedMs: number) => SessionListItem["status"];
     cache?: Map<string, CodexFileCacheEntry>;
+    archivedDir?: string;
   } = {},
 ): Promise<{ items: SessionListItem[]; segments: Map<string, string[]> }> {
   const files = await findCodexSessionFiles(sessionsDir);
+  const archivedFiles = options.archivedDir ? await findCodexSessionFiles(options.archivedDir) : [];
+  const archivedSet = new Set(archivedFiles);
+  const allFiles = [...files, ...archivedFiles];
   const entries: CodexSegmentEntry[] = [];
   const CONCURRENCY = 8;
-  for (let i = 0; i < files.length; i += CONCURRENCY) {
-    const batch = files.slice(i, i + CONCURRENCY);
+  for (let i = 0; i < allFiles.length; i += CONCURRENCY) {
+    const batch = allFiles.slice(i, i + CONCURRENCY);
     const results = await Promise.all(
       batch.map(async (file): Promise<CodexSegmentEntry | null> => {
         try {
@@ -634,6 +890,7 @@ export async function scanCodexSessions(
             summary = buildCodexSessionSummary(file, content, fileStat.mtimeMs, {
               sessionId: sessionIdFromRolloutFileName(file.split("/").pop() ?? "") ?? undefined,
             });
+            if (summary !== null && archivedSet.has(file)) summary = { ...summary, archived: true };
             if (summary && options.cache) {
               options.cache.set(file, { mtimeMs: fileStat.mtimeMs, size: fileStat.size, summary });
             }
@@ -662,7 +919,14 @@ export async function scanCodexSessions(
     items.push(item);
     segments.set(group.summary.id, group.files);
   }
-  items.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+  items.sort((a, b) => {
+    // 归档会话排列表尾部（方案自定：标注 + 尾部），组内仍按 updatedAt 倒序
+    const archivedRank = (s: SessionListItem): number => (s.archived === true ? 1 : 0);
+    const ra = archivedRank(a);
+    const rb = archivedRank(b);
+    if (ra !== rb) return ra - rb;
+    return Date.parse(b.updatedAt) - Date.parse(a.updatedAt);
+  });
   return { items, segments };
 }
 

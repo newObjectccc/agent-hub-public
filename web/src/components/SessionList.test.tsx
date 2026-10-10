@@ -454,3 +454,39 @@ describe("sortSessions：子代理跟随父会话 + 全部 tab 优先级", () =>
     expect(sorted.map((s) => s.id)).toEqual(["p", "c", "a", "b"]);
   });
 });
+
+describe("SessionList 归档会话（codex archived_sessions）", () => {
+  const at = (minAgo: number): string => new Date(NOW - minAgo * 60_000).toISOString();
+
+  it("归档会话渲染 📦 归档 徽章（codex 归档目录扫出，标注 + 排尾）", () => {
+    const el = render(
+      <SessionList
+        sessions={[
+          makeSession({ id: "live", source: "codex", name: "活跃会话", updatedAt: at(10) }),
+          makeSession({ id: "arch", source: "codex", name: "归档会话", archived: true, updatedAt: at(1) }),
+        ]}
+        onSelect={() => {}}
+        now={NOW}
+      />,
+    );
+    expect(el.textContent).toContain("📦 归档");
+    expect(el.textContent).toContain("归档会话");
+    // 归档排列表尾部（尽管 updatedAt 更新）
+    const names = Array.from(el.querySelectorAll(".session-name")).map((n) => n.textContent);
+    expect(names).toEqual(["活跃会话", "归档会话"]);
+  });
+
+  it("sortSessions：归档排尾压过时间序；字段缺省（老 server）按非归档容错", () => {
+    const sorted = sortSessions([
+      makeSession({ id: "arch-new", archived: true, updatedAt: at(1) }),
+      makeSession({ id: "live-old", updatedAt: at(60) }),
+    ]);
+    expect(sorted.map((s) => s.id)).toEqual(["live-old", "arch-new"]);
+    // 老 server 不带 archived 字段：渲染容错按非归档，纯时间序不变
+    const legacy = sortSessions([
+      makeSession({ id: "a", updatedAt: at(60) }),
+      makeSession({ id: "b", updatedAt: at(1) }),
+    ]);
+    expect(legacy.map((s) => s.id)).toEqual(["b", "a"]);
+  });
+});

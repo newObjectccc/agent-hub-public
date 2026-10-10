@@ -38,6 +38,11 @@ export interface SessionSummary {
   lastDrivenBy?: "panel" | "terminal";
   /** 终端 pi 驱动状态（E3 双模式）：扩展心跳判定的在线/接管状态。仅 pi 会话有值。 */
   terminal?: TerminalAttachInfo | null;
+  /**
+   * 归档会话（codex `~/.codex/archived_sessions/`，契约 §1）：列表标注「归档」并排尾。
+   * 可缺省（非归档 / 旧 server），渲染容错按非归档（`!== true`）。
+   */
+  archived?: boolean;
 }
 
 /** 终端 pi 状态：online=扩展心跳 90s 内；attached=attach 接管生效 */

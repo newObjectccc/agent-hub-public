@@ -737,7 +737,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
     }
   });
 
-  // GET /api/usage?sessionId=&days=（Token 用量汇总，契约 §15；仅 pi 源）
+  // GET /api/usage?sessionId=&days=（Token 用量汇总，契约 §14；pi + codex 源）
   app.get<{ Querystring: { sessionId?: string; days?: string } }>("/api/usage", async (req, reply) => {
     try {
       const query = (req.query ?? {}) as { sessionId?: unknown; days?: unknown };
