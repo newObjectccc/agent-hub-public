@@ -8,6 +8,7 @@ import { useFirstSeen } from "../hooks/useFirstSeen";
 import { useNowTicker } from "../hooks/useNowTicker";
 import { sessionTitle, shortPath } from "../utils/display";
 import { elapsedDuration, relativeTime } from "../utils/relativeTime";
+import { SourceBadge } from "./SourceBadge";
 import { Button } from "./ui/button";
 import { cn } from "@/lib/utils";
 
@@ -38,6 +39,7 @@ export function WorkingCard({
         <span className="session-name" title={card.cwd}>
           {sessionTitle(card)}
         </span>
+        <SourceBadge source={card.source} />
         <span className="badge running">运行中</span>
         <span className="session-time">
           {Number.isFinite(startedAt) ? `已运行 ${elapsedDuration(startedAt, now)}` : relativeTime(card.updatedAt, now)}

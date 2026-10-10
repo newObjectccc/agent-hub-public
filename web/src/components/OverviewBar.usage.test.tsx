@@ -36,6 +36,12 @@ const statsFixture: DashboardStats = {
   todayDoneSessions: [],
   workingSessions: [],
   attentionSessions: [],
+  bySource: {
+    todayMessages: { pi: 18, claude: 4, codex: 2 },
+    todayDone: { pi: 1, claude: 1, codex: 1 },
+    working: { pi: 1, claude: 0, codex: 0 },
+    needAttention: { pi: 1, claude: 1, codex: 0 },
+  },
 };
 
 let root: Root | null = null;

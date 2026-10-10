@@ -28,6 +28,7 @@ import {
 import { scanSessionInsights, startOfDay, startOfWeek, truncateText, type SessionInsight } from "./sessions/scan.js";
 import type {
   AttentionSessionCard,
+  DashboardSourceStats,
   DashboardStats,
   HubActivity,
   MessageDto,
@@ -35,6 +36,8 @@ import type {
   NotificationKind,
   NotificationListResponse,
   ServerEvent,
+  SessionSource,
+  SessionSourceCounts,
   SessionStatus,
   WorkingSessionCard,
 } from "./types.js";
@@ -87,6 +90,28 @@ export function computeStreak(dayStarts: Iterable<number>, now: number): number 
 
 export type AttentionReason = "settled" | "error";
 
+// ---------- 分源计数（纯函数） ----------
+
+/** 来源归一化（老数据/容错路径未知值保守归 pi） */
+export function normalizeSource(source: SessionSource | string | null | undefined): SessionSource {
+  return source === "claude" || source === "codex" ? source : "pi";
+}
+
+/** 全 0 的来源计数（pi / claude / codex 恒齐全） */
+export function emptySourceCounts(): SessionSourceCounts {
+  return { pi: 0, claude: 0, codex: 0 };
+}
+
+/** 全 0 的分源统计（deriveDashboard / 测试 fake 共用） */
+export function emptySourceStats(): DashboardSourceStats {
+  return {
+    todayMessages: emptySourceCounts(),
+    todayDone: emptySourceCounts(),
+    working: emptySourceCounts(),
+    needAttention: emptySourceCounts(),
+  };
+}
+
 export function classifyAttention(
   insight: SessionInsight,
   options: { now: number; attentionWindowMs?: number },
@@ -107,6 +132,7 @@ function workingCard(insight: SessionInsight): WorkingSessionCard {
     name: s.name,
     cwd: s.cwd,
     status: s.status,
+    source: normalizeSource(s.source),
     startedAt: insight.lastRunStartedAt,
     currentTool: insight.lastToolSummary,
     lastOutput: s.lastAssistantMessage,
@@ -121,6 +147,7 @@ function attentionCard(insight: SessionInsight, reason: AttentionReason): Attent
     name: s.name,
     cwd: s.cwd,
     status: s.status,
+    source: normalizeSource(s.source),
     reason,
     summary: s.lastAssistantMessage ?? s.lastUserMessage,
     updatedAt: s.updatedAt,
@@ -355,24 +382,30 @@ export function deriveDashboard(insights: SessionInsight[], options: DeriveDashb
   const activeDayStarts = new Set<number>();
   const workingSessions: WorkingSessionCard[] = [];
   const attentionSessions: AttentionSessionCard[] = [];
+  const bySource = emptySourceStats();
   const weekStart = startOfWeek(options.now);
 
   for (const insight of insights) {
     const running = insight.summary.status === "running";
+    const source = normalizeSource(insight.summary.source);
     const counts = insight.counts;
     // 计数守卫：counts 窗口锚定数据时间轴（anchorMs）；与 derive 的「今天/本周」不同窗时按 0 计——
     // 与旧实现（逐条按 now 过滤 messages）口径逐字等价：消息时间戳恒 ≤ anchorMs，
     // 跨日/跨周时旧实现同样计 0。
     const settledToday = counts.dayStart === dayStart ? counts.settledToday : 0;
     todayDone += settledToday;
+    bySource.todayDone[source] += settledToday;
     if (settledToday > 0) todayDoneSessions.push(insight.summary.id);
     const settledThisWeek = counts.weekStart === weekStart ? counts.settledThisWeek : 0;
     if (settledThisWeek > 0) weekDone += 1;
-    todayMessages += counts.dayStart === dayStart ? counts.todayMessages : 0;
+    const todayMsgs = counts.dayStart === dayStart ? counts.todayMessages : 0;
+    todayMessages += todayMsgs;
+    bySource.todayMessages[source] += todayMsgs;
     weekMessages += counts.weekStart === weekStart ? counts.weekMessages : 0;
     for (const day of counts.activeDays) activeDayStarts.add(day);
     if (running) {
       working += 1;
+      bySource.working[source] += 1;
       if (workingSessions.length < maxCards) workingSessions.push(workingCard(insight));
     }
     const reason = classifyAttention(insight, {
@@ -381,6 +414,7 @@ export function deriveDashboard(insights: SessionInsight[], options: DeriveDashb
     });
     if (reason !== null) {
       needAttention += 1;
+      bySource.needAttention[source] += 1;
       if (attentionSessions.length < maxCards) attentionSessions.push(attentionCard(insight, reason));
     }
   }
@@ -397,6 +431,7 @@ export function deriveDashboard(insights: SessionInsight[], options: DeriveDashb
     todayDoneSessions,
     workingSessions,
     attentionSessions,
+    bySource,
   };
 }
 

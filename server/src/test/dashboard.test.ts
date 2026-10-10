@@ -44,6 +44,7 @@ function makeInsight(over: {
   updatedAt?: string;
   messages?: MessageDto[];
   lastMessageRole?: SessionInsight["lastMessageRole"];
+  source?: SessionListItem["source"];
 }): SessionInsight {
   const summary: SessionListItem = {
     id: "sess-a",
@@ -56,7 +57,7 @@ function makeInsight(over: {
     lastAssistantMessage: "已完成，输出如上",
     sessionFile: "/tmp/sess-a.jsonl",
     isSubAgent: false,
-    source: "pi",
+    source: over.source ?? "pi",
   };
   const messages = over.messages ?? [
     msg("m1", "user", "帮我跑一下", NOW - 10 * 60_000),
@@ -202,6 +203,52 @@ describe("dashboard: deriveDashboard 汇总", () => {
     for (const card of stats.attentionSessions) {
       assert.equal(card.summary, "已完成，输出如上");
     }
+  });
+});
+
+describe("dashboard: 分源计数（bySource）", () => {
+  it("今日消息/今日完成/工作中/等你处理按 pi/claude/codex 细分（增量字段）", () => {
+    // pi：运行中（工作中 pi 1；末条 assistant 未 settled 不计今日完成）
+    const piInsight = makeInsight({
+      status: "running",
+      source: "pi",
+      messages: [msg("u1", "user", "跑", NOW - 60_000), msg("a1", "assistant", "工具执行中", NOW - 30_000)],
+    });
+    // claude：干完等你（今日完成 claude 1 / 等你处理 claude 1）
+    const claudeInsight = makeInsight({ source: "claude" });
+    // codex：出错（今日完成 codex 1 / 等你处理 codex 1，v0 口径同总量）
+    const codexInsight = makeInsight({ source: "codex", status: "error" });
+    const stats = deriveDashboard([piInsight, claudeInsight, codexInsight], { now: NOW, weekCommits: 0 });
+
+    assert.deepEqual(stats.bySource.todayMessages, { pi: 2, claude: 2, codex: 2 });
+    assert.deepEqual(stats.bySource.todayDone, { pi: 0, claude: 1, codex: 1 });
+    assert.deepEqual(stats.bySource.working, { pi: 1, claude: 0, codex: 0 });
+    assert.deepEqual(stats.bySource.needAttention, { pi: 0, claude: 1, codex: 1 });
+
+    // 细分之和 = 既有总量字段（老字段口径逐字不变）
+    const sum = (c: { pi: number; claude: number; codex: number }): number => c.pi + c.claude + c.codex;
+    assert.equal(sum(stats.bySource.todayMessages), stats.todayMessages);
+    assert.equal(sum(stats.bySource.todayDone), stats.todayDone);
+    assert.equal(sum(stats.bySource.working), stats.working);
+    assert.equal(sum(stats.bySource.needAttention), stats.needAttention);
+
+    // 分区卡片携带 source（前端分源徽章/过滤用）
+    assert.equal(stats.workingSessions[0].source, "pi");
+    assert.deepEqual(
+      stats.attentionSessions.map((c) => c.source).sort(),
+      ["claude", "codex"],
+    );
+  });
+
+  it("计数守卫下分源同样按 0 计（跨日不双算）", () => {
+    const oldInsight = makeInsight({
+      source: "claude",
+      updatedAt: new Date(DAY_START - 3_600_000).toISOString(),
+      messages: [msg("u1", "user", "昨天", DAY_START - 7_200_000), msg("a1", "assistant", "昨天完", DAY_START - 3_600_000)],
+    });
+    const stats = deriveDashboard([oldInsight], { now: NOW, weekCommits: 0 });
+    assert.deepEqual(stats.bySource.todayMessages, { pi: 0, claude: 0, codex: 0 });
+    assert.deepEqual(stats.bySource.todayDone, { pi: 0, claude: 0, codex: 0 });
   });
 });
 

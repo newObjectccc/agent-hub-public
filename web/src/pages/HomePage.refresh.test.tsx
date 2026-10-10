@@ -57,6 +57,7 @@ function card(id: string, name: string): WorkingSessionCard {
     name,
     cwd: "/tmp/w",
     status: "running",
+    source: "pi",
     startedAt: "2026-02-18T10:00:00.000Z",
     currentTool: null,
     lastOutput: null,

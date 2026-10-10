@@ -1,4 +1,5 @@
 /** 测试用 DashboardServiceLike 假实现（createApp 必填依赖） */
+import { emptySourceStats } from "../dashboard.js";
 import type { DashboardServiceLike } from "../dashboard.js";
 
 export function makeFakeDashboard(overrides: Partial<DashboardServiceLike> = {}): DashboardServiceLike {
@@ -12,6 +13,7 @@ export function makeFakeDashboard(overrides: Partial<DashboardServiceLike> = {})
       workingSessions: [],
       attentionSessions: [],
       todayDoneSessions: [],
+      bySource: emptySourceStats(),
     } as unknown as Awaited<ReturnType<DashboardServiceLike["getStats"]>>),
     listNotifications: async () => ({ notifications: [], unreadCount: 0 }),
     markAllRead: async () => undefined,

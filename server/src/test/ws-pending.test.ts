@@ -8,6 +8,7 @@ import type { AddressInfo } from "node:net";
 import { describe, it } from "node:test";
 import { WebSocket } from "ws";
 import { DEFAULT_CONFIG } from "../config.js";
+import { emptySourceStats } from "../dashboard.js";
 import type { DashboardServiceLike } from "../dashboard.js";
 import { createApp } from "../index.js";
 import type { SessionHub } from "../sessions/hub.js";
@@ -56,6 +57,7 @@ function makeFakeDashboard(): DashboardServiceLike {
       todayDoneSessions: [],
       workingSessions: [],
       attentionSessions: [],
+      bySource: emptySourceStats(),
     }),
     listNotifications: async () => ({ notifications: [], unreadCount: 0 }),
     markAllRead: async () => undefined,

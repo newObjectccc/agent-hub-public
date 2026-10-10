@@ -1,6 +1,7 @@
 /**
  * 工作台（/）= 首页瘦身版：今日概览 + 本周统计 + 🔥工作中精华卡 + ⚠️等你处理精华卡。
  * 会话长列表整体迁至"会话"页（/sessions）；点击卡直达 chat 会话。
+ * v0.3 分源：今日概览带 pi/claude/codex 细分小字（bySource），工作中/等你处理带来源过滤 chips。
  * 数据全部真实推导（/api/dashboard/stats + WS 实时事件）。刷新安静：key 稳定、
  * 进场动画一次性（seen 提升跨 tab 持久）、进度条仅慢刷新显示。
  */
@@ -12,6 +13,7 @@ import { AttentionList } from "../components/AttentionList";
 import { CollapsibleSection } from "../components/CollapsibleSection";
 import { OverviewBar } from "../components/OverviewBar";
 import { PullToRefresh } from "../components/PullToRefresh";
+import { filterBySource, SourceFilterChips, type SourceFilter } from "../components/SourceStats";
 import { WorkingBoard } from "../components/WorkingBoard";
 import { WeekStatsCard } from "../components/WeekStatsCard";
 import { Button } from "../components/ui/button";
@@ -36,6 +38,9 @@ export function HomePage() {
   const progressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** refresh 并发序号：WS 事件风暴下旧响应（序号过期）不覆盖新数据 */
   const refreshSeq = useRef(0);
+  /** 来源过滤（v0.3 分源看板）：工作中 / 等你处理 各自独立，刷新后保留选择 */
+  const [workingFilter, setWorkingFilter] = useState<SourceFilter>("all");
+  const [attentionFilter, setAttentionFilter] = useState<SourceFilter>("all");
 
   const refresh = useCallback(async () => {
     const seq = ++refreshSeq.current;
@@ -87,8 +92,8 @@ export function HomePage() {
     onReconnect: () => void refresh(),
   });
 
-  const working = stats?.workingSessions ?? [];
-  const attention = stats?.attentionSessions ?? [];
+  const working = filterBySource(stats?.workingSessions ?? [], workingFilter);
+  const attention = filterBySource(stats?.attentionSessions ?? [], attentionFilter);
   return (
     <div className="page home-page">
       {/* stale-while-revalidate：有旧数据时保留旧数据；慢刷新才显示顶部细进度条 */}
@@ -113,8 +118,20 @@ export function HomePage() {
           🔥 工作中
           {working.length > 0 && <span className="hint-text">（{working.length}）</span>}
         </h2>
+        <SourceFilterChips
+          value={workingFilter}
+          counts={stats?.bySource?.working}
+          onChange={setWorkingFilter}
+          label="工作中会话按来源过滤"
+        />
         {working.length === 0 ? (
-          <div className="card empty">{loaded ? "当前没有运行中的会话" : "加载中…"}</div>
+          <div className="card empty">
+            {loaded
+              ? workingFilter === "all"
+                ? "当前没有运行中的会话"
+                : "该来源没有运行中的会话"
+              : "加载中…"}
+          </div>
         ) : (
           <>
             <WorkingBoard sessions={working.slice(0, HOME_CARD_LIMIT)} onSelect={(id) => navigate(chatPath(id))} />
@@ -136,8 +153,20 @@ export function HomePage() {
           ⚠️ 等你处理
           {attention.length > 0 && <span className="hint-text">（{attention.length}）</span>}
         </h2>
+        <SourceFilterChips
+          value={attentionFilter}
+          counts={stats?.bySource?.needAttention}
+          onChange={setAttentionFilter}
+          label="等你处理会话按来源过滤"
+        />
         {attention.length === 0 ? (
-          <div className="card empty">{loaded ? "没有等你处理的会话" : "加载中…"}</div>
+          <div className="card empty">
+            {loaded
+              ? attentionFilter === "all"
+                ? "没有等你处理的会话"
+                : "该来源没有等你处理的会话"
+              : "加载中…"}
+          </div>
         ) : (
           <>
             <AttentionList

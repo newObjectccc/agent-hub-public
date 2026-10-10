@@ -9,7 +9,8 @@ import { describe, expect, it } from "vitest";
 import swSource from "../public/sw.js?raw";
 
 const ORIGIN = "https://hub.test";
-const CACHE = "agent-hub-shell-v2";
+/** 与 sw.js 的 CACHE 常量动态对齐（v2→v3 升级时曾锁死旧名致全红，提取防错位） */
+const CACHE = /const CACHE = "([^"]+)"/.exec(swSource)?.[1] ?? "agent-hub-shell";
 
 type Handler = (event: Record<string, unknown>) => void;
 

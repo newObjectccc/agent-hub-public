@@ -313,7 +313,7 @@ claude 会话：server 本地 spawn
   "workingSessions": [
     {
       "id": "uuid-1", "name": "pi-report-KPI", "cwd": "/Users/me/Workspace/x",
-      "status": "running",
+      "status": "running", "source": "pi",
       "startedAt": "2026-02-18T11:30:00.000Z",
       "currentTool": "bash: pnpm test",
       "lastOutput": "测试全绿…（截断 120 字符）",
@@ -323,11 +323,17 @@ claude 会话：server 本地 spawn
   "attentionSessions": [
     {
       "id": "uuid-2", "name": null, "cwd": "/Users/me/Workspace/y",
-      "status": "idle", "reason": "settled",
+      "status": "idle", "source": "claude", "reason": "settled",
       "summary": "已完成，等你确认…（截断 120 字符）",
       "updatedAt": "2026-02-18T10:05:00.000Z"
     }
-  ]
+  ],
+  "bySource": {
+    "todayMessages": { "pi": 18, "claude": 4, "codex": 2 },
+    "todayDone": { "pi": 2, "claude": 1, "codex": 0 },
+    "working": { "pi": 1, "claude": 0, "codex": 0 },
+    "needAttention": { "pi": 1, "claude": 1, "codex": 0 }
+  }
 }
 ```
 
@@ -343,6 +349,10 @@ claude 会话：server 本地 spawn
 - `streak`：连续活跃天数（活跃 = 当天有 user/assistant 消息；以最近活跃日为终点，
   今日未活跃不渐裂）
 - `weekDone`：本周内至少完成一轮的会话数；`todayDoneSessions`：今日完成一轮及以上的会话 id（前端 tab 过滤用）
+- `bySource`（v0.3 增量字段）：按会话来源（`pi` | `claude` | `codex`）分组的细分计数，
+  含 `todayMessages` / `todayDone` / `working` / `needAttention` 四个维度（口径与对应总量
+  字段逐字一致，各细分之和 = 对应总量；未知来源保守归 `pi`）。老字段语义不变。
+- `workingSessions` / `attentionSessions` 卡片携带 `source`（会话来源，前端分源徽章/过滤用）
 - `workingSessions`：运行看板卡（当前工具摘要 = 最近一次工具调用 summary；
   `startedAt` = 当前 run 起点，即最后一条用户消息时间）
 

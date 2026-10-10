@@ -6,6 +6,7 @@ import type { AttentionSessionCard } from "../api/types";
 import { useFirstSeen } from "../hooks/useFirstSeen";
 import { sessionTitle, shortPath } from "../utils/display";
 import { relativeTime } from "../utils/relativeTime";
+import { SourceBadge } from "./SourceBadge";
 import { Button } from "./ui/button";
 import { cn } from "@/lib/utils";
 
@@ -32,6 +33,7 @@ export function AttentionList({
             <span className="session-name" title={card.cwd}>
               {sessionTitle(card)}
             </span>
+            <SourceBadge source={card.source} />
             <span className={`badge ${card.reason === "error" ? "error" : "settled"}`}>
               {card.reason === "error" ? "出错了" : "干完了"}
             </span>

@@ -394,12 +394,33 @@ export interface FileContentResult {
   content: string;
 }
 
+/** 各来源细分计数（pi / claude / codex 恒齐全；分源统计的原子单元，契约增量字段） */
+export interface SessionSourceCounts {
+  pi: number;
+  claude: number;
+  codex: number;
+}
+
+/** GET /api/dashboard/stats：按会话来源分组的细分计数（增量字段，老字段语义/口径不变） */
+export interface DashboardSourceStats {
+  /** 今日消息数细分（各来源之和 = todayMessages，口径同 todayMessages） */
+  todayMessages: SessionSourceCounts;
+  /** 今日完成 run 次数细分（各来源之和 = todayDone，口径同 todayDone） */
+  todayDone: SessionSourceCounts;
+  /** 工作中会话数细分（各来源之和 = working） */
+  working: SessionSourceCounts;
+  /** 等你处理会话数细分（各来源之和 = needAttention） */
+  needAttention: SessionSourceCounts;
+}
+
 /** GET /api/dashboard/stats：运行看板卡（工作中会话的实时进度） */
 export interface WorkingSessionCard {
   id: string;
   name: string | null;
   cwd: string;
   status: SessionStatus;
+  /** 会话来源（pi | claude | codex；前端分源过滤/徽章用） */
+  source: SessionSource;
   /** 当前 run 起点（active branch 最后一条用户消息时间） */
   startedAt: string | null;
   /** 当前/最近一次工具调用摘要 */
@@ -415,6 +436,8 @@ export interface AttentionSessionCard {
   name: string | null;
   cwd: string;
   status: SessionStatus;
+  /** 会话来源（pi | claude | codex；前端分源过滤/徽章用） */
+  source: SessionSource;
   /** settled=agent 干完等你输入；error=运行出错 */
   reason: "settled" | "error";
   summary: string | null;
@@ -438,6 +461,8 @@ export interface DashboardStats {
   todayDoneSessions: string[];
   workingSessions: WorkingSessionCard[];
   attentionSessions: AttentionSessionCard[];
+  /** 按来源（pi | claude | codex）分组的细分计数（增量字段；各细分之和 = 对应总量字段） */
+  bySource: DashboardSourceStats;
 }
 
 /** GET /api/usage：Token 用量汇总维度（契约 §15，pi 源；每次 API 调用的 usage 求和） */
