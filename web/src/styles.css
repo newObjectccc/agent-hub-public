@@ -754,6 +754,8 @@ button.syschip.terminal-entry:hover {
   /* 触摸纵向平移显式授权给浏览器：落在卡片（button）上也能拖动滚动，
    * 不被按钮手势识别吞掉（真机反馈：只有屏幕边缘能滚） */
   touch-action: pan-y;
+  /* 底部留白：末项不被浮层/iPhone 安全区横条遮挡（真机反馈） */
+  padding-bottom: calc(20px + env(safe-area-inset-bottom, 0px));
 }
 
 /* ---------- 会话列表 ---------- */
