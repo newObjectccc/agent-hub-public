@@ -184,11 +184,15 @@ export class PromptIdempotencyStore {
   }
 }
 
-/** 锁屏门禁豁免：解锁/设置/登录（/api/app-lock/*）+ 静态资源（非 /api） */
+/** 锁屏门禁豁免：解锁/设置/登录（/api/app-lock/*）+ 机器通道（/api/agents/*、/api/live——
+ * 自带更严的 requireAgentChannel（仅限本机回环 + auth token），app lock 是界面锁不该锁机器 API，
+ * 否则终端扩展心跳被 423 → isOnline 超时 → 「接管终端」灰显（真机反馈实测踩坑）+ 静态资源（非 /api） */
 export function isAppLockExempt(url: string): boolean {
   const path = url.split("?")[0];
   if (!path.startsWith("/api")) return true;
-  return path === "/api/app-lock" || path.startsWith("/api/app-lock/");
+  return path === "/api/app-lock" || path.startsWith("/api/app-lock/")
+    || path === "/api/agents" || path.startsWith("/api/agents/")
+    || path === "/api/live" || path.startsWith("/api/live/");
 }
 
 export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Promise<void> {

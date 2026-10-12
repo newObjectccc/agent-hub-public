@@ -15,6 +15,7 @@ import { AppLockStore, bufToB64url } from "../appLock.js";
 import { DEFAULT_CONFIG, type HubConfig } from "../config.js";
 import { createApp } from "../index.js";
 import type { SessionHubLike } from "../routes.js";
+import { isAppLockExempt } from "../routes.js";
 import type { PromptResult } from "../sessions/hub.js";
 import type { MessageDto, SearchResultDto, SessionListItem, SessionTreeDto, SystemInfo } from "../types.js";
 import { makeFakeDashboard } from "./fakeDashboard.js";
@@ -373,5 +374,22 @@ describe("app-lock 全局锁屏门禁（onRequest）", () => {
     // 静态资源 / SPA fallback / 未知路径不走 API 门禁
     const page = await app.inject({ method: "GET", url: "/no/such/page" });
     assert.equal(page.statusCode, 404, "非 API 路径不受锁屏门禁");
+  });
+});
+
+describe("锁屏门禁豁免清单（机器通道走自身鉴权，app lock 不锁机器 API）", () => {
+  it("/api/agents/* 与 /api/live 豁免（终端扩展心跳被 423 会致「接管终端」灰显）", () => {
+    assert.equal(isAppLockExempt("/api/agents/heartbeat"), true);
+    assert.equal(isAppLockExempt("/api/agents/commands?sessionId=x"), true);
+    assert.equal(isAppLockExempt("/api/agents/heartbeat?x=1"), true);
+    assert.equal(isAppLockExempt("/api/live"), true);
+    assert.equal(isAppLockExempt("/api/live/abc"), true);
+  });
+
+  it("数据 API 仍受门禁；解锁/静态照旧豁免", () => {
+    assert.equal(isAppLockExempt("/api/sessions"), false);
+    assert.equal(isAppLockExempt("/api/dashboard/stats"), false);
+    assert.equal(isAppLockExempt("/api/app-lock/unlock"), true);
+    assert.equal(isAppLockExempt("/assets/index.js"), true);
   });
 });
