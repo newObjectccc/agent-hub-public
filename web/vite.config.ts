@@ -1,6 +1,7 @@
 /// <reference types="vitest" />
 import { fileURLToPath, URL } from "node:url";
 import { createRequire } from "node:module";
+import { execSync } from "node:child_process";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
@@ -17,6 +18,10 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
+    // 构建出处（不丢代码/跑最新代码原则）：产物可溯源到具体提交
+    __GIT_SHA__: JSON.stringify(
+      (() => { try { return execSync("git rev-parse --short HEAD", { encoding: "utf8" }).trim(); } catch { return "unknown"; } })(),
+    ),
   },
   resolve: {
     alias: {

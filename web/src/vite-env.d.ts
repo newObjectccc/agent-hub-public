@@ -10,3 +10,6 @@ declare const __APP_VERSION__: string;
 interface Window {
   __APP_BOOTED__?: boolean;
 }
+
+/** 构建出处（git short SHA，构建期注入）：产物溯源，陈旧包一眼可辨 */
+declare const __GIT_SHA__: string;
