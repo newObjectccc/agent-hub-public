@@ -38,6 +38,37 @@ export function saveAttachMode(storage: StorageLike | null, sessionId: string, m
   }
 }
 
+/**
+ * 用户"手动选择"记录（modePinned 语义）：与 attachModeKey 分开——
+ * attachModeKey 存的是"当前生效模式"（自动默认/跨设备校正也会写），
+ * 本 key 只由用户手动切换（changeAttachMode / 说明 sheet 选择）写入，存用户选中的模式。
+ * 有记录 = 用户手动选过 → 打开会话时不再被智能默认/校正自动改写（用户选择永远最高优先）。
+ */
+const ATTACH_MODE_PINNED_PREFIX = "agent-hub.attachModePinned.v1:";
+
+export function attachModePinnedKey(sessionId: string): string {
+  return `${ATTACH_MODE_PINNED_PREFIX}${sessionId}`;
+}
+
+/** 读取用户手动选择的模式（无记录/损坏 → null = 从未手动选过，允许智能默认） */
+export function loadPinnedAttachMode(storage: StorageLike | null, sessionId: string): AttachMode | null {
+  try {
+    const raw = storage?.getItem(attachModePinnedKey(sessionId));
+    return raw === "attach" || raw === "parallel" ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 记录用户手动选择（仅用户显式切换调用；智能默认/自动校正绝不写入） */
+export function pinAttachMode(storage: StorageLike | null, sessionId: string, mode: AttachMode): void {
+  try {
+    storage?.setItem(attachModePinnedKey(sessionId), mode);
+  } catch {
+    // 存储不可用：仅本次会话内优先
+  }
+}
+
 export function loadIntroSeen(storage: StorageLike | null): boolean {
   try {
     return storage?.getItem(ATTACH_INTRO_KEY) === "1";

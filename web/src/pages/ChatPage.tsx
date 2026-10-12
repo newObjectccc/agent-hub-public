@@ -5,8 +5,10 @@ import {
   isAttachSending,
   loadAttachMode,
   loadIntroSeen,
+  loadPinnedAttachMode,
   mapAttachSendMode,
   markIntroSeen,
+  pinAttachMode,
   saveAttachMode,
   type AttachMode,
   type ChannelEchoState,
@@ -92,6 +94,8 @@ import { chatPath, chatReturnPath, currentLocate, navigate, onRouteChange, treeP
  */
 /** message_end 后无任何流事件/状态事件的待定收尾时长：超时推断回复完成（status 回 idle） */
 const REPLY_IDLE_FALLBACK_MS = 5_000;
+/** attach 发送后终端 pi 接手的最长等待（超时明示，防阶段条永久转圈） */
+const ATTACH_WAIT_GUARD_MS = 60_000;
 /** 停在底部附近才跟随新消息的阈值（px，语义不变） */
 const STICK_TO_BOTTOM_PX = 160;
 /** 长会话窗口化：消息数达到该值才启用（短会话零开销） */
@@ -125,6 +129,8 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
   const sendingRef = useRef(false);
   /** 发送/重试触发的强制回底（发送 = 显式「看底部」意图，区别于被动收消息的贴底跟随） */
   const forceScrollRef = useRef(false);
+  /** attach 发送后等终端接手的超时兜底计时器（接力阶段条防永久转圈） */
+  const attachWaitGuardRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** 阶段化等待反馈：发送中 → 思考中 → 工具执行中 → 回复中（null = 空闲不显示） */
   const [wait, setWait] = useState<{ phase: WaitPhase; startedAt: number } | null>(null);
   const waitRef = useRef(wait);
@@ -213,7 +219,10 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
     return () => window.removeEventListener("keydown", onKeydown, true);
   }, []);
   // 双模式会话驱动（E3）：📱 parallel（现状）/ 🖥 attach（消息注入电脑终端 pi）
-  const [attachMode, setAttachMode] = useState<AttachMode>(() => loadAttachMode(safeStorage(), sessionId));
+  // 初始模式：用户手动选择（pinned）优先，否则读上次生效模式（缺省 parallel）
+  const [attachMode, setAttachMode] = useState<AttachMode>(
+    () => loadPinnedAttachMode(safeStorage(), sessionId) ?? loadAttachMode(safeStorage(), sessionId),
+  );
   const attachModeRef = useRef<AttachMode>(attachMode);
   attachModeRef.current = attachMode;
   /** 本地 attachMode 校正（server 是事实源）：只同步本地状态与持久化，不做 attach 握手 */
@@ -236,6 +245,8 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
   // 首次进入可双模式会话的轻量说明 sheet（一次性，用完即走）
   const [introOpen, setIntroOpen] = useState(false);
   const introCheckedRef = useRef(false);
+  /** 打开会话时的模式决策（智能默认/恢复用户选择）仅首屏一次（WS 重连对账不重复） */
+  const openModeDecidedRef = useRef(false);
   // 子代理活动（反馈轮 3 #4）：pi-subagents 派生会话的实时工作面板（快照 + WS 增量）
   const [subAgents, setSubAgents] = useState<SubAgentActivity[]>([]);
   // 面板驱动标识（反馈轮 3 #5，与驱动来源徽章统一）：本设备面板发过消息的会话，电脑端 pi 需重开才能看到实时变化
@@ -313,6 +324,24 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
   loadingOlderRef.current = loadingOlder;
   statusRef.current = status;
 
+  /**
+   * 确保接管真正生效（打开时自动接管 / 恢复用户的接管选择）：同手动切换的 attach 握手。
+   * 自动接管成功给轻提示；失败回落并提示原因（消息暂走平行线），绝不静默丢消息。
+   */
+  const ensureAttached = useCallback(
+    async (autoDefault: boolean) => {
+      try {
+        const result = await api.attachSession(sessionId);
+        setTerminal({ online: result.agent?.online ?? true, attached: true });
+        applyAttachMode("attach");
+        if (autoDefault) setNotice("终端在线，已默认接管终端");
+      } catch (e) {
+        setNotice(`接管终端失败：${e instanceof Error ? e.message : "未知错误"}（消息暂走 📱 平行线）`);
+      }
+    },
+    [sessionId, applyAttachMode],
+  );
+
   /** GET /api/sessions/:id 对账（首屏加载 + WS 重连后）：尾部窗口 = 已加载条数 */
   const loadSession = useCallback(async () => {
     try {
@@ -327,11 +356,31 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
       setHasMore(Boolean(detail.hasMore));
       setStatus(detail.session.status);
       setTerminal(detail.session.terminal ?? null);
-      // 双模式跨设备校正（server 是事实源）：电脑已 attach 接管而本机 localStorage 还是平行模式时，
-      // parallel 发送会被 409 ATTACH_ACTIVE 挡死 → 按 server terminal.attached 校正本地模式
-      const attachedFlag = detail.session.terminal?.attached;
-      if (attachedFlag === true) applyAttachMode("attach");
-      else if (attachedFlag === false) applyAttachMode("parallel");
+      // 打开会话时的模式决策（优先级：用户手动选择 > server 校正 > 智能默认）
+      const openFirst = !openModeDecidedRef.current;
+      openModeDecidedRef.current = true;
+      const pinnedMode = loadPinnedAttachMode(safeStorage(), sessionId);
+      const modeBefore = attachModeRef.current;
+      if (pinnedMode !== null) {
+        // 用户手动选择最高优先（选过一次就不再自动改）：恢复其选择，不被智能默认/校正改写
+        if (openFirst) {
+          applyAttachMode(pinnedMode);
+          // 用户选的是接管：终端在线但未接管时补一次握手，把选择真正落地（同手动切换）
+          const term = detail.session.terminal;
+          if (pinnedMode === "attach" && term?.online === true && term.attached !== true) void ensureAttached(false);
+        }
+      } else {
+        // 双模式跨设备校正（server 是事实源）：电脑已 attach 接管而本机 localStorage 还是平行模式时，
+        // parallel 发送会被 409 ATTACH_ACTIVE 挡死 → 按 server terminal.attached 校正本地模式
+        const attachedFlag = detail.session.terminal?.attached;
+        if (attachedFlag === true) applyAttachMode("attach");
+        else if (attachedFlag === false) applyAttachMode("parallel");
+        // 智能默认（仅首屏一次）：终端在线（online=true；claude/codex 无 terminal 字段）→ 自动 🖥 接管终端 + 轻提示
+        if (openFirst && detail.session.terminal?.online === true) {
+          if (attachModeRef.current !== "attach") void ensureAttached(true);
+          else if (modeBefore !== "attach") setNotice("终端在线，已默认接管终端");
+        }
+      }
       // 首次进入可双模式会话：一次性说明 sheet（记住选择，用完即走，不常驻）
       if (!introCheckedRef.current) {
         introCheckedRef.current = true;
@@ -358,7 +407,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
     } finally {
       setLoading(false);
     }
-  }, [sessionId, applyAttachMode]);
+  }, [sessionId, applyAttachMode, ensureAttached]);
 
   useEffect(() => {
     setLoading(true);
@@ -1039,6 +1088,12 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
               ? { channel: "attach", phase: "acked", commandId }
               : { channel: "attach", phase: "failed", detail: error, commandId };
           });
+          // 等待接力（真机反馈批）：终端接手 → 思考中继续接力；失败 → 结束等待（echo 常驻错误文案）
+          if (waitRef.current !== null) {
+            if (attachWaitGuardRef.current !== null) clearTimeout(attachWaitGuardRef.current);
+            if (ok) beginWait("thinking");
+            else endWait();
+          }
           break;
         }
         default:
@@ -1133,7 +1188,19 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
         } else {
           setEcho({ channel: "attach", phase: "sent", commandId: queued.commandId });
         }
-        endWait();
+        // 等待接力（真机反馈：发完即无任何状态不可接受）：队列已确认 = 发送完成，
+        // 但终端 pi 尚未接手——echo 负责前几秒归属确认，阶段条常驻接力直到回复/失败/超时，
+        // 用户全程可见「会话正在被处理」（真机反馈批）
+        if (!ack || ack.ok) beginWait("thinking");
+        else endWait(); // 已失败：echo 常驻错误文案（失败不自动收起），无需阶段条
+        // 兜底：终端 pi 长期不接手（离线/卡死）→ 超时结束等待并明示，防阶段条永久转圈
+        if (attachWaitGuardRef.current !== null) clearTimeout(attachWaitGuardRef.current);
+        attachWaitGuardRef.current = setTimeout(() => {
+          if (waitRef.current !== null) {
+            endWait();
+            setNotice("终端 pi 未响应（可能离线）：消息已入终端队列，恢复后会继续执行");
+          }
+        }, ATTACH_WAIT_GUARD_MS);
         vibrate(10);
         return;
       }
@@ -1295,6 +1362,8 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
 
   /** 切换会话驱动模式（E3）：attach 先与 server 握手（终端在线才能接管）；detach 恢复平行通道 */
   const changeAttachMode = async (mode: AttachMode) => {
+    // 用户手动选择最高优先：记录后打开会话不再被智能默认/校正自动改写（选中当前模式的显式确认也记）
+    pinAttachMode(safeStorage(), sessionId, mode);
     if (mode === attachModeRef.current) return;
     setAttachBusy(true);
     try {
@@ -1317,9 +1386,11 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
     }
   };
 
-  // 发送归属确认一行小字：6s 后自动收起（零常驻占位）
+  // 发送归属确认一行小字：6s 后自动收起（零常驻占位）；
+  // **失败除外**：错误信息常驻到下次发送（真机反馈：错误一闪而过等于没报）
   useEffect(() => {
     if (!echo) return;
+    if (echo.phase === "failed") return;
     const timer = setTimeout(() => setEcho(null), 6000);
     return () => clearTimeout(timer);
   }, [echo]);
@@ -1481,7 +1552,8 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
           <DrivenBadge drivenBy={drivenBy} />
           {/* J1 去「运行中」：running 态顶栏不再显示文字徽章（WaitStageBar 阶段状态已表达运行态，
               信息冗余）；空闲/错误保留，模式区分图标（AttachModeMenu）保留 */}
-          {status !== "running" && <StatusBadge status={status} />}
+          {/* 状态标签只在出错时现身（真机反馈：空闲标签对用户是噪音，状态交给阶段条/echo 表达） */}
+          {status === "error" && <StatusBadge status={status} />}
           {/* 双模式切换（E3）：顶栏一个紧凑徽章，弹出小菜单二选一，零额外常驻占位 */}
           <AttachModeMenu
             mode={attachMode}
@@ -1866,9 +1938,10 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
             setIntroOpen(false);
           }}
           onPick={(mode) => {
+            // 说明 sheet 的选择也是用户手动选择（pin）；两个选项都走 changeAttachMode（attach 握手 / parallel 切回）
             markIntroSeen(safeStorage());
             setIntroOpen(false);
-            if (mode === "attach") void changeAttachMode("attach");
+            void changeAttachMode(mode);
           }}
         />
       )}

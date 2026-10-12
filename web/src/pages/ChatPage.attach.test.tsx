@@ -172,8 +172,9 @@ describe("loadSession 校正本地 attachMode（server 是事实源）", () => {
 
   it("server terminal.attached=false 而本地是接管残留 → 校正回 📱 平行模式", async () => {
     localStorage.setItem("agent-hub.attachMode.v1:s1", "attach");
+    // online:false：终端离线不触发智能默认（在线自动接管见 ChatPage.attachDefault.test.tsx），单测校正语义
     mocks.getSession.mockResolvedValue({
-      session: { ...baseSession, terminal: { online: true, attached: false } },
+      session: { ...baseSession, terminal: { online: false, attached: false } },
       messages: [],
       hasMore: false,
       nextBefore: null,

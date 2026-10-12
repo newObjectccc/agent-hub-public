@@ -6,12 +6,15 @@ import { describe, expect, it } from "vitest";
 import {
   attachAvailability,
   attachBadge,
+  attachModePinnedKey,
   echoText,
   isAttachSending,
   loadAttachMode,
   loadIntroSeen,
+  loadPinnedAttachMode,
   mapAttachSendMode,
   markIntroSeen,
+  pinAttachMode,
   saveAttachMode,
   type ChannelEchoState,
 } from "./attach";
@@ -27,6 +30,29 @@ function fakeStorage(initial: Record<string, string> = {}): Pick<Storage, "getIt
 }
 
 describe("attach: 模式持久化", () => {
+  it("用户手动选择（modePinned）：记录/读取用户模式；无记录/损坏 → null（允许智能默认）", () => {
+    const storage = fakeStorage();
+    expect(loadPinnedAttachMode(storage, "s1")).toBeNull();
+    pinAttachMode(storage, "s1", "parallel");
+    expect(loadPinnedAttachMode(storage, "s1")).toBe("parallel");
+    pinAttachMode(storage, "s1", "attach");
+    expect(loadPinnedAttachMode(storage, "s1")).toBe("attach");
+    expect(loadPinnedAttachMode(storage, "s2")).toBeNull();
+    // pin 与生效模式分键存储：自动默认/校正写入的 attachModeKey 不等于用户选择记录
+    expect(storage.getItem(attachModePinnedKey("s1"))).toBe("attach");
+
+    const broken = {
+      getItem: () => {
+        throw new Error("denied");
+      },
+      setItem: () => {
+        throw new Error("denied");
+      },
+    };
+    expect(loadPinnedAttachMode(broken, "s1")).toBeNull();
+    expect(() => pinAttachMode(broken, "s1", "attach")).not.toThrow();
+  });
+
   it("默认 parallel；保存/读取 per-session；损坏存储回落 parallel", () => {
     const storage = fakeStorage();
     expect(loadAttachMode(storage, "s1")).toBe("parallel");
