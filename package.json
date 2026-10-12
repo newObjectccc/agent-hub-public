@@ -44,6 +44,7 @@
     "lint": "pnpm -r lint",
     "dev": "node cli/dev.js",
     "setup": "node cli/setup.js",
+    "autostart": "node cli/setup.js --autostart",
     "start": "node cli/start.js",
     "remote": "node cli/remote.js",
     "doctor": "node cli/check.js",
