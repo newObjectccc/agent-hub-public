@@ -79,6 +79,7 @@ import { showToast } from "../utils/toast";
 import { DRAFT_SAVE_DEBOUNCE_MS, clearDraft, loadDraft, saveDraft } from "../utils/drafts";
 import { COMPOSITION_COOLDOWN_MS, PhysicalKeyboardTracker, shouldSendOnEnter } from "../utils/keyboard";
 import { prefersReducedMotion, scrollBehaviorOf } from "../utils/motion";
+import { shouldFollowToBottom } from "../utils/scrollPolicy";
 import { chatPath, chatReturnPath, currentLocate, navigate, onRouteChange, treePath, type ChatLocate } from "../utils/router";
 
 /**
@@ -122,6 +123,8 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
   const [sending, setSending] = useState(false);
   /** 同步防重入闸门（与 sending state 双保险）：快速连点只发一条 */
   const sendingRef = useRef(false);
+  /** 发送/重试触发的强制回底（发送 = 显式「看底部」意图，区别于被动收消息的贴底跟随） */
+  const forceScrollRef = useRef(false);
   /** 阶段化等待反馈：发送中 → 思考中 → 工具执行中 → 回复中（null = 空闲不显示） */
   const [wait, setWait] = useState<{ phase: WaitPhase; startedAt: number } | null>(null);
   const waitRef = useRef(wait);
@@ -853,6 +856,9 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
   useLayoutEffect(() => {
     const tailId = messages.length > 0 ? messages[messages.length - 1].id : null;
     const grew = messages.length > prevLenRef.current && tailId !== prevTailRef.current;
+    // 发送/重试的强制回底：仅随真实新增消费，防被无关渲染吃掉标志
+    const forceScroll = grew && forceScrollRef.current;
+    if (forceScroll) forceScrollRef.current = false;
     const delta = Math.max(0, messages.length - prevLenRef.current);
     // i1 新消息浮标误报修复：首屏对账填充不计数——打开会话本来就在最新处
     const firstLoad = initialFillRef.current;
@@ -870,9 +876,9 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
     const nearBottom0 =
       distanceNow0 < STICK_TO_BOTTOM_PX ||
       (lastContentHeightRef.current > 0 && distancePrev0 < STICK_TO_BOTTOM_PX);
-    if (grew && !firstLoad && !nearBottom0) {
+    if (grew && !firstLoad && !nearBottom0 && !forceScroll) {
       setNewCount((c) => c + delta);
-    } else if (nearBottom0 || firstLoad) {
+    } else if (nearBottom0 || firstLoad || forceScroll) {
       setNewCount(0);
     }
     const el = scrollRef.current;
@@ -893,7 +899,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
     const distancePrev = lastContentHeightRef.current - el.scrollTop - el.clientHeight;
     const distanceNow = el.scrollHeight - el.scrollTop - el.clientHeight;
     lastContentHeightRef.current = el.scrollHeight;
-    if (distancePrev >= STICK_TO_BOTTOM_PX && distanceNow >= STICK_TO_BOTTOM_PX) return;
+    if (!shouldFollowToBottom({ force: forceScroll, distancePrev, distanceNow, threshold: STICK_TO_BOTTOM_PX })) return;
     // 大跨度跳到底部用瞬时滚动：避免平滑动画穿过顶部误触发"加载更早"；
     // 单次布局读 + 直接滚底（等价 scrollIntoView(block:end)，省掉整页布局计算）
     const target = el.scrollHeight - el.clientHeight;
@@ -1199,6 +1205,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
     const text = quote ? withQuote(quote.text, base) : base;
     if (!text) return;
     sendingRef.current = true;
+    forceScrollRef.current = true; // 发送即强制回底：用户必须看到自己刚发的消息
     const sent = attachments;
     setSending(true);
     setNotice(null);
@@ -1235,6 +1242,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
     const item = queuedById.get(localId);
     if (!item) return;
     sendingRef.current = true;
+    forceScrollRef.current = true; // 重试同口径：用户意图同样在最新处
     setSending(true);
     setNotice(null);
     beginWait("sending");
