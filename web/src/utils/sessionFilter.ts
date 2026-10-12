@@ -25,6 +25,14 @@ export function filterSessionsBySource<T extends { source?: string | null }>(
   return sessions.filter((s) => active.has(String(s.source ?? "")));
 }
 
+/**
+ * 计数口径（与列表可见卡片一致）：子代理在列表中挂在父会话树下展示，
+ * 不作为独立卡片 → tab/筛选数字不计入（真机反馈：tab 6 张 vs 列表 4 张 = 差在子代理）。
+ */
+export function countableSessions<T extends { isSubAgent?: boolean }>(sessions: T[]): T[] {
+  return sessions.filter((s) => s.isSubAgent !== true);
+}
+
 /** 各来源计数（筛选面板 chips 决策依据：pi 60 / Claude 40 / Codex 90） */
 export function sourceCounts(sessions: ReadonlyArray<{ source?: string | null }>): Record<string, number> {
   const out: Record<string, number> = {};

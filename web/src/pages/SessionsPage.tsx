@@ -25,7 +25,7 @@ import { SessionListSkeleton } from "../components/Skeletons";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { SESSION_TABS, filterSessionsByTab, type SessionTab } from "../utils/sessionTabs";
-import { SOURCE_OPTIONS, filterSessionsBySource, sourceCounts } from "../utils/sessionFilter";
+import { SOURCE_OPTIONS, countableSessions, filterSessionsBySource, sourceCounts } from "../utils/sessionFilter";
 import { peekListScrollTop, saveListScrollTop } from "../utils/scrollMemory";
 import { usageBySession } from "../utils/usage";
 import { chatPath, navigate, onRouteChange } from "../utils/router";
@@ -183,7 +183,13 @@ export function SessionsPage() {
     () => filterSessionsBySource(tabFiltered, sourceFilter),
     [tabFiltered, sourceFilter],
   );
-  const sourceCountMap = useMemo(() => sourceCounts(tabFiltered), [tabFiltered]);
+  /** 计数口径与列表可见卡片一致：子代理挂树下展示、不计入 tab 数字（真机反馈：6≠4 根因） */
+  const mainSessions = useMemo(() => countableSessions(sessions), [sessions]);
+  /** 筛选面板计数同口径：不含子代理（与 tab 数字/列表卡片一致） */
+  const sourceCountMap = useMemo(
+    () => sourceCounts(filterSessionsByTab(mainSessions, tab, { attentionIds, doneIds })),
+    [mainSessions, tab, attentionIds, doneIds],
+  );
   /** 最近使用工作目录：按会话更新时间倒序去重（新建 sheet 的 cwd 下拉用） */
   const recentCwds = useMemo(() => {
     const sorted = [...sessions].sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
@@ -191,12 +197,12 @@ export function SessionsPage() {
   }, [sessions]);
   const tabCounts = useMemo(
     () => ({
-      all: sessions.length,
-      working: sessions.filter((s) => s.status === "running").length,
-      attention: sessions.filter((s) => attentionIds.has(s.id)).length,
-      done: sessions.filter((s) => doneIds.has(s.id)).length,
+      all: mainSessions.length,
+      working: mainSessions.filter((s) => s.status === "running").length,
+      attention: mainSessions.filter((s) => attentionIds.has(s.id)).length,
+      done: mainSessions.filter((s) => doneIds.has(s.id)).length,
     }),
-    [sessions, attentionIds, doneIds],
+    [mainSessions, attentionIds, doneIds],
   );
 
   /** 切换 tab 同步 ?tab=（深链可分享；all 不带参数保持 URL 干净） */

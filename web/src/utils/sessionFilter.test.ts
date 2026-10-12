@@ -3,7 +3,7 @@
  * 与 tab 过滤正交（filterSessionsBySource(filterSessionsByTab(...)) 可叠加）。
  */
 import { describe, expect, it } from "vitest";
-import { filterSessionsBySource, sourceCounts, SOURCE_OPTIONS } from "./sessionFilter";
+import { countableSessions, filterSessionsBySource, sourceCounts, SOURCE_OPTIONS } from "./sessionFilter";
 
 const s = (id: string, source: string) => ({ id, source });
 
@@ -39,5 +39,17 @@ describe("sourceCounts", () => {
 describe("SOURCE_OPTIONS", () => {
   it("覆盖 pi / claude / codex 三个来源", () => {
     expect(SOURCE_OPTIONS.map((o) => o.value)).toEqual(["pi", "claude", "codex"]);
+  });
+});
+
+describe("countableSessions（tab 计数口径：不含子代理）", () => {
+  it("子代理挂树下展示不计数；主会话/无标记会话计入", () => {
+    const list = [
+      { id: "a", isSubAgent: false },
+      { id: "b", isSubAgent: true },
+      { id: "c" },
+      { id: "d", isSubAgent: true },
+    ];
+    expect(countableSessions(list).map((x) => x.id)).toEqual(["a", "c"]);
   });
 });
