@@ -4,7 +4,7 @@
 
 ![CI](https://github.com/newObjectccc/agent-hub/actions/workflows/ci.yml/badge.svg) ![License: MIT](https://img.shields.io/badge/license-MIT-blue) ![Node.js ≥ 20](https://img.shields.io/badge/node-%3E%3D20-brightgreen) ![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen) ![PWA](https://img.shields.io/badge/PWA-ready-orange)
 
-> 手机就是电脑的遥控器 + 独立工作台。跨平台（macOS / Linux / Windows）的 **pi / Claude Code / Codex 会话中枢**。
+> 手机就是电脑的遥控器 + 独立工作台——**自托管**、跨平台（macOS / Linux / Windows）的 **pi / Claude Code / Codex 会话中枢**，数据不出你的机器。
 
 在任何设备的浏览器里打开 PWA 面板 → 一目了然看到全部 agent 会话与工作状态 → 点击进入 chat 界面继续对话、派发任务、实时旁观。会话与终端 CLI 完全互通——会话文件就是唯一事实源（pi `~/.pi/agent/sessions/`、Claude Code `~/.claude/projects/`、Codex `~/.codex/sessions/`）。
 

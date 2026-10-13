@@ -4,7 +4,7 @@ English | [简体中文](README.md)
 
 ![CI](https://github.com/newObjectccc/agent-hub/actions/workflows/ci.yml/badge.svg) ![License: MIT](https://img.shields.io/badge/license-MIT-blue) ![Node.js ≥ 20](https://img.shields.io/badge/node-%3E%3D20-brightgreen) ![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen) ![PWA](https://img.shields.io/badge/PWA-ready-orange)
 
-> Your phone is a remote control **and** a standalone workstation for your computer. A cross-platform (macOS / Linux / Windows) **session hub for pi / Claude Code / Codex**.
+> Your phone is a remote control **and** a standalone workstation for your computer — a **self-hosted**, cross-platform (macOS / Linux / Windows) **session hub for pi / Claude Code / Codex**. Your data never leaves your machine.
 
 Open the PWA panel in any device's browser → see every agent session and its working status at a glance → tap into the chat view to continue conversations, dispatch tasks, and spectate live. Sessions are fully interoperable with the terminal CLI — session files are the single source of truth (pi `~/.pi/agent/sessions/`, Claude Code `~/.claude/projects/`, Codex `~/.codex/sessions/`).
 
