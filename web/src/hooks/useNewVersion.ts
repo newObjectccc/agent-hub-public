@@ -27,7 +27,9 @@ export function useNewVersion(checkMs = 60_000): boolean {
     let stopped = false;
     const check = async (): Promise<void> => {
       try {
-        const res = await fetch("/", { cache: "no-store" });
+        // /index.html 与壳缓存同 key（"/" 是 install 预缓存的陈旧副本，永不更新，会误报新版本）；
+        // SW 对壳请求已放行 network-first，no-store 真实生效
+        const res = await fetch("/index.html", { cache: "no-store" });
         if (!res.ok) return;
         const html = await res.text();
         const latest = extractEntryScript(html);

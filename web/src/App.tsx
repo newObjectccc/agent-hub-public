@@ -1,5 +1,6 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import { AppShell } from "./components/AppShell";
+import { NewVersionBanner } from "./components/NewVersionBanner";
 import { LockScreen } from "./components/LockScreen";
 import { PageSkeleton } from "./components/Skeletons";
 
@@ -55,6 +56,7 @@ export function App() {
   if (lock.phase !== "unlocked") {
     return (
       <>
+        <NewVersionBanner />
         <LockScreen
           mode={lock.phase === "setup" ? "setup" : "unlock"}
           busy={lock.busy || lock.phase === "loading"}
@@ -90,6 +92,8 @@ export function App() {
 
   return (
     <>
+      {/* 产物新版本提示（不丢代码/跑最新代码原则）：陈旧产物可见化 */}
+      <NewVersionBanner />
       {/* 会话完结提醒横幅（应用内全局，含震动/提示音逻辑） */}
       <NoticeBanner />
       <AppShell route={route}>

@@ -169,6 +169,23 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
+  // 壳（/ 与 /index.html，含 JS 发起的版本检测请求）：network-first——
+  // 不能走 cache-first 陈旧壳（install 预缓存的 "/" 永不更新，会把版本检测饿死成永久误报）
+  if (url.pathname === "/" || url.pathname === "/index.html") {
+    event.respondWith(
+      fetch(event.request)
+        .then((res) => {
+          if (res.ok) {
+            const copy = res.clone();
+            caches.open(CACHE).then((cache) => cache.put("/index.html", copy));
+          }
+          return res;
+        })
+        .catch(() => caches.match("/index.html").then((cached) => cached ?? Response.error())),
+    );
+    return;
+  }
+
   // 静态资源：cache-first + 运行时回填（put 时按 hash 清同组旧 chunk，P2-7）
   event.respondWith(
     caches.match(event.request).then((cached) => {

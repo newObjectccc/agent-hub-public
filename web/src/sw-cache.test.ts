@@ -297,3 +297,41 @@ describe("sw.js 入口资产预缓存（发版后首访即预热）", () => {
     expect(has(cache, "/assets/index-CURRHASH.js")).toBe(false);
   });
 });
+
+describe("壳请求 network-first（版本检测不被陈旧预缓存饿死）", () => {
+  it("/index.html 走网络拿真 HTML，成功后更新壳缓存（不返回 install 旧壳）", async () => {
+    const caches = new FakeCaches();
+    const cache = await caches.open(CACHE);
+    const oldHtml = '<script src="/assets/index-OLDHASH01.js"></script>';
+    await cache.put("/index.html", fakeResponse(oldHtml));
+    await cache.put("/", fakeResponse(oldHtml)); // install 预缓存的 "/" 陈旧副本
+
+    let fetched = 0;
+    const newHtml = '<script src="/assets/index-NEWHASH02.js"></script>';
+    const fetchFn = async () => {
+      fetched += 1;
+      return fakeResponse(newHtml);
+    };
+    const handlers = loadSw(caches, fetchFn);
+    await fireFetch(handlers, "/index.html", fetchFn);
+
+    expect(fetched).toBe(1); // 必须走网络（版本检测的命脉）
+    const cached = await cache.match("/index.html");
+    expect(await cached?.text()).toContain("NEWHASH02"); // 壳缓存同步为新版本
+  });
+
+  it("网络失败时回退缓存壳（离线可启动）", async () => {
+    const caches = new FakeCaches();
+    const cache = await caches.open(CACHE);
+    await cache.put("/index.html", fakeResponse('<script src="/assets/index-OLDHASH01.js"></script>'));
+
+    const fetchFn = async () => {
+      throw new Error("offline");
+    };
+    const handlers = loadSw(caches, fetchFn);
+    await fireFetch(handlers, "/index.html", fetchFn);
+
+    const cached = await cache.match("/index.html");
+    expect(await cached?.text()).toContain("OLDHASH01"); // 离线兜底仍有壳
+  });
+});

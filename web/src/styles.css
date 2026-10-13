@@ -5264,3 +5264,23 @@ button.git-bar:active {  transform: translate(2px, 2px);
   -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
   mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
 }
+
+/* ---------- 产物新版本提示条（永远跑最新代码） ---------- */
+.new-version-banner {
+  position: fixed;
+  top: calc(8px + var(--safe-top, 0px));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1200;
+  min-height: 36px;
+  padding: 6px 14px;
+  font-family: var(--nb-font-head);
+  font-weight: 900;
+  font-size: 0.82rem;
+  background: var(--primary);
+  color: var(--primary-foreground);
+  border: 2px solid var(--border);
+  border-radius: var(--nb-radius);
+  box-shadow: var(--shadow-sm);
+  cursor: pointer;
+}

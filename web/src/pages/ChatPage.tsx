@@ -1552,7 +1552,9 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
           <DrivenBadge drivenBy={drivenBy} />
           {/* J1 去「运行中」：running 态顶栏不再显示文字徽章（WaitStageBar 阶段状态已表达运行态，
               信息冗余）；空闲/错误保留，模式区分图标（AttachModeMenu）保留 */}
-          {/* 状态标签只在出错时现身（真机反馈：空闲标签对用户是噪音，状态交给阶段条/echo 表达） */}
+          {/* 状态单源原则：会话状态只在底部输入区表达（阶段条/回执条），header 横向空间留给导航与操作，
+              不重复展示（用户定调：底部看得出的状态 header 再放一份既占地又双源）。
+              例外：错误徽章保留——会话级出错时阶段条已消失，header 是唯一常驻可见面 */}
           {status === "error" && <StatusBadge status={status} />}
           {/* 双模式切换（E3）：顶栏一个紧凑徽章，弹出小菜单二选一，零额外常驻占位 */}
           <AttachModeMenu

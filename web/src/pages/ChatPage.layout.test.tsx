@@ -335,12 +335,12 @@ describe("J1 顶栏图标按钮统一规范（Redmi K90 实测反馈）", () => 
     expect(header.querySelector(".attach-trigger")).not.toBeNull();
   });
 
-  it("状态徽章：空闲不再显示（真机反馈：噪音无信息），错误保留（信息不丢）", async () => {
+  it("状态单源：header 不重复展示会话状态（底部输入区可看出），错误唯一例外常驻", async () => {
     const el = await render();
     act(() => {
       wsStatus?.(true);
     });
-    // 真机反馈：空闲标签对用户是噪音（状态交给阶段条/echo 表达），不再渲染
+    // 状态单源原则：底部输入区（阶段条/回执条）已能表达状态，header 不重复占横向空间
     expect(el.querySelector(".chat-header .badge.idle")).toBeNull();
     act(() => {
       wsEvent?.({ type: "status", status: "error" });
