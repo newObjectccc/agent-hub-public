@@ -6,7 +6,7 @@ English | [简体中文](README.md)
 
 > Your phone is a remote control **and** a standalone workstation for your computer. A cross-platform (macOS / Linux / Windows) **session hub for pi / Claude Code / Codex**.
 
-Open the PWA panel in any device's browser → see every agent session and its working status at a glance → tap into the chat view to continue conversations, dispatch tasks, and spectate live. Sessions are fully interoperable with the terminal CLI (the same `~/.pi/agent/sessions/`).
+Open the PWA panel in any device's browser → see every agent session and its working status at a glance → tap into the chat view to continue conversations, dispatch tasks, and spectate live. Sessions are fully interoperable with the terminal CLI — session files are the single source of truth (pi `~/.pi/agent/sessions/`, Claude Code `~/.claude/projects/`, Codex `~/.codex/sessions/`).
 
 ## Screenshots
 
@@ -18,22 +18,24 @@ Open the PWA panel in any device's browser → see every agent session and its w
 |---|---|
 | ![Workbench: today's overview and active sessions](docs/screenshots/workbench.png) | ![Chat workspace: thinking process and tool calls](docs/screenshots/chat.png) |
 | **🤖 Multi-subagent panel** | **📱 Dual-mode drive / 🔐 App lock** |
-| ![Multi-subagent panel: live tools and runtimes](docs/screenshots/subagent-panel.png) | ![Dual-mode session drive picker](docs/screenshots/feature-dual-mode.png) |
+| ![Multi-subagent panel: live tools and runtimes](docs/screenshots/subagent-panel.png) | <img src="docs/screenshots/feature-dual-mode.png" alt="Dual-mode session drive picker" width="160"> <img src="docs/screenshots/feature-lock.png" alt="App lock: PIN / WebAuthn unlock" width="160"> |
 
 ## Features
 
-- **📱 Dual-mode session drive**: 🖥 Take over the terminal (messages are injected into the terminal pi process, shown live on screen) / 📱 Parallel continue (a separate worker line sharing the same context) — your call
+- **🧩 Three session sources**: pi / Claude Code / Codex in one list, detail view, and drive channel (Codex includes desktop-app sessions: tool cards / usage accounting / archived sessions 📦)
+- **📱 Dual-mode session drive**: 🖥 Take over the terminal (messages are injected into the terminal pi process, shown live on screen) / 📱 Parallel continue (a separate worker line sharing the same context) — your call; auto-defaults to takeover when the terminal is online (your manual choice always wins), with cross-device conflict self-healing
 - **🤖 Sub-agent activity panel**: sub-agents from pi **and claude** shown live (current tool / output summary / runtime), like a terminal multi-agent panel
 - 🔴 **Live spectating**: watch the thinking chain, streaming replies, and tool calls of terminal pi sessions from your phone (token-level)
-- 🗂 **Workbench home**: organized by attention (🔥 working / ⚠️ needs you / today's overview), real data only
+- 🗂 **Workbench home**: organized by attention (🔥 working / ⚠️ needs you / today's overview), real data only; today's overview broken down by source (pi/claude/codex), with per-source filter chips
 - 📈 **Token usage**: today / 7-day / all-time token & cost rollups, per-session usage badges
-- 💬 **Chat workspace**: staged waiting feedback, slash commands, quick-prompt templates, @ file references, image uploads, quoted replies, code highlighting & copy
-- 📊 **Session management**: priority ordering, sub-agent parent–child tree, global search, branch tree, session forking
+- 💬 **Chat workspace**: staged waiting feedback, slash commands, quick-prompt templates, @ file references, image uploads, quoted replies, code highlighting & copy, GFM tables, voice input, draft auto-restore
+- 📊 **Session management**: priority ordering, sub-agent parent–child tree, global search, branch tree, session forking, session renaming, source filtering (pi/claude/codex)
 - 🌿 **Git integration**: repo status, diff viewer, tool-call ↔ file linking (read-only, safe)
 - ⚡ **Performance**: WS batching, message memoization, windowed long sessions (12–15× streaming render, 21× DOM slim-down); server-side brotli compression + long-lived cache for hashed assets (weak-network / remote friendly)
 - 🔔 **Notification center**: session-completion banners / vibration / sound, unread aggregation, tap-to-read
 - 🔐 **App lock + offline queue**: PIN / WebAuthn passkey unlock, queued messages auto-resend when back online
 - 🖥 **Web terminal** (ttyd optional): a real terminal right inside the panel
+- 🌐 **Bilingual UI (i18n)**: switch the interface language between follow-system / 中文 / English in one tap, persisted
 
 ## Quick Start
 
@@ -41,10 +43,10 @@ Option 1: npm package (npx / global install) — or just git clone (see Option 2
 
 ```bash
 npx agent-hub remote        # one-command remote: auto setup → build → start + Tailscale
-# or install for the full subcommands (dev / setup / start / remote / check / open)
+# or install for the full subcommands (dev / setup / start / remote / check / open; doctor is an alias of check)
 npm install -g agent-hub
 agent-hub setup             # detect environment, generate config
-agent-hub remote            # = start --tailscale, idempotent
+agent-hub remote            # = start --tailscale, skips setup once initialized (idempotent)
 ```
 
 Option 2: git clone (repo development / self-hosted from source):
@@ -139,15 +141,17 @@ tailscale ping <phone's Tailscale IP>    # seeing direct (UDPv6) = P2P is up
 ```
 Mobile PWA ──HTTP/WS──▶ server (Fastify) ──▶ pi SDK / claude CLI / codex CLI
                           │                    │
-                     terminal layer         ~/.pi/agent/sessions
-                  (tmux/ttyd/Tailscale)    (single source of truth)
+                     terminal layer          session files (single source of truth)
+                  (tmux/ttyd/Tailscale)      (pi ~/.pi/agent/sessions,
+                                             claude ~/.claude/projects,
+                                             codex ~/.codex/sessions)
 ```
 
 | Directory | Description |
 |---|---|
 | `server/` | REST + WS, pi/claude/codex adapters, KPI / notifications / git / terminal integration |
 | `web/` | PWA (React + Vite + Tailwind v4, brutalist compact UI) |
-| `cli/` | Cross-platform dev/setup/start/check/open (pure Node, zero bash dependency) |
+| `cli/` | Cross-platform dev/setup/start/remote/check/open (pure Node, zero bash dependency) |
 | `integrations/` | pi extensions (live-feed streaming / pi-command reverse control) |
 | `docs/` | API contract, architecture, platform details, headscale guide (HEADSCALE.md), roadmap |
 | `docs/headscale/` | Self-hosted headscale control-plane deployment files (docker compose + Caddy auto-HTTPS) |
@@ -172,7 +176,7 @@ pnpm dev                           # one-command dev (recommended)
 #   server:tsc  tsc --watch incremental build
 #   server      node --watch hot restart (backend edits apply automatically)
 #   web         Vite HMR (frontend edits apply instantly)
-pnpm build && pnpm lint && pnpm test   # full verification (1200+ tests, GitHub Actions CI-guarded)
+pnpm build && pnpm lint && pnpm test   # full verification (1500+ tests, GitHub Actions CI-guarded)
 ```
 
 Note: the dev entry is Vite (default `http://localhost:5173`) with `/api` and `/ws` proxied to the server (default 7700) — not 7700 directly.
@@ -208,7 +212,19 @@ pm2 save && pm2 startup        # start on boot
 
 ## Configuration
 
-- `config/hub.config.json`: ports / directories (generated by setup)
+- `config/hub.config.json`: ports / directories / auth (generated by setup). Fields and defaults:
+
+| Field | Default | Description |
+|---|---|---|
+| `port` | `7700` | Panel port |
+| `host` | `127.0.0.1` | Bind address (wildcard binding is rejected; see Security Notes) |
+| `sessionDir` | `~/.pi/agent/sessions` | pi session directory (`~` supported, same below) |
+| `workspaceRoot` | `~/Workspace` | Workspace root (git stats on the overview / constraint root for uploads and new-session cwd) |
+| `kpiRefreshMinutes` | `5` | Metric-card background refresh interval (minutes) |
+| `auth` | `{"enabled": false, "token": ""}` | API / WS auth (see Security Notes) |
+| `allowOrigins` | `[]` | CORS allowlist (exact origins, e.g. `https://app.example.com`; empty array = deny all cross-origin) |
+| `allowLan` | `false` | Explicit LAN exposure opt-in (allows wildcard `host`; `start --lan` writes it automatically) |
+
 - `config/kpi-sources.json`: optional metric-card data sources (`${ENV_VAR}` for secrets)
 
 ## Security Notes (read before deploying)
@@ -224,7 +240,7 @@ This project ships with **zero authentication by default** — the trust boundar
 - **Enable API auth**: set `"auth": { "enabled": true, "token": "<long random string>" }` in `config/hub.config.json` — all APIs and WS then require `Authorization: Bearer <token>`
 - `auth.enabled` defaults to `false` on purpose (frictionless tailnet experience); turn it on before exposing to the internet
 - **The app lock (PIN / WebAuthn) is a UI lock** against physical access to your phone/computer — it is not network auth; the two layers are independent
-- `host` defaults to `127.0.0.1` and wildcard binding is rejected; LAN exposure requires explicit `"allowLan": true` (or `start -- --lan`)
+- `host` defaults to `127.0.0.1` and wildcard binding is rejected; LAN exposure requires explicit `"allowLan": true` (or `agent-hub start --lan` / `npm run start -- --lan`, which writes `allowLan` automatically)
 - Found a security issue? **Do not open a public issue** — contact the maintainer privately via the repo's About page
 
 ## License

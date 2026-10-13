@@ -6,7 +6,7 @@
 
 > 手机就是电脑的遥控器 + 独立工作台。跨平台（macOS / Linux / Windows）的 **pi / Claude Code / Codex 会话中枢**。
 
-在任何设备的浏览器里打开 PWA 面板 → 一目了然看到全部 agent 会话与工作状态 → 点击进入 chat 界面继续对话、派发任务、实时旁观。会话与终端 CLI 完全互通（同一份 `~/.pi/agent/sessions/`）。
+在任何设备的浏览器里打开 PWA 面板 → 一目了然看到全部 agent 会话与工作状态 → 点击进入 chat 界面继续对话、派发任务、实时旁观。会话与终端 CLI 完全互通——会话文件就是唯一事实源（pi `~/.pi/agent/sessions/`、Claude Code `~/.claude/projects/`、Codex `~/.codex/sessions/`）。
 
 ## 截图
 
@@ -18,22 +18,24 @@
 |---|---|
 | ![工作台首页：今日概览与进行中会话](docs/screenshots/workbench.png) | ![Chat 工作页：思维过程与工具执行](docs/screenshots/chat.png) |
 | **🤖 多子代理面板** | **📱 双模式驱动 / 🔐 应用锁** |
-| ![多子代理面板：当前工具与运行时长](docs/screenshots/subagent-panel.png) | ![双模式会话驱动选择](docs/screenshots/feature-dual-mode.png) |
+| ![多子代理面板：当前工具与运行时长](docs/screenshots/subagent-panel.png) | <img src="docs/screenshots/feature-dual-mode.png" alt="双模式会话驱动选择" width="160"> <img src="docs/screenshots/feature-lock.png" alt="应用锁：PIN / WebAuthn 解锁" width="160"> |
 
 ## 特性
 
-- **📱 双模式会话驱动**：🖥 接管终端（消息注入终端 pi 进程，屏幕实时显示）/ 📱 平行继续（独立工作线，共享上下文）——自己选
+- **🧩 三源会话支持**：pi / Claude Code / Codex 统一列表、详情与驱动（Codex 含桌面 app 会话：工具卡片 / 用量入账 / 归档会话 📦）
+- **📱 双模式会话驱动**：🖥 接管终端（消息注入终端 pi 进程，屏幕实时显示）/ 📱 平行继续（独立工作线，共享上下文）——自己选；终端在线时自动默认接管（手动选择永远优先），跨设备冲突自动自愈
 - **🤖 子代理活动面板**：pi / claude 双源子代理实时展示（当前工具 / 输出摘要 / 运行时长），像终端多 agent 面板
 - **🔴 实时旁观**：终端跑的 pi 会话，手机上看思维链、流式回复、工具执行（token 级）
-- **🗂 工作台首页**：按注意力组织（🔥工作中 / ⚠️等你处理 / 今日概览），真实数据
+- **🗂 工作台首页**：按注意力组织（🔥工作中 / ⚠️等你处理 / 今日概览），真实数据；今日概览按来源（pi/claude/codex）细分统计，可按来源过滤
 - **📈 Token 用量**：今日/7 天/全部 token 与费用汇总，会话级用量徽章
-- **💬 Chat 工作页**：阶段化等待反馈、slash 命令、快捷指令模板、@ 文件引用、上传图片、引用回复、代码高亮/复制
-- **📊 会话管理**：优先级排序、子代理父子树、全局搜索、分支树、复制会话（fork）
+- **💬 Chat 工作页**：阶段化等待反馈、slash 命令、快捷指令模板、@ 文件引用、上传图片、引用回复、代码高亮/复制、GFM 表格、语音输入、草稿自动恢复
+- **📊 会话管理**：优先级排序、子代理父子树、全局搜索、分支树、复制会话（fork）、会话改名、来源筛选（pi/claude/codex）
 - **🌿 Git 集成**：仓库状态、diff 查看器、工具调用文件联动（只读安全）
 - **⚡ 性能**：WS 批处理、消息 memo、长会话窗口化（流式渲染 12-15x、DOM 21x 瘦身）；服务端 brotli 压缩 + hash 产物长缓存（弱网/远程友好）
 - **🔔 通知中心**：会话完结横幅/震动/声音、未读聚合、点击即读
 - **🔐 应用锁 + 离线队列**：PIN / WebAuthn 通行密钥解锁、断网消息排队自动重发
 - **🖥 Web 终端**（ttyd 可选）：面板内直接开真终端
+- **🌐 中英双语（i18n）**：界面语言跟随系统 / 中文 / English 一键切换，持久化生效
 
 ## 快速开始
 
@@ -41,10 +43,10 @@
 
 ```bash
 npx agent-hub remote        # 一键远程：首次自动 setup → 构建 → 启动 + Tailscale
-# 或安装后使用完整子命令（dev / setup / start / remote / check / open）
+# 或安装后使用完整子命令（dev / setup / start / remote / check / open，doctor 为 check 别名）
 npm install -g agent-hub
 agent-hub setup             # 检测环境、生成 config
-agent-hub remote            # = start --tailscale，已初始化时直接走 start（幂等）
+agent-hub remote            # = start --tailscale，已初始化时跳过 setup 直接启动（幂等）
 ```
 
 方式二：直接 git clone（仓库开发 / 自托管源码）：
@@ -137,15 +139,17 @@ tailscale ping <手机的 Tailscale IP>    # 出现 direct（UDPv6）= P2P 直�
 ```
 手机 PWA ──HTTP/WS──▶ server (Fastify) ──▶ pi SDK / claude CLI / codex CLI
                           │                    │
-                     终端增强层              ~/.pi/agent/sessions
-                  （tmux/ttyd/Tailscale）    （会话唯一事实源）
+                     终端增强层              会话文件（唯一事实源）
+                  （tmux/ttyd/Tailscale）   （pi ~/.pi/agent/sessions、
+                                            claude ~/.claude/projects、
+                                            codex ~/.codex/sessions）
 ```
 
 | 目录 | 说明 |
 |---|---|
 | `server/` | REST + WS、pi/claude/codex 三源适配、KPI/通知/git/终端集成 |
 | `web/` | PWA（React + Vite + Tailwind v4，野兽派紧凑 UI） |
-| `cli/` | 跨平台 dev/setup/start/check/open（纯 Node 零 bash 依赖） |
+| `cli/` | 跨平台 dev/setup/start/remote/check/open（纯 Node 零 bash 依赖） |
 | `integrations/` | pi 扩展（live-feed 实时流出 / pi-command 反向指令） |
 | `docs/` | API 契约、架构、平台细则、headscale 自建指南（HEADSCALE.md）、路线图 |
 | `docs/headscale/` | 自建 headscale 控制面部署文件（docker compose + Caddy 自动 HTTPS） |
@@ -170,7 +174,7 @@ pnpm dev                           # 一条命令开发调试（推荐）
 #   server:tsc  tsc --watch 增量编译
 #   server      node --watch 热重启（改后端代码自动生效）
 #   web         Vite HMR（改前端代码即时生效）
-pnpm build && pnpm lint && pnpm test   # 全量验证（1200+ 测试，GitHub Actions CI 守护）
+pnpm build && pnpm lint && pnpm test   # 全量验证（1500+ 测试，GitHub Actions CI 守护）
 ```
 
 注意：开发调试入口是 Vite（默认 `http://localhost:5173`），`/api` `/ws` 已代理到 server（默认 7700）；不是直接访问 7700。
@@ -206,7 +210,19 @@ pm2 save && pm2 startup        # 开机自启
 
 ## 配置
 
-- `config/hub.config.json`：端口/目录（setup 生成）
+- `config/hub.config.json`：端口/目录/鉴权（setup 生成），字段与默认值：
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| `port` | `7700` | 面板端口 |
+| `host` | `127.0.0.1` | 监听地址（拒绝通配绑定，见安全须知） |
+| `sessionDir` | `~/.pi/agent/sessions` | pi 会话目录（支持 `~`，下同） |
+| `workspaceRoot` | `~/Workspace` | 工作区根目录（今日概览 git 统计 / 上传与新建会话 cwd 的约束根） |
+| `kpiRefreshMinutes` | `5` | 指标卡后台刷新间隔（分钟） |
+| `auth` | `{"enabled": false, "token": ""}` | API / WS 鉴权（见安全须知） |
+| `allowOrigins` | `[]` | 跨域白名单（精确 origin，如 `https://app.example.com`；空数组 = 拒绝一切跨域） |
+| `allowLan` | `false` | 显式开启局域网暴露（允许 `host` 通配绑定；`start --lan` 会自动写入） |
+
 - `config/kpi-sources.json`：可选指标卡数据源（`${ENV_VAR}` 引用密钥）
 
 ## 安全须知（部署前必读）
@@ -222,7 +238,7 @@ pm2 save && pm2 startup        # 开机自启
 - **开启 API 鉴权**：`config/hub.config.json` 里 `"auth": { "enabled": true, "token": "<长随机串>" }`——开启后全部 API 与 WS 均需 `Authorization: Bearer <token>`
 - `auth.enabled` 默认 `false` 是刻意设计（tailnet 内免 token 的顺手体验）；暴露公网前请务必开启
 - **应用锁（PIN / WebAuthn）是界面锁**，防的是旁人物理接触你的手机/电脑，不是网络鉴权——两层防护独立生效，不要混用
-- `host` 默认 `127.0.0.1` 且拒绝通配绑定；局域网开放需显式 `"allowLan": true`（或 `start -- --lan`）
+- `host` 默认 `127.0.0.1` 且拒绝通配绑定；局域网开放需显式 `"allowLan": true`（或 `agent-hub start --lan` / `npm run start -- --lan`，CLI 会自动写入 `allowLan`）
 - 发现安全问题请**勿公开 issue**，通过仓库 About 页的联系方式私下告知
 
 ## License

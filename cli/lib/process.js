@@ -116,16 +116,18 @@ export function resolvePackageManager(deps = {}) {
  * 以包管理器运行脚本（cwd 切到目标包目录，规避 --prefix / --filter 的平台差异）。
  * Windows 下包管理器是 .cmd，需要 shell。
  */
-export function runPackageManagerScript(pm, script, { cwd, env, run = runCapture, platform = process.platform } = {}) {
+export function runPackageManagerScript(pm, script, { cwd, env, run = runCapture, platform = process.platform, timeout = 300_000 } = {}) {
   assertSafeArgs([script]);
   return run(pm.name, ['run', script], {
     cwd,
     env,
     shell: isWindows(platform),
+    // 构建脚本（tsc+vite）可达分钟级：15s 默认必超时（out-of-box 实测踩坑），长任务显式放宽
+    timeout,
   });
 }
 
-/** 安装依赖：pnpm install / npm install（cwd=仓库根）。 */
-export function installDeps(pm, { cwd, env, run = runCapture, platform = process.platform } = {}) {
-  return run(pm.name, ['install'], { cwd, env, shell: isWindows(platform) });
+/** 安装依赖：pnpm install / npm install（cwd=仓库根）。冷装全量依赖可达数分钟，超时须放宽。 */
+export function installDeps(pm, { cwd, env, run = runCapture, platform = process.platform, timeout = 600_000 } = {}) {
+  return run(pm.name, ['install'], { cwd, env, shell: isWindows(platform), timeout });
 }
