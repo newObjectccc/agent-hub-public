@@ -33,6 +33,10 @@ import { inferExternalStatus } from "../sessions/tail.js";
 import type { MessageDto, PromptImageAttachment, ServerEvent, SessionListItem, SessionStatus } from "../types.js";
 import { CodexStreamTranslator } from "./codex-stream.js";
 import {
+  loadProviderEnv,
+  mergeProviderEnvSync,
+} from "./claude-env.js";
+import {
   buildCodexNewRollout,
   buildSessionIndexLine,
   loadCodexSessionIndex,
@@ -408,6 +412,9 @@ export class CodexAdapter implements SessionAdapter {
       return { accepted: true, mode: decision.kind };
     }
 
+    // 预热 provider 环境缓存（自定义 OPENAI_BASE_URL/API_KEY 等），startRun 同步取用
+    await loadProviderEnv();
+
     this.startRun(found, effectiveText);
     return { accepted: true, mode: "prompt" };
   }
@@ -478,7 +485,8 @@ export class CodexAdapter implements SessionAdapter {
     const child = this.spawnFn(this.codexBin, args, {
       cwd: session.cwd !== "" ? session.cwd : undefined,
       stdio: ["ignore", "pipe", "pipe"],
-      env: process.env,
+      // 自定义 provider（shell rc 里的 OPENAI_* 等）随 spawn 注入（见 claude-env.ts）
+      env: mergeProviderEnvSync(process.env),
       windowsHide: true,
     });
     const translator = new CodexStreamTranslator();

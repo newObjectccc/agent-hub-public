@@ -16,6 +16,12 @@
  *    保证 claude 无法在无人确认的情况下执行破坏性操作（headless 下需确认的工具一律拒绝）。
  *    不传 `--dangerously-skip-permissions`、不传 `--allowedTools`。
  * 3. 模型输出的 stderr 只保留尾部截断预览用于错误提示，不落盘。
+ *
+ * ── 两条执行路径的边界（防误改）──────────────────────────────────────────
+ * 本文件的「manual」硬约束只管 parallel 路径（spawn-per-message，无人在环）。
+ * hub 驱动接管路径（adapters/claude-driver.ts）是用户显式接管：人在环、手机逐单批
+ * 权限（--permission-prompt-tool bridge），权限模式跟随用户 settings（bypass 用户全自动），
+ * 放开 manual 是产品语义而非漏洞。请勿把两路径的权限策略「统一收紧」。
  * ─────────────────────────────────────────────────────────────────────────
  */
 import { spawn, type ChildProcess } from "node:child_process";
@@ -29,6 +35,10 @@ import { decidePromptAction, parsePromptMode } from "../sessions/prompt-policy.j
 import { inferExternalStatus, registerTailStatusSink } from "../sessions/tail.js";
 import type { MessageDto, PromptImageAttachment, ServerEvent, SessionListItem, SessionStatus } from "../types.js";
 import { ClaudeStreamTranslator } from "./claude-stream.js";
+import {
+  loadClaudeProviderEnv,
+  mergeClaudeEnvSync,
+} from "./claude-env.js";
 import {
   claudeSummaries,
   encodeClaudeProjectDir,
@@ -49,6 +59,11 @@ export interface ClaudeAdapterOptions {
   /** 可注入（测试伪造 spawn） */
   spawnFn?: typeof spawn;
   claudeBin?: string;
+  /**
+   * 防双写加固（D8）：会话是否处于 hub 驱动接管中（claude-driver）。
+   * 接管期间拒绝 parallel 发送，防 server spawn 与驱动进程双写同一 transcript。
+   */
+  driverBusy?: (id: string) => boolean;
 }
 
 /** stderr 预览上限（错误提示用） */
@@ -72,6 +87,8 @@ export class ClaudeAdapter implements SessionAdapter {
   private readonly emit: EmitFn;
   private readonly spawnFn: typeof spawn;
   private readonly claudeBin: string;
+  /** 防双写（D8）：hub 驱动接管判定（构造注入） */
+  private readonly driverBusy?: (id: string) => boolean;
   private readonly running = new Map<string, RunningRun>();
   private readonly queues = new Map<string, string[]>();
   /** 内存运行态（含显式 idle）：带登记时间，超 STATE_TTL 清扫（外部 `claude --resume` 写 transcript 时状态可随 mtime 自愈） */
@@ -96,6 +113,7 @@ export class ClaudeAdapter implements SessionAdapter {
     this.emit = options.emit;
     this.spawnFn = options.spawnFn ?? spawn;
     this.claudeBin = options.claudeBin ?? "claude";
+    this.driverBusy = options.driverBusy;
     // tail 的 status 事件只走 WS 广播，不回写会让 getStatus 与 WS 显示分叉（镜像 hub.ts 同机制）
     this.unregisterTailStatus = registerTailStatusSink((id, status) => {
       this.statuses.set(id, { status, at: Date.now() });
@@ -117,6 +135,18 @@ export class ClaudeAdapter implements SessionAdapter {
     const own = this.statuses.get(id)?.status;
     if (own) return own;
     return inferExternalStatus(updatedMs);
+  }
+
+  /**
+   * 防双写加固（D8）：本进程 run / hub 驱动接管 / 外部写入（终端 TUI 活跃）任一为真即 busy。
+   * 外部 running 用 statusWithInference（own 显式 idle 优先，防 settled 后 mtime 新鲜误判）。
+   */
+  private isEffectivelyBusy(id: string, updatedAt: string): boolean {
+    if (this.running.has(id)) return true;
+    if (this.driverBusy?.(id)) return true;
+    const updatedMs = Date.parse(updatedAt);
+    if (Number.isNaN(updatedMs)) return false;
+    return this.statusWithInference(id, updatedMs) === "running";
   }
 
   private setStatus(id: string, status: SessionStatus): void {
@@ -407,7 +437,7 @@ export class ClaudeAdapter implements SessionAdapter {
       throw new HubError(ErrorCodes.SESSION_NOT_FOUND, `会话不存在: ${id}`, 404);
     }
 
-    const decision = decidePromptAction(this.running.has(id), mode);
+    const decision = decidePromptAction(this.isEffectivelyBusy(id, found.updatedAt), mode);
     if (decision.kind === "busy") {
       return { accepted: false, mode: mode ?? "prompt", busy: true };
     }
@@ -417,6 +447,9 @@ export class ClaudeAdapter implements SessionAdapter {
       this.queues.set(id, queue);
       return { accepted: true, mode: decision.kind };
     }
+
+    // 预热 provider 环境缓存（自定义 BASE_URL/API_KEY 等），startRun 同步取用
+    await loadClaudeProviderEnv();
 
     this.startRun(found, effectiveText);
     return { accepted: true, mode: "prompt" };
@@ -500,7 +533,9 @@ export class ClaudeAdapter implements SessionAdapter {
     const child = this.spawnFn(this.claudeBin, args, {
       cwd: session.cwd !== "" ? session.cwd : undefined,
       stdio: ["ignore", "pipe", "pipe"],
-      env: process.env,
+      // 自定义 provider（~/.zshrc 的 ANTHROPIC_BASE_URL 等）随 spawn 注入，
+      // 不依赖 pm2/服务进程的 env（见 claude-env.ts）
+      env: mergeClaudeEnvSync(process.env),
       windowsHide: true,
     });
     const translator = new ClaudeStreamTranslator();
