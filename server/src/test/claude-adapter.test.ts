@@ -78,6 +78,8 @@ before(async () => {
   const projDir = join(projectsDir, "-Users-me-Workspace-demo");
   await mkdir(projDir, { recursive: true });
   await writeFile(join(projDir, `${SID}.jsonl`), transcriptLines.join("\n") + "\n", "utf8");
+  const old = new Date("2026-09-29T09:17:38.821Z");
+  await utimes(join(projDir, `${SID}.jsonl`), old, old);
 });
 
 beforeEach(() => {
@@ -90,6 +92,86 @@ after(async () => {
 });
 
 describe("claude adapter: prompt → spawn 安全参数 + 事件广播", () => {
+  it("并发恢复同一空闲会话只启动一个进程，另一条明确返回 busy", async () => {
+    const adapter = makeAdapter(() => undefined);
+    try {
+      const results = await Promise.all([adapter.prompt(SID, "手机一", undefined), adapter.prompt(SID, "手机二", undefined)]);
+      assert.equal(spawnCalls.length, 1);
+      assert.equal(results.filter((result) => result.accepted).length, 1);
+      assert.equal(results.filter((result) => result.busy).length, 1);
+    } finally {
+      adapter.disposeAll();
+    }
+  });
+
+  it("异步准备期间中止，准备完成后不会偷偷启动进程", async () => {
+    const adapter = makeAdapter(() => undefined);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const find = adapter.findSession.bind(adapter);
+    adapter.findSession = async (id) => { await gate; return find(id); };
+    try {
+      const pending = adapter.prompt(SID, "准备过程中被取消", undefined);
+      await adapter.abort(SID);
+      release();
+      await assert.rejects(pending, /启动已取消/);
+      assert.equal(spawnCalls.length, 0);
+    } finally {
+      release();
+      adapter.disposeAll();
+    }
+  });
+
+  it("进程最后一行没有换行时，错误结果仍会送达客户端", async () => {
+    const events: ServerEvent[] = [];
+    const adapter = makeAdapter((_sid, event) => events.push(event));
+    try {
+      await adapter.prompt(SID, "检查最后一行", undefined);
+      children[0].stdout.emit("data", JSON.stringify({ type: "result", subtype: "error_during_execution", is_error: true, result: "最后一行报错" }));
+      children[0].emit("close", 0);
+      assert.ok(events.some((event) => event.type === "error" && event.message === "最后一行报错"));
+      assert.equal(adapter.getStatus(SID), "error");
+    } finally {
+      adapter.disposeAll();
+    }
+  });
+
+  it("中止后到达的旧进程缓冲输出不会复活运行态或追加回复", async () => {
+    const events: ServerEvent[] = [];
+    const adapter = makeAdapter((_sid, event) => events.push(event));
+    try {
+      await adapter.prompt(SID, "中止测试", undefined);
+      await adapter.abort(SID);
+      const count = events.length;
+      children[0].stdout.emit("data", JSON.stringify({ type: "system", subtype: "init" }) + "\n" + JSON.stringify({ type: "assistant", message: { id: "cancelled", content: [{ type: "text", text: "取消后的旧回复" }] } }) + "\n");
+      children[0].emit("close", 0);
+      assert.equal(events.length, count);
+      assert.equal(adapter.getStatus(SID), "idle");
+    } finally {
+      adapter.disposeAll();
+    }
+  });
+
+  it("恢复旧会话及排队续发图片时，用户回显保留图片数据", async () => {
+    const events: ServerEvent[] = [];
+    const adapter = makeAdapter((_sid, event) => events.push(event));
+    const images = [{ path: ".agent-hub-uploads/screenshot.jpg", mimeType: "image/jpeg", data: "aW1hZ2U=" }];
+    try {
+      await adapter.prompt(SID, "@.agent-hub-uploads/screenshot.jpg 检查截图", undefined, images);
+      await adapter.prompt(SID, "接着看图", "followUp", images);
+      const users = () => events.filter((event): event is Extract<ServerEvent, { type: "message_end" }> => event.type === "message_end" && event.message.role === "user");
+      assert.equal(users().length, 1);
+      assert.deepEqual(users()[0].message.images, [{ url: "data:image/jpeg;base64,aW1hZ2U=", alt: images[0].path }]);
+      assert.ok(spawnCalls[0].args.includes(SID), "复用原会话 ID");
+      children[0].emit("close", 0);
+      assert.equal(users().length, 2);
+      assert.deepEqual(users()[1].message.images, users()[0].message.images);
+      assert.ok(users()[1].message.text.includes(images[0].path));
+    } finally {
+      adapter.disposeAll();
+    }
+  });
+
   it("spawn 参数为安全集（--resume/--output-format stream-json/--permission-mode manual，无 bypass）", async () => {
     const events: ServerEvent[] = [];
     const adapter = makeAdapter((_sid, ev) => events.push(ev));
@@ -634,6 +716,117 @@ describe("claude adapter: forkSession 尾部残行丢弃（读到半行不带进
       adapter.disposeAll();
       await rm(file, { force: true });
       if (forkedFile !== "") await rm(forkedFile, { force: true });
+    }
+  });
+});
+
+describe("claude adapter: D8 防双写（busy 判定加固）", () => {
+  it("外部终端忙时不能谎报排队成功，也不创建永远无人消费的队列", async () => {
+    const id = "d8e00000-0000-4000-8000-000000000002";
+    const file = join(projectsDir, "-Users-me-Workspace-demo", `${id}.jsonl`);
+    await writeFile(file, JSON.stringify({ type: "user", message: { content: "外部任务" }, uuid: "external-u", sessionId: id, cwd: CWD, timestamp: new Date().toISOString() }) + "\n");
+    const adapter = makeAdapter(() => undefined);
+    try {
+      for (const mode of ["followUp", "steer"]) {
+        await assert.rejects(adapter.prompt(id, "排队消息", mode), (error: unknown) =>
+          (error as { code: string }).code === "SESSION_BUSY" && /无法.*排队/.test((error as Error).message));
+      }
+      assert.equal(spawnCalls.length, 0);
+    } finally {
+      adapter.disposeAll();
+      await rm(file, { force: true });
+    }
+  });
+
+  it("本轮结束后外部终端重新写盘，旧 idle 与列表缓存都不能放行双写", async () => {
+    const adapter = makeAdapter(() => undefined);
+    const file = join(projectsDir, "-Users-me-Workspace-demo", `${SID}.jsonl`);
+    try {
+      await adapter.prompt(SID, "本地本轮", undefined);
+      children[0].emit("close", 0);
+      await adapter.findSession(SID);
+      const next = new Date(Date.now() + 100);
+      await appendFile(file, JSON.stringify({ type: "user", message: { content: "电脑端继续" }, uuid: "external-new", sessionId: SID, cwd: CWD, timestamp: next.toISOString() }) + "\n");
+      await utimes(file, next, next);
+      const result = await adapter.prompt(SID, "手机并发", undefined);
+      assert.equal(result.busy, true);
+      assert.equal(spawnCalls.length, 1);
+    } finally {
+      adapter.disposeAll();
+      await writeFile(file, transcriptLines.join("\n") + "\n");
+      const old = new Date("2026-09-29T09:17:38.821Z");
+      await utimes(file, old, old);
+    }
+  });
+
+  it("接管期间 API 状态随实际 turn 变化，不依据刚写过的文件猜测", async () => {
+    let status: "running" | "idle" | "error" = "idle";
+    const adapter = new ClaudeAdapter({ projectsDir, historyFile: join(root, "history.jsonl"), emit: () => undefined, spawnFn, driverStatus: () => status });
+    try {
+      for (const next of ["running", "idle", "error"] as const) {
+        status = next;
+        assert.equal(adapter.getStatus(SID), next);
+        assert.equal((await adapter.findSession(SID))?.status, next);
+      }
+    } finally {
+      adapter.disposeAll();
+    }
+  });
+
+  it("driverBusy（hub 驱动接管中）→ prompt 回 busy，不 spawn", async () => {
+    const adapter = new ClaudeAdapter({
+      projectsDir,
+      historyFile: join(root, "history.jsonl"),
+      emit: () => undefined,
+      spawnFn,
+      claudeBin: "claude",
+      driverBusy: () => true,
+    });
+    try {
+      const result = await adapter.prompt(SID, "双写?", undefined);
+      assert.equal(result.busy, true);
+      assert.equal(spawnCalls.length, 0);
+    } finally {
+      adapter.disposeAll();
+    }
+  });
+
+  it("外部活动新鲜（updatedAt 新鲜 = 终端 TUI 正在写）→ prompt 回 busy，不 spawn", async () => {
+    const sid = "d8e00000-0000-4000-8000-000000000001";
+    const fresh = new Date().toISOString();
+    const projDir = join(projectsDir, "-Users-me-Workspace-demo");
+    await writeFile(
+      join(projDir, `${sid}.jsonl`),
+      JSON.stringify({
+        type: "user",
+        message: { role: "user", content: "外部会话正在跑" },
+        uuid: "u1",
+        timestamp: fresh,
+        cwd: CWD,
+        sessionId: sid,
+      }) + "\n",
+      "utf8",
+    );
+    const adapter = makeAdapter(() => undefined);
+    try {
+      const result = await adapter.prompt(sid, "双写?", undefined);
+      assert.equal(result.busy, true);
+      assert.equal(spawnCalls.length, 0);
+    } finally {
+      adapter.disposeAll();
+      await rm(join(projDir, `${sid}.jsonl`), { force: true });
+    }
+  });
+
+  it("外部静默（updatedAt 陈旧）→ 正常发送；own settled idle 不误伤", async () => {
+    // SID fixture 内容时间为 2026-09-29（陈旧）：应照常 spawn
+    const adapter = makeAdapter(() => undefined);
+    try {
+      const result = await adapter.prompt(SID, "继续", undefined);
+      assert.equal(result.accepted, true);
+      assert.equal(spawnCalls.length, 1);
+    } finally {
+      adapter.disposeAll();
     }
   });
 });

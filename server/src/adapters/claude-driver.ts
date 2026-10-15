@@ -22,7 +22,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { ErrorCodes, HubError } from "../errors.js";
 import type { HostRequestDto, ServerEvent, TerminalAttachInfo } from "../types.js";
-import { ClaudeStreamTranslator } from "./claude-stream.js";
+import { ClaudeJsonlReader, ClaudeStreamTranslator } from "./claude-stream.js";
 import { mergeClaudeEnv } from "./claude-env.js";
 import {
   buildDriverArgs,
@@ -68,6 +68,8 @@ export interface ClaudeDriverLinkLike {
   registerHostRequest(body: BridgeHostRequestBody, now?: number): Promise<HostRequestDecision>;
   listHostRequests(id: string): HostRequestDto[];
   respondHostRequest(id: string, requestId: string, decision: HostRequestDecision): boolean;
+  /** 已决 id 记忆（契约 §12：已决 → 409 HOST_REQUEST_RESOLVED，双重应答/幂等回放可判） */
+  isResolvedHostRequest(requestId: string): boolean;
   startSweep(): void;
   disposeAll(): void;
 }
@@ -104,6 +106,10 @@ const DEFAULT_MAX_CONCURRENT = 3;
 const DEFAULT_IDLE_DETACH_MS = 30 * 60_000;
 const DEFAULT_EXTERNAL_QUIET_MS = 3_000;
 const DEFAULT_HOST_REQUEST_TTL_MS = 5 * 60_000;
+/** 已决权限请求记忆 TTL（契约 §12「已决 → 409」判定窗口，过后回 404） */
+const RESOLVED_HOST_REQUEST_TTL_MS = 5 * 60_000;
+/** 已决记忆上限（防膨胀：超限淘汰最旧） */
+const MAX_RESOLVED_HOST_REQUESTS = 200;
 const KILL_GRACE_MS = 2_000;
 const STDERR_PREVIEW_LIMIT = 500;
 /** clientMessageId 幂等缓存 TTL（对齐 agents.ts） */
@@ -135,6 +141,7 @@ interface DriverEntry {
   child: ChildProcess;
   translator: ClaudeStreamTranslator;
   turnActive: boolean;
+  failed: boolean;
   queue: QueuedMessage[];
   hostRequests: Map<string, HostRequestEntry>;
   /** clientMessageId → commandId */
@@ -161,8 +168,14 @@ export class ClaudeDriverHub {
   private readonly startMirrorFn: (sessionId: string, sessionFile: string) => Promise<boolean>;
   private readonly stopMirrorFn: (sessionId: string) => void;
   private readonly drivers = new Map<string, DriverEntry>();
+  private readonly attaching = new Map<string, {
+    cancelled: boolean;
+    promise?: Promise<{ attached: true; driver: "hub"; mirror: boolean }>;
+  }>();
   /** 全局 clientMessageId 幂等（跨 attach 生命周期，防完成后重复注入） */
   private readonly clientSeen = new Map<string, { commandId: string; at: number }>();
+  /** 已决权限请求记忆（requestId → 过期时间）：契约 §12「已决 → 409」可判，防双重应答被误报 404 */
+  private readonly resolvedHostRequests = new Map<string, number>();
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
   private disposed = false;
 
@@ -177,7 +190,7 @@ export class ClaudeDriverHub {
     this.externalQuietMs = options.externalQuietMs ?? DEFAULT_EXTERNAL_QUIET_MS;
     this.hostRequestTtlMs = options.hostRequestTtlMs ?? DEFAULT_HOST_REQUEST_TTL_MS;
     this.spawnFn = options.spawnFn ?? spawn;
-    this.readSettings = options.readSettings ?? defaultReadSettings;
+    this.readSettings = options.readSettings ?? readClaudeDriverSettings;
     this.mirrorMode = options.mirror ?? "tmux";
     this.startMirrorFn =
       options.startMirror ??
@@ -204,12 +217,24 @@ export class ClaudeDriverHub {
     if (existing && !existing.child.killed) {
       return { attached: true, driver: "hub", mirror: existing.mirror };
     }
-    if (this.drivers.size >= this.maxConcurrent) {
+    const pending = this.attaching.get(id);
+    if (pending?.promise) return pending.promise;
+    if (new Set([...this.drivers.keys(), ...this.attaching.keys()]).size >= this.maxConcurrent) {
       throw new HubError(ErrorCodes.DRIVER_LIMIT, `接管进程已达上限（${this.maxConcurrent}），请先退出其他接管会话`, 409);
     }
-    // 防双写：外部（终端 TUI）近期仍在写 transcript → 拒绝接管
+    const attempt: { cancelled: boolean; promise?: Promise<{ attached: true; driver: "hub"; mirror: boolean }> } = { cancelled: false };
+    attempt.promise = this.startDriver(id, opts, now, attempt);
+    this.attaching.set(id, attempt);
     try {
-      const st = await stat(opts.sessionFile);
+      return await attempt.promise;
+    } finally {
+      if (this.attaching.get(id) === attempt) this.attaching.delete(id);
+    }
+  }
+
+  private async assertExternalQuiet(sessionFile: string, now: number): Promise<void> {
+    try {
+      const st = await stat(sessionFile);
       if (now - st.mtimeMs < this.externalQuietMs) {
         throw new HubError(
           ErrorCodes.ATTACH_UNAVAILABLE,
@@ -221,7 +246,15 @@ export class ClaudeDriverHub {
       if (err instanceof HubError) throw err;
       // stat 失败（文件暂缺）不拦截：--resume 由 claude 自己报错，路由层已有 findSession 前置
     }
+  }
 
+  private async startDriver(
+    id: string,
+    opts: { cwd: string; sessionFile: string },
+    now: number,
+    attempt: { cancelled: boolean },
+  ): Promise<{ attached: true; driver: "hub"; mirror: boolean }> {
+    await this.assertExternalQuiet(opts.sessionFile, now);
     const settings = await this.readSettings(opts.cwd).catch(() => null);
     const bypass = settings !== null && isBypass(settings);
     const args = buildDriverArgs({
@@ -235,6 +268,11 @@ export class ClaudeDriverHub {
       [ENV_LIVE_URL]: this.liveUrl,
     };
     if (this.liveToken !== "") env[ENV_LIVE_TOKEN] = this.liveToken;
+
+    // 异步读取配置期间电脑端可能重新开始写盘，启动前再核对一次。
+    await this.assertExternalQuiet(opts.sessionFile, Math.max(now, Date.now()));
+    this.ensureAlive();
+    if (attempt.cancelled) throw new HubError(ErrorCodes.ATTACH_UNAVAILABLE, "接管启动已取消", 409);
 
     const child = this.spawnFn(this.claudeBin, args, {
       cwd: opts.cwd !== "" ? opts.cwd : undefined,
@@ -250,6 +288,7 @@ export class ClaudeDriverHub {
       child,
       translator: new ClaudeStreamTranslator(),
       turnActive: false,
+      failed: false,
       queue: [],
       hostRequests: new Map(),
       byClient: new Map(),
@@ -273,8 +312,10 @@ export class ClaudeDriverHub {
 
   /** detach：停驱动进程（SIGTERM→SIGKILL）；未投递队列回执失败；挂起权限请求一律 deny 收尾 */
   detach(id: string): boolean {
+    const pending = this.attaching.get(id);
+    if (pending) pending.cancelled = true;
     const entry = this.drivers.get(id);
-    if (!entry) return false;
+    if (!entry) return pending !== undefined;
     entry.intentionalStop = true;
     for (const msg of entry.queue.splice(0)) {
       this.pushAck(id, msg.commandId, false, "已退出接管模式，指令取消");
@@ -303,6 +344,11 @@ export class ClaudeDriverHub {
   }
 
   // ---- 消息注入（真用户 turn）----
+
+  runStatusFor(id: string): "running" | "idle" | "error" | null {
+    const entry = this.drivers.get(id);
+    return entry && !entry.child.killed ? (entry.turnActive ? "running" : entry.failed ? "error" : "idle") : null;
+  }
 
   send(id: string, input: { text: unknown; mode?: unknown; clientMessageId?: unknown }): DriverCommand {
     this.ensureAlive();
@@ -438,13 +484,28 @@ export class ClaudeDriverHub {
     }));
   }
 
-  /** 手机应答；未知 id 返回 false（路由转 404），已决同样 false（幂等回放由路由层处理） */
+  /** 手机应答；未知 id 返回 false（路由转 404），已决同样 false（路由凭 isResolvedHostRequest 转 409） */
   respondHostRequest(id: string, requestId: string, decision: HostRequestDecision): boolean {
     const entry = this.drivers.get(id);
     if (!entry) return false;
     const req = entry.hostRequests.get(requestId);
     if (!req) return false;
     this.finishHostRequest(entry, req, decision, decision.behavior === "allow" ? "allow" : "deny");
+    return true;
+  }
+
+  /**
+   * 已决 id 记忆（契约 §12：已决 → 409 HOST_REQUEST_RESOLVED）：
+   * finishHostRequest 记入短期记忆（TTL 5 分钟、上限 200 条防膨胀），过期/超限淘汰后回 false（路由转 404）。
+   * 只覆盖「决出」（allow/deny/timeout/cancelled）的请求，双重应答与移动端幂等回放据此拿到 409 而非 404。
+   */
+  isResolvedHostRequest(requestId: string, now = Date.now()): boolean {
+    const expiresAt = this.resolvedHostRequests.get(requestId);
+    if (expiresAt === undefined) return false;
+    if (expiresAt <= now) {
+      this.resolvedHostRequests.delete(requestId);
+      return false;
+    }
     return true;
   }
 
@@ -457,9 +518,12 @@ export class ClaudeDriverHub {
   }
 
   sweep(now = Date.now()): void {
-    // 空闲自动 detach 由 touchIdle 计时器自管（turn 中顺延）；sweep 只做幂等缓存清理
+    // 空闲自动 detach 由 touchIdle 计时器自管（turn 中顺延）；sweep 只做幂等/已决记忆缓存清理
     for (const [key, seen] of this.clientSeen) {
       if (now - seen.at > CLIENT_IDEMPOTENT_TTL_MS) this.clientSeen.delete(key);
+    }
+    for (const [id, expiresAt] of this.resolvedHostRequests) {
+      if (expiresAt <= now) this.resolvedHostRequests.delete(id);
     }
   }
 
@@ -473,6 +537,7 @@ export class ClaudeDriverHub {
       this.detach(id);
     }
     this.clientSeen.clear();
+    this.resolvedHostRequests.clear();
   }
 
   // ---- 内部 ----
@@ -484,18 +549,10 @@ export class ClaudeDriverHub {
   }
 
   private bindChild(entry: DriverEntry): void {
-    let stdoutRest = "";
+    const reader = new ClaudeJsonlReader((line) => this.handleStdoutLine(entry, line));
     entry.child.stdout?.on("data", (chunk: Buffer | string) => {
       this.touchIdle(entry);
-      stdoutRest += String(chunk);
-      let idx = stdoutRest.indexOf("\n");
-      while (idx >= 0) {
-        const line = stdoutRest.slice(0, idx);
-        stdoutRest = stdoutRest.slice(idx + 1);
-        idx = stdoutRest.indexOf("\n");
-        if (line.trim() === "") continue;
-        this.handleStdoutLine(entry, line);
-      }
+      reader.write(chunk);
     });
     entry.child.stderr?.on("data", (chunk: Buffer | string) => {
       entry.stderrTail = (entry.stderrTail + String(chunk)).slice(-STDERR_PREVIEW_LIMIT);
@@ -506,6 +563,7 @@ export class ClaudeDriverHub {
     });
     entry.child.on("close", () => {
       if (entry.intentionalStop) return;
+      reader.end();
       this.handleCrash(entry);
     });
   }
@@ -517,9 +575,12 @@ export class ClaudeDriverHub {
     } catch {
       return;
     }
+    if (!row || typeof row !== "object" || Array.isArray(row)) return;
     // result = turn 结束（E3）：消费 followUp 队列
     if (row.type === "result") {
       entry.turnActive = false;
+      entry.failed = row.is_error === true || (typeof row.subtype === "string" && row.subtype !== "success");
+      for (const event of entry.translator.feed(line)) this.emit(entry.sessionId, event);
       const next = entry.queue.shift();
       if (next) {
         this.writeMessage(entry, next.commandId, next.text);
@@ -528,6 +589,8 @@ export class ClaudeDriverHub {
     }
     // control_response（interrupt 回执）不进消息翻译
     if (row.type === "control_response" || row.type === "control_request") return;
+    // 长驻进程就绪并不代表有任务在运行；真正发送时 writeMessage 会发 running。
+    if (row.type === "system" && row.subtype === "init" && !entry.turnActive) return;
     try {
       for (const event of entry.translator.feed(line)) {
         this.emit(entry.sessionId, event);
@@ -545,7 +608,9 @@ export class ClaudeDriverHub {
     const ok = this.writeStdin(entry, encodeUserMessage(text));
     if (ok) {
       entry.turnActive = true;
+      entry.failed = false;
       this.touchIdle(entry);
+      this.emit(entry.sessionId, { type: "status", status: "running" });
       // 合成 user 气泡（-p 不回显 prompt；前端去重层合并乐观占位，对齐 ClaudeAdapter.emitUserMessage）
       this.emit(entry.sessionId, {
         type: "message_end",
@@ -578,6 +643,12 @@ export class ClaudeDriverHub {
   private handleCrash(entry: DriverEntry): void {
     if (entry.intentionalStop) return;
     entry.intentionalStop = true;
+    for (const event of entry.translator.flush()) this.emit(entry.sessionId, event);
+    if (entry.turnActive) {
+      entry.turnActive = false;
+      this.emit(entry.sessionId, { type: "status", status: "error" });
+      this.emit(entry.sessionId, { type: "agent_settled" });
+    }
     for (const msg of entry.queue.splice(0)) {
       this.pushAck(entry.sessionId, msg.commandId, false, "接管进程已退出，指令取消");
     }
@@ -606,9 +677,25 @@ export class ClaudeDriverHub {
   ): void {
     clearTimeout(req.timer);
     entry.hostRequests.delete(req.requestId);
+    // 已决记忆（契约 §12）：从 hostRequests 删除后仍可判 409，双重应答不再误报 404
+    this.rememberResolvedHostRequest(req.requestId);
     this.emit(req.sessionId, { type: "host_request_resolved", requestId: req.requestId, outcome });
     req.resolve(decision);
     this.touchIdle(entry);
+  }
+
+  /** 记入已决记忆：TTL 约 5 分钟；超限淘汰最旧（Map 插入序），顺带清过期条目防膨胀 */
+  private rememberResolvedHostRequest(requestId: string, now = Date.now()): void {
+    this.resolvedHostRequests.delete(requestId);
+    this.resolvedHostRequests.set(requestId, now + RESOLVED_HOST_REQUEST_TTL_MS);
+    for (const [id, expiresAt] of this.resolvedHostRequests) {
+      if (expiresAt <= now) this.resolvedHostRequests.delete(id);
+    }
+    while (this.resolvedHostRequests.size > MAX_RESOLVED_HOST_REQUESTS) {
+      const oldest = this.resolvedHostRequests.keys().next().value;
+      if (oldest === undefined) break;
+      this.resolvedHostRequests.delete(oldest);
+    }
   }
 
   private killChild(child: ChildProcess): void {
@@ -666,20 +753,34 @@ function previewInput(input: unknown): string | null {
   }
 }
 
-/** 默认 settings 探测：用户级 + 项目级（与 CLI 同向：项目本地更具体的覆盖） */
-async function defaultReadSettings(sessionCwd: string): Promise<unknown> {
+/** bridge 选择所需的 settings：用户级 < 项目级 < 项目本地，未声明的权限字段继续继承。 */
+export async function readClaudeDriverSettings(sessionCwd: string, userHome = homedir()): Promise<unknown> {
   const candidates = [
-    join(homedir(), ".claude", "settings.json"),
+    join(userHome, ".claude", "settings.json"),
     join(sessionCwd, ".claude", "settings.json"),
     join(sessionCwd, ".claude", "settings.local.json"),
   ];
+  let merged: Record<string, unknown> = {};
+  let found = false;
   for (const file of candidates) {
     try {
       const raw = await readFile(file, "utf8");
-      return JSON.parse(raw);
+      const parsed: unknown = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) continue;
+      const settings = parsed as Record<string, unknown>;
+      const currentPermissions: unknown = merged.permissions;
+      const nextPermissions = settings.permissions;
+      const permissionsOf = (value: unknown): Record<string, unknown> =>
+        value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+      merged = {
+        ...merged,
+        ...settings,
+        permissions: { ...permissionsOf(currentPermissions), ...permissionsOf(nextPermissions) },
+      };
+      found = true;
     } catch {
-      /* 逐个回退 */
+      /* 缺失/损坏配置不阻断其他层；默认挂 bridge，不自动放行。 */
     }
   }
-  return null;
+  return found ? merged : null;
 }

@@ -31,8 +31,10 @@
  */
 import { createReadStream } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
 import type { MessageDto, SessionListItem, ToolCallDto } from "../types.js";
+import { MAX_ATTACHMENTS_PER_MESSAGE, uploadRootsFor } from "../uploads.js";
+import { isClaudeMetaText } from "./claude-message.js";
 import {
   LAST_MESSAGE_LIMIT,
   RESULT_PREVIEW_LIMIT,
@@ -64,16 +66,24 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-/** user 行里的 meta 文本前缀（命令回显/任务通知等，不进 chat 渲染） */
-const META_TEXT_PREFIXES = ["<command-name>", "<local-command-stdout>", "<local-command-caveat>", "<task-notification>", "<bash-input>", "<bash-stdout>"];
-
-function isMetaText(text: string): boolean {
-  const t = text.trimStart();
-  return META_TEXT_PREFIXES.some((p) => t.startsWith(p));
-}
-
 /** image block → 占位文本（契约 MessageDto.text 只承载文本；真图走 MessageDto.images） */
 const IMAGE_PLACEHOLDER = "[image]";
+
+/** 旧版 PWA 只写 @上传路径：Read 的图片结果可补回原用户气泡，不把其它读图结果当附件。 */
+function referencesUploadedImage(text: string, input: unknown, cwd: string | null): boolean {
+  if (!isRecord(input)) return false;
+  const path = typeof input.file_path === "string" ? input.file_path : input.path;
+  if (typeof path !== "string") return false;
+  const target = resolve(cwd ?? "", path);
+  if (!uploadRootsFor(cwd).some((root) => target.startsWith(resolve(root) + sep))) return false;
+  const relativePath = cwd ? relative(cwd, target).split(sep).join("/") : path;
+  return [path, relativePath, `./${relativePath}`].some((ref) => {
+    const token = `@${ref}`;
+    const start = text.indexOf(token);
+    return start >= 0 && (start === 0 || /[\s(（]/u.test(text[start - 1]))
+      && (start + token.length === text.length || /[\s)）。，,]/u.test(text[start + token.length]));
+  });
+}
 
 export interface ParsedClaudeTranscript {
   sessionId: string | null;
@@ -128,6 +138,8 @@ export function parseClaudeTranscript(
   const messages: MessageDto[] = [];
   // tool_use.id → 所属 assistant 消息的 toolCall DTO（折叠 tool_result 用）
   const toolCallOwners = new Map<string, ToolCallDto>();
+  const uploadImageOwners = new Map<string, MessageDto>();
+  let latestUser: MessageDto | undefined;
   // message.id → 聚合中的 assistant DTO（同一条 API 消息的多个 block 行）
   const assistantAgg = new Map<string, MessageDto>();
   let autoId = 0;
@@ -204,7 +216,7 @@ export function parseClaudeTranscript(
 
         if (typeof contentBlocks === "string") {
           const text = contentBlocks.trim();
-          if (text === "" || isMetaText(text)) break;
+          if (text === "" || isClaudeMetaText(text)) break;
           messages.push({
             id: typeof row.uuid === "string" ? row.uuid : nextId("user"),
             role: "user",
@@ -212,6 +224,7 @@ export function parseClaudeTranscript(
             text: contentBlocks,
             toolCalls: [],
           });
+          latestUser = messages[messages.length - 1];
           break;
         }
         if (!Array.isArray(contentBlocks)) break;
@@ -239,6 +252,14 @@ export function parseClaudeTranscript(
                 toolCalls: [],
               });
             }
+            const imageOwner = uploadImageOwners.get(toolCallId);
+            if (imageOwner && !isError) {
+              const images = contentToImages(block.content);
+              if (images?.length) {
+                const byUrl = new Map([...(imageOwner.images ?? []), ...images].map((image) => [image.url, image]));
+                imageOwner.images = [...byUrl.values()].slice(0, MAX_ATTACHMENTS_PER_MESSAGE);
+              }
+            }
             // Task 子代理结果：同为一条 tool_result，随手关闭对应活动记录
             const sub = subAgentByToolId.get(toolCallId);
             if (sub) {
@@ -250,7 +271,7 @@ export function parseClaudeTranscript(
             }
             continue;
           }
-          if (block.type === "text" && typeof block.text === "string") {
+          if (block.type === "text" && typeof block.text === "string" && !isClaudeMetaText(block.text)) {
             textParts.push(block.text);
           }
         }
@@ -258,7 +279,7 @@ export function parseClaudeTranscript(
         const images = contentToImages(contentBlocks) ?? undefined;
         const extra = images ? { images } : {};
         const text = textParts.join("\n").trim();
-        if (text !== "" && !isMetaText(text)) {
+        if (text !== "" && !isClaudeMetaText(text)) {
           messages.push({
             id: typeof row.uuid === "string" ? row.uuid : nextId("user"),
             role: "user",
@@ -267,6 +288,7 @@ export function parseClaudeTranscript(
             toolCalls: [],
             ...extra,
           });
+          latestUser = messages[messages.length - 1];
         } else if (images && !sawToolResult) {
           messages.push({
             id: typeof row.uuid === "string" ? row.uuid : nextId("user"),
@@ -276,6 +298,7 @@ export function parseClaudeTranscript(
             toolCalls: [],
             ...extra,
           });
+          latestUser = messages[messages.length - 1];
         }
         break;
       }
@@ -317,7 +340,12 @@ export function parseClaudeTranscript(
               resultPreview: null,
             };
             dto.toolCalls.push(call);
-            if (typeof block.id === "string") toolCallOwners.set(block.id, call);
+            if (typeof block.id === "string") {
+              toolCallOwners.set(block.id, call);
+              if (toolName === "Read" && latestUser && referencesUploadedImage(latestUser.text, block.input, cwd)) {
+                uploadImageOwners.set(block.id, latestUser);
+              }
+            }
             // Task/Agent 工具 = 开启一个子代理活动记录（sidechain 行随后归入）
             if (/^(task|agent)$/i.test(toolName)) {
               const record = createSubAgentRecord(block, dto.timestamp);

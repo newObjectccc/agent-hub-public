@@ -365,6 +365,39 @@ describe("claude isSubAgent 同口径（AC4 整改）", () => {
 });
 
 describe("claude transcript: image block → MessageDto.images", () => {
+  it("旧版 @上传图片在 Read 后补回原用户消息，尺寸说明不会变成新用户消息", () => {
+    const note = "[Image: original 1156x2510, displayed at 921x2000. Multiply coordinates by 1.26 to map to original image.]";
+    const lines = [
+      { type: "user", uuid: "upload-user", cwd: CWD, message: { content: "@.agent-hub-uploads/3471.jpg 帮我检查" } },
+      { type: "assistant", message: { id: "read-asst", content: [{ type: "tool_use", id: "read-upload", name: "Read", input: { file_path: `${CWD}/.agent-hub-uploads/3471.jpg` } }] } },
+      { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "read-upload", content: [{ type: "image", source: { type: "base64", media_type: "image/jpeg", data: "aW1hZ2U=" } }] }] } },
+      { type: "user", isMeta: true, turnCompanion: true, message: { content: note } },
+      { type: "user", message: { content: [{ type: "text", text: note }] } },
+    ];
+    const parsed = parseClaudeTranscript(lines.map((line) => JSON.stringify(line)).join("\n"));
+    assert.equal(parsed.messages.length, 2);
+    assert.deepEqual(parsed.messages[0].images, [{ url: "data:image/jpeg;base64,aW1hZ2U=", alt: null }]);
+    assert.equal(parsed.messages[1].toolCalls[0].status, "done");
+    assert.equal(parsed.messages.filter((message) => message.role === "user").length, 1);
+  });
+
+  it("没有引用、引用其它路径或读图失败时，不把工具图片误当用户上传", () => {
+    for (const [text, path, isError] of [
+      ["检查其它文件", `${CWD}/.agent-hub-uploads/3471.jpg`, false],
+      ["@docs/3471.jpg 帮我检查", `${CWD}/docs/3471.jpg`, false],
+      ["@.agent-hub-uploads/3471.jpg.backup", `${CWD}/.agent-hub-uploads/3471.jpg`, false],
+      ["@.agent-hub-uploads/3471.jpg", `${CWD}/.agent-hub-uploads/3471.jpg`, true],
+    ] as const) {
+      const lines = [
+        { type: "user", uuid: "u", cwd: CWD, message: { content: text } },
+        { type: "assistant", message: { id: "a", content: [{ type: "tool_use", id: "r", name: "Read", input: { file_path: path } }] } },
+        { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "r", is_error: isError, content: [{ type: "image", source: { type: "base64", media_type: "image/jpeg", data: "aW1hZ2U=" } }] }] } },
+      ];
+      const parsed = parseClaudeTranscript(lines.map((line) => JSON.stringify(line)).join("\n"));
+      assert.equal(parsed.messages[0].images, undefined, text);
+    }
+  });
+
   const B64 = "aGVsbG8=";
 
   it("纯图 user 行：占位文本 + images；文本+图：text + images", () => {

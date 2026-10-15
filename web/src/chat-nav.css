@@ -1,0 +1,172 @@
+/* ===== K1 对话导航条（Codex app 风格刻度时间线）：消息区左缘时间线 + 视口指示器 + 悬停预览卡 ===== */
+
+/* 导航条宿主：包住滚动区，刻度条 absolute 浮于消息左缘（不挤压内容宽度） */
+.chat-scroll-wrap {
+  position: relative;
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  min-width: 0;
+}
+
+/* 显示导航条时左缘留白：刻度不压住气泡 */
+.chat-scroll-wrap.has-nav > .chat-messages {
+  padding-left: 26px;
+}
+
+.chat-nav {
+  position: absolute;
+  left: 3px;
+  top: 8px;
+  bottom: 8px;
+  width: 18px;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 刻度轨道：每条消息一个刻度均分高度（长会话自动变密，条形码效果） */
+.chat-nav-track {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  touch-action: none;
+}
+
+.chat-nav-tick {
+  flex: 1 1 0;
+  min-height: 2px;
+  display: flex;
+  align-items: center;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* 刻度横线：长度按内容量映射（inline width），角色分色 */
+.chat-nav-dash {
+  height: 2px;
+  background: var(--muted-foreground);
+  opacity: 0.45;
+  transition: opacity 120ms ease, width 120ms ease;
+}
+
+.chat-nav-tick.user .chat-nav-dash {
+  opacity: 0.85;
+}
+
+.chat-nav-tick.toolResult .chat-nav-dash {
+  opacity: 0.3;
+}
+
+.chat-nav-tick:hover .chat-nav-dash,
+.chat-nav-tick:focus-visible .chat-nav-dash {
+  opacity: 1;
+  height: 3px;
+  background: var(--foreground);
+}
+
+.chat-nav-tick:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -1px;
+}
+
+/* 视口指示器：亮色横线标出当前视口位置（高度按比例、clamp 细线），可拖拽快速滚动 */
+.chat-nav-thumb {
+  position: absolute;
+  left: -2px;
+  width: calc(100% + 4px);
+  min-height: 3px;
+  max-height: 28px;
+  background: var(--foreground);
+  transform: translateY(-50%);
+  cursor: grab;
+  touch-action: none;
+}
+
+.chat-nav-thumb:active {
+  cursor: grabbing;
+}
+
+/* 悬停预览卡（Codex 式：标题 + 摘要 + 元信息）；fixed 浮层不参与布局 */
+.chat-nav-preview {
+  position: fixed;
+  z-index: 60;
+  width: min(320px, calc(100vw - 32px));
+  background: var(--card);
+  color: var(--card-foreground);
+  border: var(--bw) solid var(--border);
+  box-shadow: var(--nb-shadow-card);
+  padding: 8px 10px;
+  pointer-events: none;
+}
+
+.chat-nav-preview-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.chat-nav-preview-title {
+  font-weight: 700;
+  font-size: 13px;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.chat-nav-preview-icon {
+  flex-shrink: 0;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.chat-nav-preview-text {
+  margin-top: 3px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: break-word;
+}
+
+.chat-nav-preview-meta {
+  margin-top: 5px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--muted-foreground);
+  font-size: 10.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 触屏：导航条收窄（tap 直接跳转，预览卡走 focus 触发） */
+@media (pointer: coarse) {
+  .chat-nav {
+    width: 14px;
+  }
+
+  .chat-nav-tick {
+    min-height: 3px;
+  }
+}
+
+/* 窄屏（手机竖屏）：不显示预览卡（空间不足，tap 跳转即可） */
+@media (max-width: 480px) {
+  .chat-nav-preview {
+    display: none;
+  }
+}

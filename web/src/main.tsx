@@ -10,6 +10,8 @@ import "./e3-attach.css";
 import "./f1-security.css";
 import "./i1-layout.css"; /* i1 chat 布局精修（后加载覆盖：头部收纳/弹层铁律/树页贴边/子代理） */
 import "./j1-header.css"; /* J1 顶栏图标按钮统一规范（后加载覆盖：icon-btn token/模式图标化/去运行中） */
+import "./chat-nav.css"; /* K1 对话导航条（Codex 风格刻度时间线：视口指示器 + 悬停预览 + 点击跳转） */
+import "./host-request.css"; /* hub 驱动接管：手机批权限卡片 */
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

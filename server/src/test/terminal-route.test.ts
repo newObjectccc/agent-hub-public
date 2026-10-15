@@ -11,7 +11,7 @@ import { after, before, describe, it } from "node:test";
 import type { FastifyInstance } from "fastify";
 import { WebSocket, WebSocketServer } from "ws";
 import { DEFAULT_CONFIG } from "../config.js";
-import { createApp } from "../index.js";
+import { attachSessionWs, createApp } from "../index.js";
 import type { SessionHubLike } from "../routes.js";
 import {
   TerminalService,
@@ -211,14 +211,20 @@ describe("terminal: 路由 + 同源反代（mock ttyd 链路）", () => {
       terminalUnlocked: () => unlocked,
       webRoot: null, appLock: fakeUnlockedAppLock(),
     });
-    // WsHub 在反代之后挂载（与 startHub 顺序一致）：验证 /terminal/ws 不被 hub upgrade 处理器误杀
+    // WsHub 在反代之后挂载（与 startHub 顺序一致）：验证 /terminal/ws 不被 hub upgrade 处理器误杀。
+    // 走生产装配 attachSessionWs：带上 config 派生的 Origin 跨站闸，回归「origin 闸只作用于 hub WS 路径、
+    // 不误杀 /terminal/ws ttyd 反代通道」（下方「WS upgrade Origin 闸不误杀 /terminal/ws」用例）
     const wshub = new WsHub();
-    wshub.attach(app.server, {
-      isLive: () => false,
-      findSession: async (id: string) => (id === "sess-1" ? sessionFixture : null),
-      prompt: async () => ({ accepted: true, mode: "prompt" }),
-      abort: async () => undefined,
-    });
+    attachSessionWs(
+      app.server,
+      {
+        isLive: () => false,
+        findSession: async (id: string) => (id === "sess-1" ? sessionFixture : null),
+        prompt: async () => ({ accepted: true, mode: "prompt" }),
+        abort: async () => undefined,
+      },
+      { wshub, config: DEFAULT_CONFIG, appLock: fakeUnlockedAppLock() },
+    );
     await app.listen({ port: 0, host: "127.0.0.1" });
     const address = app.server.address() as AddressInfo;
     base = `http://127.0.0.1:${address.port}`;
@@ -323,6 +329,31 @@ describe("terminal: 路由 + 同源反代（mock ttyd 链路）", () => {
     assert.equal(parsed.id, "events", "hub WS 握手确认照常");
     ws.close();
     await withTimeout(once(ws, "close"), "ws close");
+  });
+
+  it("WS upgrade Origin 闸不误杀 /terminal/ws（非 hub 路径），hub 路径仍拦跨站", async () => {
+    const evil = { origin: "https://evil.example" };
+    // /terminal/ws：非 hub 路径不做 Origin 闸——恶意 Origin + 有效 token 仍管道到 ttyd（误杀回归）
+    const termWs = new WebSocket(`${base.replace("http", "ws")}/terminal/ws?t=${encodeURIComponent(token)}`, {
+      headers: evil,
+    });
+    const termFirst = once(termWs, "message");
+    await withTimeout(once(termWs, "open"), "terminal/ws 恶意 Origin 不被 origin 闸误杀");
+    assert.equal(String(await withTimeout(termFirst, "ttyd welcome")), "welcome", "仍管道到 ttyd welcome");
+    termWs.close();
+    await withTimeout(once(termWs, "close"), "ws close");
+
+    // hub WS 路径：同一恶意 Origin 一律拒连（闸在 hub 路径生效）
+    const hubWs = new WebSocket(`${base.replace("http", "ws")}/ws/events`, { headers: evil });
+    const result = await withTimeout(
+      Promise.race([
+        once(hubWs, "open").then(() => "open"),
+        once(hubWs, "error").then(() => "error"),
+        once(hubWs, "close").then(() => "close"),
+      ]),
+      "hub 通道 origin 拒绝",
+    );
+    assert.ok(result === "error" || result === "close", "hub 通道恶意 Origin 被拒");
   });
 
   it("POST /api/terminal/stop：回收 ttyd；随后反代 503", async () => {

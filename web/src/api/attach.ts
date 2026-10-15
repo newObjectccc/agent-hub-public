@@ -95,7 +95,7 @@ export function mapAttachSendMode(mode: SendMode): AttachCommandMode {
   return mode;
 }
 
-/** 会话列表徽章（🖥⚡ 已接管 / 🖥 终端在线 / 📱 平行线）；claude 等无终端状态不显示 */
+/** 会话列表徽章（🖥⚡ 已接管 / 🖥 终端在线|可接管 / 📱 平行线）；无终端状态不显示 */
 export interface AttachBadgeInfo {
   icon: string;
   label: string;
@@ -103,14 +103,35 @@ export interface AttachBadgeInfo {
   variant: "attached" | "online" | "parallel";
 }
 
-export function attachBadge(terminal: TerminalAttachInfo | null | undefined): AttachBadgeInfo | null {
+/**
+ * 徽章渲染（D2）：
+ * - attached → 🖥⚡ 已接管（文案按 driver 分支）
+ * - hub 形态未接管：仅活跃会话显示 🖥 可接管（历史空闲不显示，避免列表噪音）
+ * - queue（pi）形态：online → 🖥 终端在线；否则 📱 平行线
+ */
+export function attachBadge(
+  terminal: TerminalAttachInfo | null | undefined,
+  status?: "idle" | "running" | "error",
+): AttachBadgeInfo | null {
   if (!terminal) return null;
+  const hub = terminal.driver === "hub";
   if (terminal.attached) {
     return {
       icon: "🖥⚡",
       label: "已接管",
-      title: "🖥⚡ 已接管：消息发往电脑终端 pi 进程执行",
+      title: hub
+        ? "🖥⚡ 已接管：消息由 hub 驱动 claude 执行并写回同一会话（电脑终端投屏实时显示）"
+        : "🖥⚡ 已接管：消息发往电脑终端 pi 进程执行",
       variant: "attached",
+    };
+  }
+  if (hub) {
+    if (status !== "running") return null; // 历史空闲 claude 会话不显示徽章
+    return {
+      icon: "🖥",
+      label: "可接管",
+      title: "🖥 可接管：切换接管模式后消息由 hub 直接驱动 claude 执行",
+      variant: "online",
     };
   }
   if (terminal.online) {
@@ -129,18 +150,61 @@ export function attachBadge(terminal: TerminalAttachInfo | null | undefined): At
   };
 }
 
-/** 接管可用性：终端在线才可切 attach；否则给灰显原因 */
+/** 接管可用性：pi 需终端在线；hub 形态（claude）默认可接管；codex 暂不支持（二期） */
 export interface AttachAvailability {
   attachEnabled: boolean;
   attachDisabledReason: string | null;
 }
 
-export function attachAvailability(terminal: TerminalAttachInfo | null | undefined): AttachAvailability {
+export function attachAvailability(
+  terminal: TerminalAttachInfo | null | undefined,
+  source?: string,
+): AttachAvailability {
+  if (terminal?.driver === "hub") return { attachEnabled: true, attachDisabledReason: null };
   if (terminal?.online === true) return { attachEnabled: true, attachDisabledReason: null };
+  // 无终端状态：按会话来源给准确的灰显原因（避免对 codex 误报「终端 pi 不在线」）
+  if (source === "codex") {
+    return {
+      attachEnabled: false,
+      attachDisabledReason: "codex 会话暂不支持接管终端，仅支持 📱 平行模式（接管在二期规划中）",
+    };
+  }
+  if (source === "claude") {
+    return {
+      attachEnabled: false,
+      // 旧 server（无 claude 接管路由）与新 server 关掉 claudeDriver.enabled 都走到这里，文案一并覆盖
+      attachDisabledReason: "暂无法接管：server 未启用 claude 接管（需 v0.3+ 且 claudeDriver.enabled）",
+    };
+  }
   return {
     attachEnabled: false,
     attachDisabledReason: "终端 pi 不在线：电脑终端需运行带 pi-command 扩展的 pi 会话",
   };
+}
+
+/**
+ * 智能默认判定（D3）：策略读 terminal.defaultPolicy（server config.claudeDriver.defaultPolicy
+ * 随 terminal 下发；老 server 缺省按 "active-only" 容错，行为与历史一致）。
+ * - "never"：永不默认接管（只手动切换；用户手动 pin 的更高优先在 ChatPage 侧保证，不在此层）
+ * - "always"：打开即默认接管——历史空闲会话也接管（与 active-only 的区别），但仅当接管当下可行：
+ *   hub 形态可尝试接管（真正启动仍受 server 静默窗/并发上限约束）；pi 要求 terminal.online===true
+ * - "active-only"（含缺省）：电脑上正活跃才默认接管——
+ *   pi：终端扩展在线；claude（hub）：tail/mtime 推断 running，或最后由终端驱动
+ * pinned（用户手动选择）永远优先于本判定（ChatPage 侧保证）。
+ */
+export function attachDefaultWorthy(
+  session: { source?: string; status?: string; lastDrivenBy?: string } | null | undefined,
+  terminal: TerminalAttachInfo | null | undefined,
+): boolean {
+  if (!terminal) return false;
+  const policy = terminal.defaultPolicy ?? "active-only"; // 老 server 无字段 → 原有行为
+  if (policy === "never") return false;
+  const hub = terminal.driver === "hub";
+  // 默认策略的前端门槛：hub 可尝试；实际启动检查由 server 执行。pi 还要求扩展在线。
+  if (!hub && terminal.online !== true) return false;
+  if (policy === "always") return true;
+  // active-only：电脑上正活跃才接管（pi 在线已由上面可行性闸门保证）
+  return hub ? session?.status === "running" || session?.lastDrivenBy === "terminal" : true;
 }
 
 /** 发送后状态条（一行小字确认归属；与 E1 阶段状态条同区域但独立组件/状态字） */
@@ -152,17 +216,20 @@ export interface ChannelEchoState {
   detail?: string | null;
   /** 关联指令 id（旧指令的迟到回执不覆盖当前状态） */
   commandId?: string;
+  /** 驱动形态（hub=claude 驱动文案分支） */
+  driver?: "queue" | "hub";
 }
 
 export function echoText(echo: ChannelEchoState): string {
   if (echo.channel === "attach") {
+    const hub = echo.driver === "hub";
     switch (echo.phase) {
       case "sent":
-        return "🖥 已发往终端，等待接收确认…";
+        return hub ? "🖥 已发往 claude 驱动，等待接收确认…" : "🖥 已发往终端，等待接收确认…";
       case "acked":
-        return "🖥 终端已接收 ✓ 消息将在终端 pi 执行";
+        return hub ? "🖥 驱动已接收 ✓ 消息将在电脑的 claude 会话执行" : "🖥 终端已接收 ✓ 消息将在终端 pi 执行";
       case "failed":
-        return `🖥 终端注入失败${echo.detail ? `：${echo.detail}` : ""}`;
+        return `🖥 ${hub ? "注入驱动" : "终端注入"}失败${echo.detail ? `：${echo.detail}` : ""}`;
       default:
         return "🖥 接管模式";
     }
@@ -171,10 +238,13 @@ export function echoText(echo: ChannelEchoState): string {
 }
 
 /**
- * 会话是否走 attach 发送：用户选择 attach 且 server 未明确告知"未接管"。
- * terminal 未知（详情未加载完/旧 server）按接管尝试：服务端未接管时返回
- * ATTACH_REQUIRED 由调用方回落平行，绝不与接管中的终端抢平行通道。
+ * 会话是否走 attach 发送：用户选择 attach 且 server 明确存在可接管的 terminal。
+ * terminal 缺失（null/undefined：claudeDriver.enabled=false / 老 server 不下发）→ 不可接管
+ * 就不走 attach 发送通道（否则 server 400「claude 会话接管未启用」卡死，detach 同样 400）；
+ * terminal 存在时语义不变：server 未明确告知"未接管"（attached!==false）按接管发送，
+ * 服务端未接管时返回 ATTACH_REQUIRED 由调用方回落平行，绝不与接管中的终端抢平行通道。
  */
 export function isAttachSending(attachMode: AttachMode, terminal: TerminalAttachInfo | null | undefined): boolean {
-  return attachMode === "attach" && terminal?.attached !== false;
+  if (terminal == null) return false; // 不可接管（terminal 缺失）→ 不走 attach 发送通道
+  return attachMode === "attach" && terminal.attached !== false;
 }

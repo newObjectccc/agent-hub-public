@@ -3,13 +3,21 @@
  * 1. isSafeBindHost 归一化判定——IPv6 简写/IPv4-mapped 通配绕过一律拒绝
  * 2. CORS 同源/白名单判定（不反射任意 Origin）
  * 3. loadHubConfig：通配 host 回落 127.0.0.1；allowLan 显式 opt-in 放行；allowOrigins 白名单解析
+ * 4. loadHubConfig claudeDriver：enabled===false 解析生效；defaultPolicy 非法值回 active-only
+ * 5. loadHubConfig auth：enabled=true 且 token 空（含非字符串吞成空串）→ fail-open 明确告警
  */
 import { strict as assert } from "node:assert";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { isAllowedCrossOrigin, isSafeBindHost, isSameOrigin, loadHubConfig } from "../config.js";
+import {
+  DEFAULT_CLAUDE_DRIVER_CONFIG,
+  isAllowedCrossOrigin,
+  isSafeBindHost,
+  isSameOrigin,
+  loadHubConfig,
+} from "../config.js";
 
 describe("config: isSafeBindHost 归一化判定（防通配绑定绕过）", () => {
   it("拒绝全部通配/未指定地址写法（含 IPv6 简写与 IPv4-mapped）", () => {
@@ -97,5 +105,97 @@ describe("config: loadHubConfig 通配 host 与 allowLan / allowOrigins", () => 
     const bad = loadWith({ allowOrigins: "https://app.example.com" });
     assert.deepEqual(bad.config.allowOrigins, [], "非数组一律忽略（跨域全部拒绝）");
     assert.equal(bad.config.allowLan, false);
+  });
+});
+
+describe("config: loadHubConfig claudeDriver 开关与默认策略解析", () => {
+  function loadWith(json: Record<string, unknown>): ReturnType<typeof loadHubConfig> {
+    const dir = mkdtempSync(join(tmpdir(), "hub-config-"));
+    writeFileSync(join(dir, "hub.config.json"), JSON.stringify(json), "utf8");
+    return loadHubConfig(dir);
+  }
+
+  it("claudeDriver.enabled===false 解析生效（总开关：接管路由回 400，前端回落 parallel）", () => {
+    const off = loadWith({ claudeDriver: { enabled: false } });
+    assert.equal(off.config.claudeDriver.enabled, false);
+    // 同对象其余字段回默认（逐字段校验容错，不阻断启动）
+    assert.equal(off.config.claudeDriver.defaultPolicy, DEFAULT_CLAUDE_DRIVER_CONFIG.defaultPolicy);
+    assert.equal(off.config.claudeDriver.maxConcurrent, DEFAULT_CLAUDE_DRIVER_CONFIG.maxConcurrent);
+    // 缺省 / 显式 true 均为启用
+    assert.equal(loadWith({}).config.claudeDriver.enabled, true);
+    assert.equal(loadWith({ claudeDriver: { enabled: true } }).config.claudeDriver.enabled, true);
+  });
+
+  it("defaultPolicy：always/never 保留；非法值回 active-only", () => {
+    assert.equal(loadWith({ claudeDriver: { defaultPolicy: "always" } }).config.claudeDriver.defaultPolicy, "always");
+    assert.equal(loadWith({ claudeDriver: { defaultPolicy: "never" } }).config.claudeDriver.defaultPolicy, "never");
+    assert.equal(loadWith({}).config.claudeDriver.defaultPolicy, "active-only", "缺省 = active-only");
+    for (const bad of ["", "ALWAYS", "sometimes", 42, null, true]) {
+      assert.equal(
+        loadWith({ claudeDriver: { defaultPolicy: bad } }).config.claudeDriver.defaultPolicy,
+        "active-only",
+        `非法 defaultPolicy ${JSON.stringify(bad)} 必须回 active-only`,
+      );
+    }
+  });
+
+  it("claudeDriver 非对象 → 告警并回默认；数值字段非法回默认", () => {
+    const bad = loadWith({ claudeDriver: "on" });
+    assert.ok(bad.warnings.some((w) => w.includes("claudeDriver")), "必须有 claudeDriver 非法告警");
+    assert.deepEqual(bad.config.claudeDriver, DEFAULT_CLAUDE_DRIVER_CONFIG);
+    const nums = loadWith({ claudeDriver: { idleDetachMs: -1, maxConcurrent: 0, externalQuietMs: "x" } });
+    assert.equal(nums.config.claudeDriver.idleDetachMs, DEFAULT_CLAUDE_DRIVER_CONFIG.idleDetachMs);
+    assert.equal(nums.config.claudeDriver.maxConcurrent, DEFAULT_CLAUDE_DRIVER_CONFIG.maxConcurrent);
+    assert.equal(nums.config.claudeDriver.externalQuietMs, DEFAULT_CLAUDE_DRIVER_CONFIG.externalQuietMs);
+  });
+});
+
+describe("config: auth.enabled 空 token fail-open 告警（D4）", () => {
+  function loadWith(json: Record<string, unknown>): ReturnType<typeof loadHubConfig> {
+    const dir = mkdtempSync(join(tmpdir(), "hub-config-"));
+    writeFileSync(join(dir, "hub.config.json"), JSON.stringify(json), "utf8");
+    return loadHubConfig(dir);
+  }
+
+  it("auth.enabled=true 且 token 空/缺失 → 明确告警（鉴权不会生效）", () => {
+    for (const auth of [{ enabled: true }, { enabled: true, token: "" }]) {
+      const { warnings } = loadWith({ auth });
+      assert.ok(
+        warnings.some((w) => w.includes("auth.enabled=true") && w.includes("token 为空")),
+        `auth ${JSON.stringify(auth)} 必须告警 fail-open`,
+      );
+    }
+  });
+
+  it("auth.enabled=true 且 token 非字符串（被吞成空串）→ 同一告警", () => {
+    for (const token of [42, null, true, { t: 1 }]) {
+      const { warnings, config } = loadWith({ auth: { enabled: true, token } });
+      assert.equal(config.auth.token, "", "非字符串 token 必须吞成空串");
+      assert.ok(
+        warnings.some((w) => w.includes("auth.enabled=true") && w.includes("token 为空")),
+        `token=${JSON.stringify(token)} 必须告警 fail-open`,
+      );
+    }
+  });
+
+  it("auth.enabled=false 或 token 非空 → 无此告警", () => {
+    const off = loadWith({ auth: { enabled: false, token: "" } });
+    assert.equal(
+      off.warnings.some((w) => w.includes("token 为空")),
+      false,
+      "enabled=false 时不应有 fail-open 告警",
+    );
+    const on = loadWith({ auth: { enabled: true, token: "s3cret" } });
+    assert.equal(
+      on.warnings.some((w) => w.includes("token 为空")),
+      false,
+      "token 已填时不应告警",
+    );
+    const bare = loadWith({});
+    assert.equal(
+      bare.warnings.some((w) => w.includes("token 为空")),
+      false,
+      "默认零配置（未配置 auth）不应告警",
+    );
   });
 });

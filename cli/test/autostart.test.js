@@ -37,6 +37,8 @@ test('buildLaunchdPlist: 包含 label / node / start.js / RunAtLoad', () => {
   assert.match(xml, new RegExp(`<string>${NODE.replace(/\//g, '\\/')}</string>`));
   assert.match(xml, /cli\/start\.js/);
   assert.match(xml, /<key>RunAtLoad<\/key>\s*<true\/>/);
+  // 守护语义：挂了必须自动拉起（KeepAlive=false 只保开机启动，进程死了就一直躺着——真机踩坑）
+  assert.match(xml, /<key>KeepAlive<\/key>\s*<true\/>/);
   assert.match(xml, /<string>--lan<\/string>/);
   assert.match(xml, /<string>\/home\/u\/Library\/Logs\/agent-hub\.log<\/string>/);
   // PATH 注入：launchd 默认 PATH 不含 nvm/homebrew，缺了 start.js 会「未找到 pnpm / npm」

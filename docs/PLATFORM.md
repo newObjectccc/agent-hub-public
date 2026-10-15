@@ -4,10 +4,10 @@
 
 1. 安装 Node.js ≥ 20（Windows 建议官方安装包，macOS/Linux 建议 nvm）。
 2. `node cli/setup.js && node cli/start.js`。
-   - `setup`：环境检测（node/pi/tmux/ttyd/tailscale）+ 生成 `config/hub.config.json`；
+   - `setup`：环境检测（node/pi/tmux/ttyd/tailscale）+ 生成 `config/hub.config.json` + 安装 pi 扩展；
      pi 缺失只提示 `npm i -g @earendil-works/pi-coding-agent` 或 npx 方式，不自动安装。
-   - `start`：node_modules 缺失时自动 `pnpm install`（pnpm 缺失回退 `npm install`），
-     再构建 web（vite build）与 server（tsc），最后启动 `server/dist/index.js`。
+   - 源码仓的 `start`：依赖缺失时自动安装，再构建 web 与 server，最后启动 `server/dist/index.js`。
+     npm/npx 发布包已含构建产物且由 npm 安装依赖，跳过这两步直接启动。
 3. 浏览器打开 `http://127.0.0.1:7700`。
 
 > 所有步骤均可用 `--dry-run` 预演（不写盘、不安装、不启动）；
@@ -15,16 +15,28 @@
 
 ## pi 实时旁观（live-feed 扩展，可选）
 
-安装一行（CLI setup 未来会自动做这一步）：
+`node cli/setup.js` 已自动安装 live-feed 和 pi-command 到 `~/.pi/agent/extensions/`，
+重新 setup 会更新为仓库版本；之后重启已有 pi 终端会话以加载扩展。需要手动安装时：
 
 ```bash
+mkdir -p ~/.pi/agent/extensions
 cp integrations/pi-live-feed/live-feed.ts ~/.pi/agent/extensions/live-feed.ts
+cp integrations/pi-command/command.ts ~/.pi/agent/extensions/pi-command.ts
 ```
 
 之后任意终端里跑的 pi 会话都会把思维链/流式回复/工具执行实时推给 agent-hub
 （手机 chat 页 token 级旁观）。可选环境变量：`AGENT_HUB_LIVE_URL`（覆盖推送地址，
 默认 `http://127.0.0.1:7700`）、`AGENT_HUB_LIVE_TOKEN`（与 `hub.config.json` 的
 `auth.token` 对齐的共享密钥，为空则不带鉴权）。扩展故障静默、不阻塞 pi。
+
+## claude 接管投屏（tmux，可选）
+
+Claude 接管由 hub 新建 CLI 进程续接会话，不控制原 TUI；接管期间避免同时在原 TUI 输入。
+其输出可实时投屏到电脑终端：attach 后自动创建 tmux 命名
+session `hub-<id8>`，电脑上运行 `tmux attach -t hub-<id8>` 观看（退出接管后 pane 会打印
+`claude --resume` 交接提示）。依赖 tmux（无则自动降级为不可用，接管功能不受影响）；
+`hub.config.json` 的 `claudeDriver.mirror: "off"` 可关闭。原终端已关闭的历史会话仍可从手机续聊，
+平行模式无需 tmux。详见 [CLAUDE_DRIVER.md](CLAUDE_DRIVER.md)。
 
 ## macOS
 
@@ -34,6 +46,11 @@ sudo pmset -c sleep 0              # 插电不睡眠（远程访问需要，可�
 node cli/setup.js --autostart      # 写入 ~/Library/LaunchAgents/com.agent-hub.plist 并 launchctl load（可选）
 ```
 手动命令（注册失败时）：`launchctl load ~/Library/LaunchAgents/com.agent-hub.plist`
+
+新配置默认 `KeepAlive=true`，进程退出后自动拉起；旧 plist 需重新注册才能更新。
+已加载旧配置时，先 `launchctl unload ~/Library/LaunchAgents/com.agent-hub.plist` 再运行 setup，
+让 launchd 重新读取配置。主动停止也用 unload；只杀进程会被再次拉起。
+服务重启不会自动恢复任务或接管，历史仍保留。
 
 **ttyd Web 终端（F2，可选增强）**：装了 ttyd（≥ 1.7）后，手机 PWA 侧栏出现「⌨ 终端」入口
 （系统页也有快捷入口）。语义：**按需拉起**——打开终端页点「▶ 打开真终端」时 server 才 spawn
@@ -74,11 +91,11 @@ node cli/setup.js --autostart      # 写入 ~/.config/systemd/user/agent-hub.ser
 
 > 安全：除以上模式外 server 只绑 127.0.0.1。不要把端口直接暴露到公网。
 
-### Tailscale 实操（macOS 实测可用配置）
+### Tailscale HTTP 转发回退（macOS 历史排障记录）
 
 macOS 上 Tailscale Serve 的 **HTTP/HTTPS 代理组件**在部分环境不可用
-（报 `501 Not Implemented` 或代理链路 502），推荐用**纯 TCP 转发**，手机浏览器
-直接访问即可（server 不校验 Host）：
+（曾报 `501 Not Implemented` 或代理链路 502）。先按 README 的 HTTPS Serve 流程部署；
+只有遇到这些问题时再尝试纯 TCP 转发。server 校验 Host，设备名 `.ts.net` 和 IP 属于支持范围：
 
 ```bash
 # macOS GUI 版 CLI（standalone wrapper 可能有 bundle 报错，用 app 内二进制）
@@ -94,4 +111,11 @@ $TS serve status   # 确认 tcp://<host>:4700 → tcp://127.0.0.1:7700
 
 **PWA 安装**：HTTP 模式下安卓 Chrome 菜单“添加到主屏幕”可作快捷方式使用；
 要完整 standalone 安装需 HTTPS——在 Tailscale admin console 开启 HTTPS Certificates
-后改用 `$TS serve --bg --https=443 --terminate-tls=<host> http://127.0.0.1:7700`。
+后使用 `node cli/start.js --tailscale` 引导配置 HTTPS Serve。
+
+## 构建与部署
+
+server 会实时托管当前 `web/dist`。有手机或其他设备在使用这个工作区时，在独立 worktree 中完成
+`pnpm install --frozen-lockfile`、`pnpm -r build`、`pnpm -r lint`、`pnpm -r test` 和
+`node scripts/pack-smoke.mjs`，避免验证构建改写在线文件。发布时统一构建与重启；重启会中断本服务持有的任务，
+不自动重放尚未完成的消息。详细协作约定见 [CONTRIBUTING.md](../CONTRIBUTING.md)。

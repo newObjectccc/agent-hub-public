@@ -4,7 +4,7 @@
  */
 import { existsSync, realpathSync } from "node:fs";
 import { createHash } from "node:crypto";
-import type { IncomingMessage } from "node:http";
+import type { IncomingMessage, Server as HttpServer } from "node:http";
 import { isIPv4, isIPv6 } from "node:net";
 import { homedir } from "node:os";
 import { join, sep } from "node:path";
@@ -17,17 +17,18 @@ import fastifyStatic from "@fastify/static";
 import { VERSION } from "@earendil-works/pi-coding-agent";
 import { AgentCommandHub } from "./agents.js";
 import { ClaudeAdapter } from "./adapters/claude.js";
+import { ClaudeDriverHub } from "./adapters/claude-driver.js";
 import { CodexAdapter } from "./adapters/codex.js";
 import { findClaudeSessionFiles } from "./adapters/claude-transcript.js";
 import { PiAdapter } from "./adapters/pi.js";
 import { SessionRegistry } from "./adapters/registry.js";
 import { loadHubConfig, isAllowedCrossOrigin, isSameOrigin, type HubConfig } from "./config.js";
-import { createAppLockStore } from "./appLock.js";
+import { createAppLockStore, type AppLockStoreLike } from "./appLock.js";
 import { DashboardService } from "./dashboard.js";
 import { ErrorCodes } from "./errors.js";
 import { KpiService } from "./kpi.js";
 import { LiveIngest } from "./live.js";
-import { configDir, dataDir, webDistDir } from "./paths.js";
+import { configDir, dataDir, repoRoot, webDistDir } from "./paths.js";
 import { registerRoutes, type RouteDeps, type SessionHubLike } from "./routes.js";
 import { SubAgentRouter } from "./subagents.js";
 import { SessionHub } from "./sessions/hub.js";
@@ -44,7 +45,7 @@ import {
 } from "./terminal.js";
 import { UsageService } from "./usage.js";
 import type { ServerEvent } from "./types.js";
-import { WsHub } from "./ws.js";
+import { WsHub, type WsSessionHub } from "./ws.js";
 
 /**
  * DNS rebinding 防护（P2）：浏览器会把任意域名解析到本机，恶意页面再以
@@ -82,6 +83,49 @@ export function isAllowedHostHeader(
     if (typeof extra !== "string" || extra.trim() === "") return false;
     return hostname === extra.trim().toLowerCase();
   });
+}
+
+/** Host 信任名单派生参数（DNS rebinding 闸 + 同源判定共用；见 isAllowedHostHeader） */
+export interface HostTrustOptions {
+  bindHost?: string;
+  extraHosts?: readonly string[];
+}
+
+/**
+ * 从 config 派生 Host 信任名单（bindHost + allowOrigins 的 hostname）。
+ * HTTP CORS 闸与 WS upgrade Origin 闸共用此派生（单一事实源，避免双份维护）。
+ */
+export function hostTrustOptionsFor(config: { host?: string; allowOrigins?: readonly string[] }): HostTrustOptions {
+  const allowOrigins = config.allowOrigins ?? [];
+  return {
+    bindHost: config.host,
+    extraHosts: allowOrigins
+      .map((o) => {
+        try {
+          return new URL(o).hostname;
+        } catch {
+          return "";
+        }
+      })
+      .filter((h) => h !== ""),
+  };
+}
+
+/**
+ * 同源/跨域白名单判定（HTTP CORS 闸与 WS upgrade Origin 闸同口径共用）：
+ * 同源放行；跨域只放 allowOrigins 精确白名单（默认空 = 拒绝一切跨域），其余带 Origin 一律拒绝。
+ * 反代感知（安全版）：Host 头可信（localhost/IP/ts.net/local/bindHost/allowOrigins，浏览器不可伪造）
+ * 时跳过协议比对（tailscale serve https→http 降级真机踩坑）；非可信 Host 时协议也要对上。
+ * 绝不采信 X-Forwarded-*（fetch 可自定义，恶意页可伪造 → 同源判定整体沦陷）。
+ */
+export function crossOriginAllowed(
+  origin: string | undefined,
+  host: string | undefined,
+  protocol: string | undefined,
+  options: { allowOrigins: readonly string[]; hostTrust: HostTrustOptions },
+): boolean {
+  const trustedHost = isAllowedHostHeader(host, options.hostTrust);
+  return isSameOrigin(origin, host, trustedHost ? undefined : protocol) || isAllowedCrossOrigin(origin, options.allowOrigins);
 }
 
 /**
@@ -207,38 +251,22 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
   // CORS 安全（P0）：绝不反射任意 Origin。同源请求放行（面板与 API 同源部署，
   // Vite dev 走 proxy 也是同源）；跨域只放 config.allowOrigins 白名单（默认空 = 拒绝一切跨域），
   // 其余带 Origin 的请求直接 403（错误信封），防恶意网页跨域读会话/发 prompt。
+  // 判定抽成导出函数 crossOriginAllowed / hostTrustOptionsFor（含 Host 信任派生 + 反代感知协议豁免，
+  // 见函数注释）：HTTP 闸与 WS upgrade Origin 闸（attachSessionWs 装配）共用同一实现，避免双份维护。
   const allowOrigins = options.config.allowOrigins ?? [];
-  const crossOriginAllowed = (origin: string | undefined, host: string | undefined, protocol?: string): boolean =>
-    isSameOrigin(origin, host, protocol) || isAllowedCrossOrigin(origin, allowOrigins);
-  // 反代感知（安全版）：tailscale serve 等反代会把 https 降为 http 上游，同源判定若强制比对协议，
-  // HTTPS 面板每笔 fetch 都会被判「协议不匹配跨域」→ 403（真机踩坑）。
-  // 安全边界：只看 **Host 头**（浏览器不可伪造）是否在信任名单（*/ts.net/localhost/IP/bindHost/allowOrigins）；
-  // 信任则跳过协议比对；**绝不采信 X-Forwarded-* **（fetch 可自定义，恶意页可伪造 → 同源判定整体沦陷）。
-  const hostOptions = {
-    bindHost: options.config.host,
-    extraHosts: allowOrigins
-      .map((o) => {
-        try {
-          return new URL(o).hostname;
-        } catch {
-          return "";
-        }
-      })
-      .filter((h) => h !== ""),
-  };
+  const hostOptions = hostTrustOptionsFor(options.config);
+  const originGate = { allowOrigins, hostTrust: hostOptions };
   // 拒绝 hook 先于 CORS 插件注册：恶意 preflight OPTIONS 也一律 403
   app.addHook("onRequest", async (req, reply) => {
     const origin = req.headers.origin;
     if (typeof origin !== "string" || origin === "") return; // 非浏览器/同源导航：无 CORS 问题
-    const trustedHost = isAllowedHostHeader(req.headers.host, hostOptions);
-    if (crossOriginAllowed(origin, req.headers.host, trustedHost ? undefined : req.protocol)) return;
+    if (crossOriginAllowed(origin, req.headers.host, req.protocol, originGate)) return;
     return reply.status(403).send({ error: { code: ErrorCodes.UNAUTHORIZED, message: "cross-origin request denied" } });
   });
   await app.register(fastifyCors, {
     delegator: (req, cb) => {
       const origin = req.headers.origin;
-      const trustedHost = isAllowedHostHeader(req.headers.host, hostOptions);
-      const ok = crossOriginAllowed(origin, req.headers.host, trustedHost ? undefined : req.protocol);
+      const ok = crossOriginAllowed(origin, req.headers.host, req.protocol, originGate);
       cb(null, { origin: ok ? (origin ?? false) : false });
     },
   });
@@ -256,6 +284,7 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
     dashboard: options.dashboard,
     usage: options.usage,
     agents: options.agents,
+    claudeDriver: options.claudeDriver,
     appLock: options.appLock,
     terminal: options.terminal,
     terminalUnlocked: options.terminalUnlocked,  });
@@ -270,11 +299,13 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
     await app.register(fastifyStatic, {
       root,
       prefix: "/",
-      setHeaders(res, filePath) {
+      setHeaders(reply, filePath) {
         // Vite 产物带内容 hash（/assets/*）：长缓存 + immutable，二次打开零请求；
         // index.html / sw.js / manifest 保持协商缓存（发版可见性与 SW 更新检查）
+        // （D3）@fastify/static v10 契约变更：setHeaders 收到的是 FastifyReply（v8 传原生 res），
+        // 必须用 reply.header 而非 res.setHeader；v10 在 reply.headers() 之后调 setHeaders，可覆盖插件自设头
         if (filePath.split(sep).includes("assets")) {
-          res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+          reply.header("Cache-Control", "public, max-age=31536000, immutable");
         }
       },
     });
@@ -291,6 +322,77 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
   });
 
   return app;
+}
+
+/** attachSessionWs 的结构依赖（生产 = startHub 装配实例；测试注入 fake） */
+export interface AttachSessionWsOptions {
+  /** WS hub（广播出口；生产 = startHub 创建的 WsHub） */
+  wshub: WsHub;
+  /** 配置（auth 派生 upgrade 鉴权——README 承诺：开启后全部 API 与 WS 均需 Bearer；
+   *  host/allowOrigins 派生 WS upgrade Origin 闸——与 HTTP CORS 闸同源同逻辑） */
+  config: Pick<HubConfig, "auth" | "host" | "allowOrigins">;
+  /** 非本进程会话文件 tail 实时推送（可选） */
+  tails?: SessionTailManager;
+  /** 应用锁门禁（锁屏拒绝 WS 发送；与 HTTP 门禁同口径） */
+  appLock?: AppLockStoreLike;
+  /** pi 扩展 attach 接管检测（ATTACH_ACTIVE 冲突保护并集） */
+  agents?: { isAttached(sessionId: string): boolean };
+  /** claude hub 驱动 attach 接管检测 + 中止 turn（并集；config.claudeDriver.enabled=false 装配时缺省） */
+  claudeDriver?: { isAttached(sessionId: string): boolean; abortTurn(sessionId: string): void } | null;
+}
+
+/**
+ * 会话 WS 生产唯一挂载路径（修复：WS 鉴权未接线）：
+ * 封装「promptGuard（锁屏门禁 + ATTACH_ACTIVE 并集）+ abortHandler（锁屏门禁 + driver/hub 中止分发）
+ * + 从 config.auth 派生 upgrade 鉴权 + 从 config 派生 Origin 跨站闸」，startHub 唯一通过它挂载 WS。
+ * auth 必填进 WsHub.attach（漏传 = 编译错误），鉴权装配断裂在测试/生产同一路径上可回归
+ * （server/src/test/ws-auth-wiring.test.ts）。
+ */
+export function attachSessionWs(server: HttpServer, hub: WsSessionHub, options: AttachSessionWsOptions): void {
+  const { wshub, config, tails, appLock, agents, claudeDriver } = options;
+  // Origin 跨站闸：与 HTTP CORS 闸共用 crossOriginAllowed（同源/白名单/Host 信任派生单一事实源）
+  const originGate = { allowOrigins: config.allowOrigins ?? [], hostTrust: hostTrustOptionsFor(config) };
+  /** 应用锁门禁（与 promptGuard 锁分支同判据）：已配置锁且令牌无效 = 锁屏 */
+  const appLocked = (lockToken?: string): boolean =>
+    appLock?.status().configured === true && !appLock.verifyToken(lockToken ?? "").ok;
+  wshub.attach(server, hub, {
+    tailManager: tails,
+    promptGuard: (id, lockToken) =>
+      appLocked(lockToken)
+        ? { code: ErrorCodes.APP_LOCKED, message: "应用已锁定：请先解锁" }
+        : agents?.isAttached(id) || claudeDriver?.isAttached(id)
+          ? { code: ErrorCodes.ATTACH_ACTIVE, message: "终端接管中：平行发送已停用（切回 📱 平行模式可恢复）" }
+          : null,
+    // WS abort 门禁 + 分发（修复：abort 绕过 promptGuard，锁屏/接管期可中止 turn）——镜像 HTTP
+    // /api/sessions/:id/abort 语义：先过应用锁门禁（同 promptGuard 锁分支判据；abort 不复用 promptGuard
+    // 本体——其含 ATTACH_ACTIVE 拒绝，而 abort 在接管期合法且必要）；通过后 claude 驱动接管中走
+    // driver.abortTurn（control interrupt，进程存活可续），否则 hub.abort
+    abortHandler: async (id, lockToken) => {
+      if (appLocked(lockToken)) return { code: ErrorCodes.APP_LOCKED, message: "应用已锁定：请先解锁" };
+      try {
+        const session = await hub.findSession(id);
+        if (!session) return { code: ErrorCodes.SESSION_NOT_FOUND, message: `会话不存在: ${id}` };
+        if (session.source === "claude" && claudeDriver?.isAttached(id)) {
+          claudeDriver.abortTurn(id);
+        } else {
+          await hub.abort(id);
+        }
+        return null;
+      } catch (err) {
+        return { code: ErrorCodes.PROMPT_FAILED, message: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    // Origin 校验与鉴权是 AND 关系（先鉴权后 Origin，见 WsHub.attach）：
+    // 浏览器 WS 必带 Origin 头，非法跨站 403 断连；无 Origin（node ws/curl/自动化）不在此闸
+    isAllowedOrigin: (req, protocol) =>
+      crossOriginAllowed(
+        typeof req.headers.origin === "string" ? req.headers.origin : undefined,
+        req.headers.host,
+        protocol,
+        originGate,
+      ),
+    auth: { enabled: config.auth.enabled, token: config.auth.token },
+  });
 }
 
 export interface StartedHub {
@@ -322,10 +424,33 @@ export async function startHub(): Promise<StartedHub> {
   const piHub = new SessionHub(config.sessionDir, emit);
   // 终端 pi 反向指令通道（E3 双模式）：心跳 / 指令队列 / 回执（attach_state、command_ack 走同一 emit）
   const agents = new AgentCommandHub(emit);
+  // claude hub 驱动接管（docs/CLAUDE_DRIVER.md）：attach 期间持有长驻 claude -p 进程，
+  // stdin 注入真用户 turn；权限经 MCP bridge 回连手机批/拒。
+  // config.claudeDriver.enabled=false（总开关，修复死旋钮）：不构造 driver → claude 接管路由回 400，
+  // 前端回落 parallel（routes 的 requireClaudeDriver 对 deps 缺失已有 400 路径，无需另改）
+  const claudeDriver = config.claudeDriver.enabled
+    ? new ClaudeDriverHub({
+        emit,
+        liveUrl: `http://127.0.0.1:${config.port}`,
+        liveToken: config.auth.token,
+        bridgeScriptPath: join(repoRoot, "integrations", "claude-perm-bridge", "bridge.mjs"),
+        maxConcurrent: config.claudeDriver.maxConcurrent,
+        idleDetachMs: config.claudeDriver.idleDetachMs,
+        externalQuietMs: config.claudeDriver.externalQuietMs,
+        mirror: config.claudeDriver.mirror,
+      })
+    : null;
   // Claude Code 会话来源：~/.claude/projects/<encoded-cwd>/<uuid>.jsonl + history.jsonl
   const claudeProjectsDir = join(homedir(), ".claude", "projects");
   const claudeHistoryFile = join(homedir(), ".claude", "history.jsonl");
-  const claudeAdapter = new ClaudeAdapter({ projectsDir: claudeProjectsDir, historyFile: claudeHistoryFile, emit });
+  const claudeAdapter = new ClaudeAdapter({
+    projectsDir: claudeProjectsDir,
+    historyFile: claudeHistoryFile,
+    emit,
+    // 防双写加固（D8）：hub 驱动接管中的会话按 busy 拒绝 parallel 发送（driver 未启用 = 恒不忙）
+    driverBusy: (id) => claudeDriver?.isAttached(id) ?? false,
+    driverStatus: (id) => claudeDriver?.runStatusFor(id) ?? null,
+  });
   // Codex 会话来源：~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl + session_index.jsonl（与桌面 app/CLI 共享）
   // 归档会话：~/.codex/archived_sessions/（平铺，列表标注归档并排尾）
   const codexSessionsDir = join(homedir(), ".codex", "sessions");
@@ -382,6 +507,7 @@ export async function startHub(): Promise<StartedHub> {
     config,
     live: liveIngest,
     agents,
+    claudeDriver: claudeDriver ?? undefined,
     webRoot: webDistDir,
     logger: true,
     // ttyd Web 终端（F2）：按需拉起 + 同源反代（POSIX；win32 自动降级为提示）
@@ -405,14 +531,17 @@ export async function startHub(): Promise<StartedHub> {
   const tails = new SessionTailManager((sessionId, event) => emit(sessionId, event));
   // 会话一旦由本进程接管（live），停掉文件 tail，避免双推送源产生重复气泡
   hub.onLive = (sid) => tails.detach(sid);
-  // attach 接管期间拒绝 WS parallel 发送（与 REST /prompt 同一冲突保护）；锁屏时拒绝 WS 发送（与 HTTP 门禁同口径）
-  wshub.attach(app.server, hub, tails, (id, lockToken) =>
-    appLock.status().configured && !appLock.verifyToken(lockToken ?? "").ok
-      ? { code: ErrorCodes.APP_LOCKED, message: "应用已锁定：请先解锁" }
-      : agents.isAttached(id)
-        ? { code: ErrorCodes.ATTACH_ACTIVE, message: "终端接管中：平行发送已停用（切回 📱 平行模式可恢复）" }
-        : null,
-  );
+  // attach 接管期间拒绝 WS parallel 发送（与 REST /prompt 同一冲突保护，pi 指令队列 / claude hub 驱动并集）；
+  // 锁屏时拒绝 WS 发送（与 HTTP 门禁同口径）；upgrade 鉴权从 config.auth 派生（开启后 WS 同样要 Bearer）。
+  // 生产唯一挂载路径：attachSessionWs（WS 鉴权接线回归测试走同一函数，见 ws-auth-wiring.test.ts）
+  attachSessionWs(app.server, hub, {
+    wshub,
+    config,
+    tails,
+    appLock,
+    agents,
+    claudeDriver,
+  });
   // 全局存在感知：任一会话文件（pi / claude）变化 → 广播 sessions_changed + 搜索索引失效（fs.watch 事件驱动）
   const presence = new PresenceWatcher(
     async () => [
@@ -445,6 +574,8 @@ export async function startHub(): Promise<StartedHub> {
     presence.stop();
     liveIngest.close();
     agents.close();
+    // hub 驱动接管：杀掉全部 claude 驱动进程（attach 态不跨重启恢复，web 回落 parallel）
+    claudeDriver?.disposeAll();
     terminalService.dispose();
     hub.disposeAll();
     // 先掐掉全部 WS 连接再关 HTTP，否则在线 WS 客户端会让 app.close() 永不 resolve

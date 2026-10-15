@@ -7,6 +7,22 @@ import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { isIPv4, isIPv6 } from "node:net";
 
+/** claude hub 驱动接管配置（docs/CLAUDE_DRIVER.md） */
+export interface ClaudeDriverConfig {
+  /** 总开关（false = claude 接管路由回 400，前端回落 parallel） */
+  enabled: boolean;
+  /** 智能默认策略：active-only=活跃会话默认接管；always=打开即接管；never=只手动 */
+  defaultPolicy: "active-only" | "always" | "never";
+  /** 空闲自动 detach（ms，0=永不；turn 进行中不 detach） */
+  idleDetachMs: number;
+  /** 并发驱动进程上限 */
+  maxConcurrent: number;
+  /** 终端投屏：tmux 命名 pane（无 tmux 自动降级 off） */
+  mirror: "tmux" | "off";
+  /** attach 前 sessionFile 静默窗（ms，外部写入检测防双写） */
+  externalQuietMs: number;
+}
+
 export interface HubConfig {
   port: number;
   host: string;
@@ -21,7 +37,17 @@ export interface HubConfig {
   allowOrigins: string[];
   /** 显式 opt-in 局域网暴露（允许 host 绑定通配地址）；默认 false = 绝不通配绑定 */
   allowLan: boolean;
+  claudeDriver: ClaudeDriverConfig;
 }
+
+export const DEFAULT_CLAUDE_DRIVER_CONFIG: ClaudeDriverConfig = {
+  enabled: true,
+  defaultPolicy: "active-only",
+  idleDetachMs: 30 * 60_000,
+  maxConcurrent: 3,
+  mirror: "tmux",
+  externalQuietMs: 3_000,
+};
 
 export const DEFAULT_CONFIG: HubConfig = {
   port: 7700,
@@ -32,6 +58,7 @@ export const DEFAULT_CONFIG: HubConfig = {
   auth: { enabled: false, token: "" },
   allowOrigins: [],
   allowLan: false,
+  claudeDriver: { ...DEFAULT_CLAUDE_DRIVER_CONFIG },
 };
 
 /** 展开 `~` 前缀为用户主目录；相对路径按 baseDir 解析。 */
@@ -134,6 +161,7 @@ interface RawConfig {
   auth?: { enabled?: unknown; token?: unknown };
   allowOrigins?: unknown;
   allowLan?: unknown;
+  claudeDriver?: unknown;
 }
 
 export interface LoadedConfig {
@@ -210,6 +238,38 @@ export function loadHubConfig(configDir: string, home = homedir()): LoadedConfig
       enabled: raw.auth.enabled === true,
       token: typeof raw.auth.token === "string" ? raw.auth.token : "",
     };
+  }
+  // 鉴权 fail-open 告警（D4）：enabled=true 且 token 为空（含缺失/非字符串被吞成空串）时，
+  // routes/ws 均「enabled 且 token 非空才校验」→ 鉴权不生效却无人知晓，必须显式告警（行为不变，防锁死零配置部署）
+  if (config.auth.enabled && config.auth.token === "") {
+    warnings.push("auth.enabled=true 但 token 为空：鉴权不会生效，请填写 auth.token 或关闭 enabled");
+  }
+
+  // claudeDriver：逐字段校验，非法回默认（容错，不阻断启动）
+  if (raw.claudeDriver !== undefined) {
+    if (typeof raw.claudeDriver === "object" && raw.claudeDriver !== null) {
+      const d = raw.claudeDriver as Record<string, unknown>;
+      config.claudeDriver = {
+        enabled: d.enabled !== false,
+        defaultPolicy:
+          d.defaultPolicy === "always" || d.defaultPolicy === "never" ? d.defaultPolicy : "active-only",
+        idleDetachMs:
+          typeof d.idleDetachMs === "number" && d.idleDetachMs >= 0
+            ? d.idleDetachMs
+            : DEFAULT_CLAUDE_DRIVER_CONFIG.idleDetachMs,
+        maxConcurrent:
+          typeof d.maxConcurrent === "number" && d.maxConcurrent > 0
+            ? Math.floor(d.maxConcurrent)
+            : DEFAULT_CLAUDE_DRIVER_CONFIG.maxConcurrent,
+        mirror: d.mirror === "off" ? "off" : "tmux",
+        externalQuietMs:
+          typeof d.externalQuietMs === "number" && d.externalQuietMs >= 0
+            ? d.externalQuietMs
+            : DEFAULT_CLAUDE_DRIVER_CONFIG.externalQuietMs,
+      };
+    } else {
+      warnings.push("hub.config.json 的 claudeDriver 必须是对象，已使用默认配置");
+    }
   }
 
   // sessionDir / workspaceRoot 统一展开 `~`（默认值同样处理）

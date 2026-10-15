@@ -103,7 +103,7 @@ async function startSlowServer() {
     logger: false,
   });
   const wshub = new WsHub();
-  wshub.attach(app.server, hub as unknown as SessionHub);
+  wshub.attach(app.server, hub as unknown as SessionHub, { auth: { enabled: false, token: "" } });
   await app.listen({ port: 0, host: "127.0.0.1" });
   const { port } = app.server.address() as AddressInfo;
   return {

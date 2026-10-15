@@ -10,17 +10,20 @@ import {
   markIntroSeen,
   pinAttachMode,
   saveAttachMode,
+  attachAvailability,
+  attachDefaultWorthy,
   type AttachMode,
   type ChannelEchoState,
 } from "../api/attach";
 import { sendPromptWithMode, type SendMode } from "../api/prompt";
 import { getOfflineQueue, appendLocalAttachmentHints, classifySendError, queuedImagesOf, type QueuedSend } from "../chat/offlineQueue";
 import { flushOfflineQueue } from "../chat/offlineFlush";
-import type { CommandItem, SessionMessage, SessionStatus, SessionSummary, SubAgentActivity, TerminalAttachInfo } from "../api/types";
+import type { CommandItem, HostRequestDto, SessionMessage, SessionStatus, SessionSummary, SubAgentActivity, TerminalAttachInfo } from "../api/types";
 import { applyWsEvent, reconcileMessages, type WsEvent } from "../chat/messageStream";
 import { waitPhaseAfterEvent, type WaitPhase } from "../chat/waitPhase";
 import { DeltaBatcher } from "../chat/deltaBatcher";
-import { computeMessageWindow, paddingTopFor, pruneDetachedRowEls } from "../chat/messageWindow";
+import { computeMessageWindow, MESSAGE_GAP_PX, paddingTopFor, pruneDetachedRowEls } from "../chat/messageWindow";
+import { estimateJumpTop, NAV_MIN_MESSAGES } from "../chat/navTicks";
 import { isSubAgentActivityUpdate, mergeSubAgentActivity } from "../chat/subAgents";
 import { useGitStatus } from "../hooks/useGitStatus";
 import { useVisualViewportInset } from "../hooks/useVisualViewportInset";
@@ -33,6 +36,7 @@ import { FileViewer } from "../components/FileViewer";
 import { GitPanel } from "../components/GitPanel";
 import { FileTreePanel } from "../components/FileTreePanel";
 import { MessageBubble } from "../components/MessageBubble";
+import { ConversationNav } from "../components/ConversationNav";
 import { SubAgentPanel } from "../components/SubAgentPanel";
 import { DrivenBadge } from "../components/DrivenBadge";
 import { WaitStageBar } from "../components/WaitStageBar";
@@ -40,6 +44,7 @@ import { AttachmentStrip } from "../components/AttachmentStrip";
 import { AttachIntroSheet } from "../components/AttachIntroSheet";
 import { AttachModeMenu } from "../components/AttachModeMenu";
 import { ChannelEcho } from "../components/ChannelEcho";
+import { HostRequestCard } from "../components/HostRequestCard";
 import { UploadButton } from "../components/UploadButton";
 import { SendModeMenu } from "../components/SendModeMenu";
 import { SessionActionsMenu } from "../components/SessionActionsMenu";
@@ -92,7 +97,7 @@ import { chatPath, chatReturnPath, currentLocate, navigate, onRouteChange, treeP
  * 历史消息懒加载：首屏只拉尾部 ~50 条，上滑/按钮加载更早一页；
  * 流式新消息到达保持原有尾部追加行为。
  */
-/** message_end 后无任何流事件/状态事件的待定收尾时长：超时推断回复完成（status 回 idle） */
+/** message_end 后静默时向服务器核对整轮状态，不能只凭静默判完成。 */
 const REPLY_IDLE_FALLBACK_MS = 5_000;
 /** attach 发送后终端 pi 接手的最长等待（超时明示，防阶段条永久转圈） */
 const ATTACH_WAIT_GUARD_MS = 60_000;
@@ -237,6 +242,9 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
   );
   /** 终端 pi 在线/接管状态（server 真值，WS attach_state 实时更新） */
   const [terminal, setTerminal] = useState<TerminalAttachInfo | null>(null);
+  /** hub 驱动接管的未决权限请求（host_request 挂载 / resolved 移除 / 打开会话 GET 兜底） */
+  const [hostRequests, setHostRequests] = useState<HostRequestDto[]>([]);
+  const [hostRespondingId, setHostRespondingId] = useState<string | null>(null);
   /** 发送后归属确认一行小字（独立状态字，不侵入 E1 阶段状态条） */
   const [echo, setEcho] = useState<ChannelEchoState | null>(null);
   /** 指令回执先于发送响应到达时的时序保护：commandId → 回执结果 */
@@ -249,7 +257,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
   const openModeDecidedRef = useRef(false);
   // 子代理活动（反馈轮 3 #4）：pi-subagents 派生会话的实时工作面板（快照 + WS 增量）
   const [subAgents, setSubAgents] = useState<SubAgentActivity[]>([]);
-  // 面板驱动标识（反馈轮 3 #5，与驱动来源徽章统一）：本设备面板发过消息的会话，电脑端 pi 需重开才能看到实时变化
+  // 面板驱动标识：本设备平行续聊过的会话，电脑端需重新载入会话查看新增消息。
   const panelHintShownRef = useRef(false);
   // 上传附件（📎 选择 / 粘贴图片）：上传成功 → 预览条 + 输入框 `@path` 引用
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -332,9 +340,23 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
     async (autoDefault: boolean) => {
       try {
         const result = await api.attachSession(sessionId);
-        setTerminal({ online: result.agent?.online ?? true, attached: true });
+        // 重建 terminal 时把旧 terminal 的 defaultPolicy 带上（D3）：server 策略字段只随
+        // 会话详情下发，重建丢字段会让未来按策略复用时退回 active-only 容错
+        setTerminal((prev) => ({
+          online: result.agent?.online ?? true,
+          attached: true,
+          driver: result.agent?.driver,
+          mirror: result.agent?.mirror,
+          defaultPolicy: prev?.defaultPolicy,
+        }));
         applyAttachMode("attach");
-        if (autoDefault) setNotice("终端在线，已默认接管终端");
+        if (autoDefault) {
+          setNotice(
+            result.agent?.driver === "hub"
+              ? "会话活跃，已默认接管（hub 驱动 claude 执行）"
+              : "终端在线，已默认接管终端",
+          );
+        }
       } catch (e) {
         setNotice(`接管终端失败：${e instanceof Error ? e.message : "未知错误"}（消息暂走 📱 平行线）`);
       }
@@ -364,10 +386,17 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
       if (pinnedMode !== null) {
         // 用户手动选择最高优先（选过一次就不再自动改）：恢复其选择，不被智能默认/校正改写
         if (openFirst) {
-          applyAttachMode(pinnedMode);
+          // 残留 attach 模式卡死自愈：pin=attach 但本次打开接管不可用（claudeDriver.enabled=false /
+          // 老 server 不下发 terminal、pi 终端离线）→ 本次回落 parallel，不改写 pin——
+          // 用户手动选择永久优先，attach 仍可手动再选；不走 attach 发送避免 server 400 卡死
+          const attachable = attachAvailability(detail.session.terminal, detail.session.source).attachEnabled;
+          const fallback = pinnedMode === "attach" && !attachable;
+          applyAttachMode(fallback ? "parallel" : pinnedMode);
           // 用户选的是接管：终端在线但未接管时补一次握手，把选择真正落地（同手动切换）
           const term = detail.session.terminal;
-          if (pinnedMode === "attach" && term?.online === true && term.attached !== true) void ensureAttached(false);
+          if (pinnedMode === "attach" && !fallback && term?.online === true && term.attached !== true) {
+            void ensureAttached(false);
+          }
         }
       } else {
         // 双模式跨设备校正（server 是事实源）：电脑已 attach 接管而本机 localStorage 还是平行模式时，
@@ -375,10 +404,17 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
         const attachedFlag = detail.session.terminal?.attached;
         if (attachedFlag === true) applyAttachMode("attach");
         else if (attachedFlag === false) applyAttachMode("parallel");
-        // 智能默认（仅首屏一次）：终端在线（online=true；claude/codex 无 terminal 字段）→ 自动 🖥 接管终端 + 轻提示
-        if (openFirst && detail.session.terminal?.online === true) {
+        // 智能默认（仅首屏一次，D3 active-only）：电脑上正活跃（pi 终端在线 / claude running）
+        // → 自动 🖥 接管 + 轻提示；历史空闲会话默认 parallel（attach 仍可手动选）
+        if (openFirst && attachDefaultWorthy(detail.session, detail.session.terminal)) {
           if (attachModeRef.current !== "attach") void ensureAttached(true);
-          else if (modeBefore !== "attach") setNotice("终端在线，已默认接管终端");
+          else if (modeBefore !== "attach") {
+            setNotice(
+              detail.session.terminal?.driver === "hub"
+                ? "会话活跃，已默认接管（hub 驱动 claude 执行）"
+                : "终端在线，已默认接管终端",
+            );
+          }
         }
       }
       // 首次进入可双模式会话：一次性说明 sheet（记住选择，用完即走，不常驻）
@@ -389,6 +425,13 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
         }
       }
       setLoadError(null);
+      // host 权限请求兜底拉取（断线/刷新防 WS 丢事件卡死：未决卡片必须回来）
+      if (detail.session.terminal?.driver === "hub") {
+        api
+          .listHostRequests(sessionId)
+          .then((r) => setHostRequests(r.requests ?? []))
+          .catch(() => undefined);
+      }
       // 驱动来源标注（心理预期管理）：server 持久集合为准，本地 panelHint 仅旧版兼容兑底
       const driven = detail.session.lastDrivenBy === "panel" ? "panel" : "terminal";
       setDrivenBy((prev) => (prev === "panel" ? "panel" : driven));
@@ -971,16 +1014,30 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
     }
   };
 
-  /** 回复落盘后的待定收尾：短静默无任何事件 → 本轮回复完成，中止按钮与阶段条随 status 消失 */
+  /** 一条 assistant 消息结束后可能还在思考或跑工具；静默仅触发状态核对。 */
   const armPendingIdle = () => {
     clearPendingIdle();
-    pendingIdleRef.current = setTimeout(() => {
-      pendingIdleRef.current = null;
-      setStatus((s) => (s === "running" ? "idle" : s));
-      setSending(false);
-      resetSendModeAfterRound();
-      endWait();
+    const timer = setTimeout(async () => {
+      try {
+        const detail = await api.getSession(sessionId, { limit: 1 });
+        // 新流事件、明确终态或页面卸载会取消本次核对；旧请求不得覆盖新状态。
+        if (pendingIdleRef.current !== timer) return;
+        pendingIdleRef.current = null;
+        if (detail.session.status === "running") {
+          armPendingIdle();
+          return;
+        }
+        setStatus(detail.session.status);
+        setSending(false);
+        resetSendModeAfterRound();
+        endWait();
+      } catch {
+        if (pendingIdleRef.current !== timer) return;
+        // 网络失败不是任务已结束的证据，保留运行态并稍后重查。
+        armPendingIdle();
+      }
     }, REPLY_IDLE_FALLBACK_MS);
+    pendingIdleRef.current = timer;
   };
 
   useEffect(() => () => clearPendingIdle(), []);
@@ -1018,7 +1075,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
         case "tool_start":
         case "tool_end":
           // 流事件说明 agent 还在跑：取消待定收尾，中止按钮保持；
-          // 若 5s 待定误翻了 idle（段间长间隙），后续流事件自愈恢复 running
+          // 新事件取消先前的状态核对，服务器旧响应不能覆盖新一轮运行
           clearPendingIdle();
           ensureRunning();
           // 阶段化等待反馈：按事件推进（思考中/工具执行中/回复中），计时不清零
@@ -1028,7 +1085,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
           break;
         case "message_end":
           setMessages((prev) => applyWsEvent(prev, event));
-          // 回复落盘：若 status 事件丢失（tail 静默判定/事件丢发），待定超时自动翻转 idle
+          // 一段回复落盘：稍后核对整轮状态，不能直接判定任务完成
           if ((event.message?.role ?? "assistant") === "assistant") armPendingIdle();
           break;
         case "status": {
@@ -1047,7 +1104,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
         case "agent_settled":
           // 本轮工作全部结束：恢复输入，阶段条消失
           clearPendingIdle();
-          setStatus("idle");
+          setStatus((previous) => previous === "error" ? "error" : "idle");
           setSending(false);
           resetSendModeAfterRound();
           endWait();
@@ -1068,11 +1125,28 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
           // 终端驱动状态实时回流（E3）：接管失效自动回落平行，绝不静默丢消息
           const attached = event.attached === true;
           const online = event.terminalOnline === true;
-          setTerminal({ online, attached });
-          if (!attached && attachModeRef.current === "attach") {
-            applyAttachMode("parallel");
-            setNotice("终端已退出接管（心跳超时或主动断开），已切回 📱 平行模式");
+          setTerminal((prev) => ({ online, attached, driver: prev?.driver, mirror: prev?.mirror }));
+          if (!attached) {
+            setHostRequests([]); // 驱动已停：挂起请求一律已被服务端 deny 收尾
+            if (attachModeRef.current === "attach") {
+              applyAttachMode("parallel");
+              setNotice("终端已退出接管（心跳超时或主动断开），已切回 📱 平行模式");
+            }
           }
+          break;
+        }
+        case "host_request": {
+          const req = event.request as HostRequestDto | undefined;
+          if (req && typeof req.id === "string") {
+            setHostRequests((prev) => (prev.some((r) => r.id === req.id) ? prev : [...prev, req]));
+            setNotice(`需要你批准：${req.title}`);
+          }
+          break;
+        }
+        case "host_request_resolved": {
+          const rid = String(event.requestId ?? "");
+          setHostRequests((prev) => prev.filter((r) => r.id !== rid));
+          setHostRespondingId(null);
           break;
         }
         case "command_ack": {
@@ -1085,8 +1159,8 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
           setEcho((prev) => {
             if (prev && prev.channel === "attach" && prev.commandId && prev.commandId !== commandId) return prev;
             return ok
-              ? { channel: "attach", phase: "acked", commandId }
-              : { channel: "attach", phase: "failed", detail: error, commandId };
+              ? { channel: "attach", phase: "acked", commandId, driver: prev?.driver }
+              : { channel: "attach", phase: "failed", detail: error, commandId, driver: prev?.driver };
           });
           // 等待接力（真机反馈批）：终端接手 → 思考中继续接力；失败 → 结束等待（echo 常驻错误文案）
           if (waitRef.current !== null) {
@@ -1146,6 +1220,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
 
   /** 发送主链路（首发）：成功 → 思考中阶段 + 触觉反馈；失败 → 入离线队列（持久，可重试） */
   const performSend = async (localId: string, text: string, sent: Attachment[]) => {
+    clearPendingIdle();
     beginWait("sending");
     let atts = sent;
     const channel: "parallel" | "attach" = isAttachSending(attachModeRef.current, terminal) ? "attach" : "parallel";
@@ -1178,15 +1253,16 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
         const queued = await api.sendAttachMessage(sessionId, hintedText, mapAttachSendMode(sendMode), localId);
         // 时序保护：回执可能先于发送响应到达（长轮询秒级投递），已回执则直接展示终态
         const ack = ackedRef.current.get(queued.commandId);
+        const driver = terminal?.driver;
         if (ack) {
           ackedRef.current.delete(queued.commandId);
           setEcho(
             ack.ok
-              ? { channel: "attach", phase: "acked", commandId: queued.commandId }
-              : { channel: "attach", phase: "failed", detail: ack.error, commandId: queued.commandId },
+              ? { channel: "attach", phase: "acked", commandId: queued.commandId, driver }
+              : { channel: "attach", phase: "failed", detail: ack.error, commandId: queued.commandId, driver },
           );
         } else {
-          setEcho({ channel: "attach", phase: "sent", commandId: queued.commandId });
+          setEcho({ channel: "attach", phase: "sent", commandId: queued.commandId, driver });
         }
         // 等待接力（真机反馈：发完即无任何状态不可接受）：队列已确认 = 发送完成，
         // 但终端 pi 尚未接手——echo 负责前几秒归属确认，阶段条常驻接力直到回复/失败/超时，
@@ -1308,6 +1384,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
     if (sendingRef.current) return;
     const item = queuedById.get(localId);
     if (!item) return;
+    clearPendingIdle();
     sendingRef.current = true;
     forceScrollRef.current = true; // 重试同口径：用户意图同样在最新处
     setSending(true);
@@ -1396,8 +1473,8 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
   }, [echo]);
 
   /**
-   * 面板驱动标识（与驱动来源徽章/预期提示条统一）：手机发消息实际由 server 的 pi SDK 实例干活，
-   * 电脑终端里的 pi 进程看不到实时变化。首次发送 toast 提示 + 顶栏 📱 徽章，不阻断操作。
+   * 面板驱动标识：平行模式由 server 的 SDK/CLI 续聊，原终端窗口不保证实时同步。
+   * 首次发送 toast 提示 + 顶栏 📱 徽章，不阻断操作。
    */
   const markPanelDriven = () => {
     setDrivenBy("panel");
@@ -1410,7 +1487,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
     } catch {
       /* 存储不可用：仅本次会话内提示 */
     }
-    showToast("💬 本会话已由面板驱动：电脑端 pi 需重开会话（pi --resume）才能看到这些消息");
+    showToast("💬 本会话已由面板续聊：回到电脑后请重新打开该会话，载入新增消息");
   };
 
   /** 预期提示条“知道了”：关闭并记住（同一会话不再弹） */
@@ -1494,6 +1571,46 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
     setQuote({ text: msg.text });
   }, []);
 
+  /**
+   * 对话导航条跳转：目标已挂载 → 平滑滚到中线；未挂载（窗口化裁掉）→
+   * 按行高缓存先估算滚动到大致位置（窗口渐进展开），再有界重试微调到中线。
+   */
+  const jumpToMessage = useCallback((id: string) => {
+    setHighlightId(id);
+    const el = scrollRef.current;
+    if (!el) return;
+    const node = () => document.getElementById(`msg-${id}`);
+    const tryScroll = (tries: number) => {
+      const target = node();
+      if (target) {
+        target.scrollIntoView({ behavior: scrollBehaviorOf(window), block: "center" });
+        return;
+      }
+      if (tries <= 0) return;
+      window.requestAnimationFrame(() => tryScroll(tries - 1));
+    };
+    if (node()) {
+      tryScroll(0);
+      return;
+    }
+    const idx = messagesRef.current.findIndex((m) => m.id === id);
+    if (idx >= 0) {
+      const listEl = listRef.current;
+      // msg-list 顶部相对滚动内容顶部的偏移（口径与 recomputeWindow 的 scrollTop 一致）
+      const listOffset =
+        listEl !== null ? el.scrollTop - (el.getBoundingClientRect().top - listEl.getBoundingClientRect().top) : 0;
+      el.scrollTop = estimateJumpTop({
+        heights: messagesRef.current.map((m) => heightsRef.current.get(m.id) ?? 0),
+        gap: MESSAGE_GAP_PX,
+        targetIndex: idx,
+        listOffset,
+        viewportHeight: el.clientHeight,
+        contentHeight: el.scrollHeight,
+      });
+    }
+    tryScroll(24);
+  }, []);
+
   /** 同会话并行流式回合序号（sub agent 并行时多个回合同时进行）：气泡带 🔗 标记 */
   const liveRanks = useMemo(() => {
     const ranks = new Map<string, { index: number; total: number }>();
@@ -1560,6 +1677,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
           <AttachModeMenu
             mode={attachMode}
             terminal={terminal}
+            source={session?.source}
             busy={attachBusy}
             onChange={(m) => void changeAttachMode(m)}
           />
@@ -1589,8 +1707,8 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
       {/* 预期提示条（心理预期管理）：面板驱动过的会话首次进入提醒两条工作流，可一键分叉（i1 紧凑单行） */}
       {driverHint && (
         <div className="driver-hint" role="note" aria-label="驱动来源提示">
-          <span className="driver-hint-text" title="此会话由手机面板继续过——电脑端 pi 需重开会话（pi --resume）才能看到这些消息">
-            💬 此会话由手机面板继续过——电脑端 pi 需重开会话（pi --resume）才能看到这些消息
+          <span className="driver-hint-text" title="此会话由手机面板继续过——回到电脑后请重新打开该会话，载入新增消息">
+            💬 此会话由手机面板继续过——回到电脑后请重新打开该会话，载入新增消息
           </span>
           <div className="driver-hint-actions">
             <Button type="button" variant="secondary" size="sm" onClick={() => void doFork()} disabled={forkBusy}>
@@ -1604,6 +1722,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
       )}
 
 
+      <div className={`chat-scroll-wrap${messages.length >= NAV_MIN_MESSAGES ? " has-nav" : ""}`}>
       <div
         className="chat-messages"
         role="log"
@@ -1662,6 +1781,11 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
             <div ref={bottomRef} />
           </div>
         </PullToRefresh>
+      </div>
+      {/* K1 对话导航条（Codex 风格）：短会话无需时间线，消息多才显示 */}
+      {messages.length >= NAV_MIN_MESSAGES && (
+        <ConversationNav messages={messages} scrollRef={scrollRef} onJump={jumpToMessage} />
+      )}
       </div>
 
       {/* ↓ 新消息浮标：上翻历史时不拉扯视口，新到消息累计计数，点击回底部 */}
@@ -1733,18 +1857,19 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
             </div>
           )}
           <div className="modebar-right">
-            {/* attach 下中止无意义（run 在终端 pi 进程里），隐藏以免误导 */}
-            {status === "running" && !isAttachSending(attachMode, terminal) && (
-              <button
-                type="button"
-                className="icon-btn abort-btn"
-                onClick={() => void doAbort()}
-                aria-label="中止当前任务"
-                title="中止当前任务"
-              >
-                <StopIcon />
-              </button>
-            )}
+            {/* pi attach 下中止无意义（run 在终端 pi 进程里）；hub 驱动 abort 有意义（control interrupt 中止 turn） */}
+            {status === "running" &&
+              (!isAttachSending(attachMode, terminal) || terminal?.driver === "hub") && (
+                <button
+                  type="button"
+                  className="icon-btn abort-btn"
+                  onClick={() => void doAbort()}
+                  aria-label="中止当前任务"
+                  title="中止当前任务"
+                >
+                  <StopIcon />
+                </button>
+              )}
           </div>
         </div>
         )}
@@ -1762,6 +1887,28 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
             </button>
           </div>
         )}
+        {/* host 权限请求卡片（hub 驱动接管）：sticky 常驻直到应答/超时；手机端永不卡死 */}
+        {hostRequests.map((r) => (
+          <HostRequestCard
+            key={r.id}
+            request={r}
+            respondingId={hostRespondingId}
+            onRespond={(requestId, outcome) => {
+              setHostRespondingId(requestId);
+              api
+                .respondHostRequest(sessionId, requestId, outcome)
+                .then(() => {
+                  setHostRequests((prev) => prev.filter((x) => x.id !== requestId));
+                  setHostRespondingId(null);
+                  setNotice(outcome === "allow" ? "已允许该操作" : "已拒绝该操作");
+                })
+                .catch((e: unknown) => {
+                  setHostRespondingId(null);
+                  setNotice(`应答失败：${e instanceof Error ? e.message : "未知错误"}`);
+                });
+            }}
+          />
+        ))}
         {/* 发送归属确认一行小字（E3）："已发往终端" / "平行线工作中"；无内容零占位 */}
         <ChannelEcho echo={echo} />
         <div className="composer">          <SlashCommandPanel
@@ -1935,6 +2082,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
 
       {introOpen && (
         <AttachIntroSheet
+          driver={terminal?.driver}
           onClose={() => {
             markIntroSeen(safeStorage());
             setIntroOpen(false);

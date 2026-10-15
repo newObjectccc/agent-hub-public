@@ -252,6 +252,8 @@ const KNOWN_NON_MESSAGE_EVENTS = new Set([
   "subagent_activity",
   "attach_state",
   "command_ack",
+  "host_request",
+  "host_request_resolved",
   "pong",
   "sessions_changed",
   "notification",
@@ -264,15 +266,43 @@ const KNOWN_NON_MESSAGE_EVENTS = new Set([
  *  - 快照里还没有的在途消息留在尾部（进行中的回复不消失） */
 export function reconcileMessages(prev: SessionMessage[], fresh: SessionMessage[]): SessionMessage[] {
   const inFlight = new Map(prev.filter((m) => m.streaming === true).map((m) => [m.id, m] as const));
-  if (inFlight.size === 0) return fresh;
+  const withImages = prev.filter((m) => m.images !== undefined);
+  if (inFlight.size === 0 && withImages.length === 0) return fresh;
+  const previousById = new Map(withImages.map((m) => [m.id, m] as const));
   const freshIds = new Set(fresh.map((m) => m.id));
+  const imageFallbacks = new Map<string, SessionMessage>();
+  // live-user-* 与落盘 UUID 不同：优先匹配发送时间最近的同正文消息，并且一对一消费。
+  // 普通历史消息只按 id 回填，避免相同正文的旧图片套给新消息。
+  for (const old of withImages) {
+    if (!isPlaceholderId(old.id) || old.role !== "user" || old.text === "" || freshIds.has(old.id)) continue;
+    let closest: SessionMessage | undefined;
+    let distance = 60_001;
+    for (const candidate of fresh) {
+      if (previousById.has(candidate.id) || imageFallbacks.has(candidate.id)
+        || candidate.role !== old.role || candidate.text !== old.text) continue;
+      const difference = Math.abs(old.timestamp - candidate.timestamp);
+      if (difference < distance) {
+        closest = candidate;
+        distance = difference;
+      }
+    }
+    if (closest) imageFallbacks.set(closest.id, old);
+  }
+  let changed = false;
   const merged = fresh.map((m) => {
+    let next = m;
+    const previous = previousById.get(m.id) ?? imageFallbacks.get(m.id);
+    if (previous && m.images === undefined) {
+      next = { ...m, images: previous.images };
+      changed = true;
+    }
     const live = inFlight.get(m.id);
-    if (!live) return m;
+    if (!live) return next;
+    changed = true;
     const text = live.text.length > m.text.length ? live.text : m.text;
     const thinking = (live.thinking?.length ?? 0) > (m.thinking?.length ?? 0) ? live.thinking : m.thinking;
-    return { ...m, text, thinking, streaming: true };
+    return { ...next, text, thinking, streaming: true };
   });
   const tail = prev.filter((m) => m.streaming === true && !freshIds.has(m.id));
-  return tail.length === 0 ? merged : [...merged, ...tail];
+  return tail.length === 0 ? (changed ? merged : fresh) : [...merged, ...tail];
 }

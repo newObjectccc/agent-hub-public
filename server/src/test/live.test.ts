@@ -213,7 +213,7 @@ describe("live: POST /api/live/:sessionId → WS 广播（fake WS 断言）", ()
       webRoot: null, appLock: fakeUnlockedAppLock(),
       logger: false,
     });
-    wshub.attach(app.server, makeFakeHub() as unknown as SessionHub);
+    wshub.attach(app.server, makeFakeHub() as unknown as SessionHub, { auth: { enabled: false, token: "" } });
     await app.listen({ port: 0, host: "127.0.0.1" });
     const { port } = app.server.address() as AddressInfo;
     return {

@@ -201,8 +201,8 @@ describe("ChatPage 连续两条相同文本消息独立显示", () => {
   });
 });
 
-describe("ChatPage 中止按钮生命周期（回复完成即消失）", () => {
-  it("running 时显示中止；message_end 后无任何事件 → 待定超时自动消失", async () => {
+describe("ChatPage 中止按钮生命周期（服务器确认整轮完成）", () => {
+  it("message_end 后短暂静默，核对服务器 idle 后才消失", async () => {
     vi.useFakeTimers();
     const el = await render();
     act(() => {
@@ -221,8 +221,9 @@ describe("ChatPage 中止按钮生命周期（回复完成即消失）", () => {
       vi.advanceTimersByTime(4_999);
     });
     expect(abortButton(el)).not.toBeNull();
-    act(() => {
+    await act(async () => {
       vi.advanceTimersByTime(2);
+      await Promise.resolve();
     });
     expect(abortButton(el)).toBeNull();
   });
@@ -251,7 +252,7 @@ describe("ChatPage 中止按钮生命周期（回复完成即消失）", () => {
     expect(abortButton(el)).not.toBeNull();
   });
 
-  it("5s 待定误翻 idle 后，新流事件自愈恢复 running（中止按钮回来）", async () => {
+  it("核对服务器 idle 后，新流事件自愈恢复 running（中止按钮回来）", async () => {
     vi.useFakeTimers();
     const el = await render();
     act(() => {
@@ -262,8 +263,9 @@ describe("ChatPage 中止按钮生命周期（回复完成即消失）", () => {
       });
     });
     // 超过 5s 待定窗口：误翻 idle，按钮消失
-    act(() => {
+    await act(async () => {
       vi.advanceTimersByTime(6_000);
+      await Promise.resolve();
     });
     expect(abortButton(el)).toBeNull();
     // 段间长间隙后新流事件到达：自愈恢复 running
@@ -284,6 +286,66 @@ describe("ChatPage 中止按钮生命周期（回复完成即消失）", () => {
       wsEvent?.({ type: "agent_settled" });
     });
     expect(abortButton(el)).toBeNull();
+  });
+
+  it("错误终态不会被随后 agent_settled 覆盖成正常空闲", async () => {
+    const el = await render();
+    act(() => {
+      wsEvent?.({ type: "status", status: "error" });
+      wsEvent?.({ type: "agent_settled" });
+    });
+    expect(el.querySelector(".badge.error")).not.toBeNull();
+  });
+
+  it("一段回复结束超过 5 秒，服务器仍 running 时继续显示中止和等待状态", async () => {
+    vi.useFakeTimers();
+    const el = await render();
+    mocks.getSession.mockResolvedValueOnce({ session: { ...session, status: "running" }, messages: [] });
+    act(() => {
+      wsEvent?.({ type: "status", status: "running" });
+      wsEvent?.({ type: "message_end", message: { id: "partial", role: "assistant", text: "先检查一下", timestamp: 1, toolCalls: [] } });
+    });
+    await act(async () => { vi.advanceTimersByTime(6_000); await Promise.resolve(); });
+    expect(abortButton(el)).not.toBeNull();
+    expect(el.querySelector(".wait-stage-bar")).not.toBeNull();
+    expect(mocks.getSession).toHaveBeenLastCalledWith("s1", { limit: 1 });
+    await act(async () => { vi.advanceTimersByTime(5_001); await Promise.resolve(); });
+    expect(abortButton(el)).toBeNull();
+  });
+
+  it("发送下一条消息也会取消旧核对，断线时旧 idle 结果不能清掉新任务", async () => {
+    vi.useFakeTimers();
+    const el = await render();
+    let resolve!: (value: unknown) => void;
+    mocks.getSession.mockImplementationOnce(() => new Promise((done) => { resolve = done; }));
+    act(() => {
+      wsEvent?.({ type: "status", status: "running" });
+      wsEvent?.({ type: "message_end", message: { id: "previous", role: "assistant", text: "上一段", timestamp: 1, toolCalls: [] } });
+    });
+    await act(async () => { vi.advanceTimersByTime(5_001); await Promise.resolve(); });
+    typeInput(el, "下一条任务");
+    click(el.querySelector(".composer-send"));
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => { resolve({ session: { ...session, status: "idle" }, messages: [] }); await Promise.resolve(); });
+    expect(abortButton(el)).not.toBeNull();
+  });
+
+  it("状态核对失败不误判完成，过时的 idle 响应也不能覆盖新流事件", async () => {
+    vi.useFakeTimers();
+    const el = await render();
+    mocks.getSession.mockRejectedValueOnce(new Error("网络暂时不可用"));
+    act(() => {
+      wsEvent?.({ type: "status", status: "running" });
+      wsEvent?.({ type: "message_end", message: { id: "partial", role: "assistant", text: "第一段", timestamp: 1, toolCalls: [] } });
+    });
+    await act(async () => { vi.advanceTimersByTime(6_000); await Promise.resolve(); });
+    expect(abortButton(el)).not.toBeNull();
+    let resolve!: (value: unknown) => void;
+    mocks.getSession.mockImplementationOnce(() => new Promise((done) => { resolve = done; }));
+    await act(async () => { vi.advanceTimersByTime(5_001); await Promise.resolve(); });
+    act(() => { wsEvent?.({ type: "message_start", message: { id: "next", role: "assistant", timestamp: 2 } }); });
+    await act(async () => { resolve({ session: { ...session, status: "idle" }, messages: [] }); await Promise.resolve(); });
+    expect(abortButton(el)).not.toBeNull();
   });
 });
 

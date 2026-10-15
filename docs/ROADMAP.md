@@ -72,19 +72,24 @@
 
 ## 批次 3 之后的候选（⬜ 未排期）
 - ⬜ Web Push 锁屏通知（HTTPS 依赖解除后）
-- ⏸ claude 会话终端接管（双模式对称补全，用户明确延后）→ 已立项见「claude 完整接入」
+- ✅ Claude 会话接管已在 v0.3 完成，见下方接入记录与 [驱动说明](CLAUDE_DRIVER.md)
 - ⬜ 树上 fork/clone 操作（T3 预留）
 - ⬜ 通知规则细化（按会话/按项目静音）
 - ⬜ 会话归档/清理
 
-## claude 完整接入（v0.2 批）
+## Claude 接入（v0.2 基础能力 / v0.3 接管与可靠性）
 
 - ✅ 会话六契约（列表/详情/prompt/abort/create/fork）+ stream-json 流式 + 安全约束（manual 权限、不落凭据）
 - ✅ 消息级实时旁观：WS tail 按 source 注入 transcript 解析器（终端跑的 claude 会话同样实时）
 - ✅ 子代理面板：Task/Agent sidechain 解析 → SubAgentActivityDto（当前工具/输出摘要/运行时长/结果），同 pi 口径
-- ⬜ 终端接管模式：tmux send-keys 通用注入通道（做好后 pi/claude/其他 CLI agent 通吃）
+- ✅ v0.3 接管模式（hub 新建 CLI 进程续接同一会话，非原 TUI 注入，见 [CLAUDE_DRIVER.md](CLAUDE_DRIVER.md)）：stdin 真用户 turn、工具间隙插话、MCP bridge 手机批权限、control interrupt 中止、tmux 投屏；busy 检查与两次静默窗降低冲突风险，但不提供进程锁
+- ✅ 接管并发与状态：同会话 attach 共享启动、准备计入上限、退出取消准备；进程空闲不算运行中，result 结束本轮后再处理 followUp
+- ✅ 历史与消息可靠性：旧终端已关闭仍可续聊；过滤内部图片尺寸提示；保留上传预览并从匹配的成功 Read 恢复旧图；稳定 assistant ID、UTF-8/JSONL 分块与尾行处理
+- ✅ 忙时发送与中止：自有平行 run 才接受排队，外部 TUI 忙时三种 mode 均明确拒绝；最终 busy 检查防同会话并发启动，abort 取消准备与队列
+- ✅ 前端整轮状态确认：单条 message_end 不结束任务，5s 静默补查实际状态，旧响应不覆盖新一轮，错误收尾保留 error
 - ⏸ token 级 delta（终端 TUI 会话拿不到流式事件，架构限制；server 驱动的 claude 会话已是 stream-json 级）
-- ⬜ slash 命令清单 / 上传图片等细节对齐
+- ✅ slash 命令清单（含自定义命令及仅终端可用标记）；CLI 图片上传经 `@path` + 读图工具处理
+- ⬜ 与终端完整交互能力继续对齐（原生多模态输入、宿主 UI 工具等，当前限制见驱动说明）
 
 ## 全局验收基线（每个功能都要过）
 1. 移动优先视口无横向溢出、触控目标 ≥40px

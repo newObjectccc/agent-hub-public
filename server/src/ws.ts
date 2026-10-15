@@ -27,6 +27,35 @@ export interface WsAuthConfig {
 }
 
 /**
+ * WsHub.attach 挂载选项（修复：WS 鉴权未接线）：
+ * auth 必填——此前第 5 参可选导致生产装配漏传，auth.enabled 时 WS 完全绕过鉴权；
+ * 现在漏传 = 编译错误，未启用鉴权也要显式传 { enabled: false, token: "" }。
+ */
+export interface WsAttachOptions {
+  /** 非本进程会话的文件 tail 实时推送（可选） */
+  tailManager?: SessionTailManager;
+  /** prompt 冲突保护（attach 接管期）+ 锁屏门禁（lockToken） */
+  promptGuard?: (sessionId: string, lockToken?: string) => { code: string; message: string } | null;
+  /**
+   * WS abort 门禁 + 分发（修复：abort 绕过 promptGuard，锁屏/接管期可中止 turn）——镜像 HTTP
+   * /api/sessions/:id/abort 语义：返回错误对象 = 拒绝并回 error 帧（对齐 prompt 分支回执形状）；
+   * null = 已执行中止。不复用 promptGuard：其含 ATTACH_ACTIVE 拒绝，而 abort 在接管期合法且必要。
+   * 可选：未装配 = 裸 hub.abort（测试直连 attach 兜底）；生产经 attachSessionWs 装配。
+   */
+  abortHandler?: (sessionId: string, lockToken?: string) => Promise<{ code: string; message: string } | null>;
+  /**
+   * hub WS 路径（/ws/events、/ws/sessions/*）Origin 跨站闸（修复：WS upgrade 无 Origin 校验，
+   * 默认配置下任意网页可跨站劫持会话）：有 Origin 头（浏览器必带）时必须通过，否则 403 断连；
+   * 无 Origin 头（非浏览器客户端：node ws 库 / curl / 自动化）不在此闸，维持 token 判定。
+   * protocol 为连接协议（https 连接传 "https"），供反代感知的同源判定使用。
+   * 可选：未装配 = 不校验（测试直连 attach）；生产经 attachSessionWs 从 config 派生装配（与 HTTP CORS 闸同源）。
+   */
+  isAllowedOrigin?: (req: Pick<IncomingMessage, "headers" | "url">, protocol: string) => boolean;
+  /** upgrade 鉴权（config.auth 派生；必填，见上） */
+  auth: WsAuthConfig;
+}
+
+/**
  * 提取 upgrade 请求的 token（三种通道，与 HTTP 鉴权同口径）：
  * 1. `Authorization: Bearer <token>`（非浏览器客户端）
  * 2. `Sec-WebSocket-Protocol: bearer, <token>` / `bearer.<token>`（浏览器 WS 不能自定义头）
@@ -130,6 +159,10 @@ export class WsHub {
   childScanMs = 10_000;
   /** prompt 冲突保护（E3：attach 接管期间拒绝 parallel 发送，防双写）+ 锁屏门禁（lockToken） */
   private promptGuard: ((sessionId: string, lockToken?: string) => { code: string; message: string } | null) | null = null;
+  /** WS abort 门禁 + 分发（镜像 HTTP /abort：锁屏拒绝 + driver.abortTurn/hub.abort 分发） */
+  private abortHandler: ((sessionId: string, lockToken?: string) => Promise<{ code: string; message: string } | null>) | null = null;
+  /** hub WS 路径 Origin 跨站闸（与 HTTP CORS 闸同源同逻辑；无 Origin 头不校验） */
+  private isAllowedOrigin: ((req: Pick<IncomingMessage, "headers" | "url">, protocol: string) => boolean) | null = null;
   /** upgrade 鉴权（config.auth.enabled 时校验 token，无/错 token 直接断连） */
   private auth: WsAuthConfig | null = null;
 
@@ -175,24 +208,29 @@ export class WsHub {
     }
   }
 
-  /** 挂到 HTTP server 的 upgrade 事件；tailManager 可选，为非本进程会话提供实时文件 tail */
-  attach(
-    server: HttpServer,
-    hub: WsSessionHub,
-    tailManager?: SessionTailManager,
-    promptGuard?: (sessionId: string, lockToken?: string) => { code: string; message: string } | null,
-    auth?: WsAuthConfig,
-  ): void {
+  /**
+   * 挂到 HTTP server 的 upgrade 事件。
+   * opts.auth 必填（修复：WS 鉴权未接线——可选参数被漏传时 auth 恒 null，auth.enabled 下 WS 绕过鉴权）：
+   * 漏传直接编译错误；未启用鉴权的调用点显式传 { enabled: false, token: "" }。
+   */
+  attach(server: HttpServer, hub: WsSessionHub, opts: WsAttachOptions): void {
     const wss = new WebSocketServer({ noServer: true });
     this.wss = wss;
-    this.tails = tailManager ?? null;
-    this.promptGuard = promptGuard ?? null;
-    this.auth = auth ?? null;
+    this.tails = opts.tailManager ?? null;
+    this.promptGuard = opts.promptGuard ?? null;
+    this.abortHandler = opts.abortHandler ?? null;
+    this.isAllowedOrigin = opts.isAllowedOrigin ?? null;
+    this.auth = opts.auth;
 
     server.on("upgrade", (req: IncomingMessage, socket: Duplex, head: Buffer) => {
       // 鉴权在 upgrade 阶段完成（与 HTTP Bearer 同口径）：无/错 token 直接断连，不进 handleUpgrade
       if (!this.authorizeUpgrade(req, socket)) return;
       const url = (req.url ?? "").split("?")[0];
+      // hub WS 路径才做 Origin 跨站闸（修复：WS upgrade 无 Origin 校验，默认配置任意网页可跨站劫持会话）。
+      // 只闸 /ws/events 与 /ws/sessions/*：/terminal/ws 等非 hub 路径不碰（否则 ttyd 反代通道被误杀）；
+      // 鉴权与 Origin 是 AND 关系，两道都过才进 handleUpgrade
+      const isHubPath = url === WS_EVENTS_PATH || WS_PATH_RE.test(url);
+      if (isHubPath && !this.authorizeOrigin(req, socket)) return;
       // 全局事件通道：会话列表变更通知（presence）
       if (url === WS_EVENTS_PATH) {
         wss.handleUpgrade(req, socket, head, (ws) => {
@@ -209,7 +247,16 @@ export class WsHub {
         }
         return;
       }
-      const sessionId = decodeURIComponent(match[1]);
+      // 畸形百分号编码（如 %ZZ）防护：decodeURIComponent 抛 URIError 会从 upgrade
+      // 监听器冒成 uncaughtException 拖垮整个 hub（pre-auth DoS）——拒绝该连接，进程不受影响
+      let sessionId: string;
+      try {
+        sessionId = decodeURIComponent(match[1]);
+      } catch {
+        socket.write("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
+        socket.destroy();
+        return;
+      }
       const lockToken = extractWsLockToken(req);
       wss.handleUpgrade(req, socket, head, (ws) => {
         this.handleConnection(ws, sessionId, hub, lockToken);
@@ -228,6 +275,27 @@ export class WsHub {
     const provided = extractWsToken(req);
     if (provided !== null && safeTokenEquals(provided, auth.token)) return true;
     socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
+    socket.destroy();
+    return false;
+  }
+
+  /**
+   * Origin 同源闸（修复：WS upgrade 无 Origin 校验，默认配置下任意网页可跨站劫持会话——
+   * 恶意页 new WebSocket 即可实时读全部会话、经 /ws/sessions/:id 发 prompt）：
+   * 有 Origin 头（浏览器必带）→ 必须通过与 HTTP CORS 闸同口径的判定（isAllowedOrigin，
+   * 由 index.ts attachSessionWs 用 config 派生，复用 crossOriginAllowed）；
+   * 无 Origin 头（非浏览器客户端：node ws 库 / curl / 自动化）→ 不校验，维持 token 判定（不破坏自动化）。
+   * 失败直接 403 + 断连（对齐 authorizeUpgrade 的 socket.write + destroy 风格）。
+   * 只应由 hub WS 路径（/ws/events、/ws/sessions/*）调用；/terminal/ws 等非 hub 路径不受此闸。
+   */
+  private authorizeOrigin(req: IncomingMessage, socket: Duplex): boolean {
+    const check = this.isAllowedOrigin;
+    if (!check) return true;
+    const origin = req.headers.origin;
+    if (typeof origin !== "string" || origin === "") return true;
+    const protocol = (socket as Duplex & { encrypted?: boolean }).encrypted === true ? "https" : "http";
+    if (check(req, protocol)) return true;
+    socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
     socket.destroy();
     return false;
   }
@@ -411,6 +479,14 @@ export class WsHub {
         return;
       }
       case "abort": {
+        // WS abort 门禁 + 分发（修复：abort 绕过 promptGuard，锁屏/接管期可中止 turn）：
+        // 走 abortHandler（镜像 HTTP /abort：锁屏门禁 → driver.abortTurn/hub.abort 分发），
+        // 拒绝时回 error 帧（对齐 prompt 分支回执形状）。未装配 = 裸 hub.abort（测试直连 attach 兜底）
+        if (this.abortHandler) {
+          const blocked = await this.abortHandler(sessionId, lockToken);
+          if (blocked) this.send(socket, { type: "error", code: blocked.code, message: blocked.message });
+          return;
+        }
         try {
           await hub.abort(sessionId);
         } catch (err) {

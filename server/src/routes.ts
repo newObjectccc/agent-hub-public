@@ -5,6 +5,8 @@
 import { timingSafeEqual } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { AgentLinkLike, CommandMode } from "./agents.js";
+import type { ClaudeDriverLinkLike } from "./adapters/claude-driver.js";
+import { parseBridgeHostRequestBody } from "./adapters/claude-host-protocol.js";
 import {
   createAppLockStore,
   isValidSecret,
@@ -46,6 +48,7 @@ import type {
   SessionStatus,
   SessionTreeDto,
   SystemInfo,
+  TerminalAttachInfo,
   UploadDto,
 } from "./types.js";
 
@@ -90,6 +93,8 @@ export interface RouteDeps {
   panelDriven?: PanelDrivenStoreLike;
   /** 终端 pi 反向指令通道（E3 双模式；可注入 mock，缺省不启用接管相关路由） */
   agents?: AgentLinkLike;
+  /** claude hub 驱动接管（可注入 mock，缺省 claude 接管路由回 400/503） */
+  claudeDriver?: ClaudeDriverLinkLike;
   /** 应用锁（F1；可注入 mock/临时目录，缺省持久化到 data/app-lock.json） */
   appLock?: AppLockStoreLike;
   /** ttyd Web 终端服务（F2；可注入 mock，缺省时 /api/terminal/* 返回 503） */
@@ -104,10 +109,28 @@ export function toSessionDto(session: SessionListItem): SessionDto {
   return rest;
 }
 
-/** 会话项注入终端驱动状态（仅 pi 会话；agents 未启用时原样返回）；出参统一走 SessionDto 瘦身 */
-function stampTerminal(session: SessionListItem, agents?: AgentLinkLike): SessionDto {
-  if (!agents || session.source !== "pi") return toSessionDto(session);
-  return toSessionDto({ ...session, terminal: agents.statusFor(session.id) });
+/**
+ * 会话项注入终端驱动状态：pi→agents 心跳状态；claude→hub 驱动状态（docs/CLAUDE_DRIVER.md）。
+ * codex/未启用对应通道时原样返回；出参统一走 SessionDto 瘦身。
+ * defaultPolicy（config.claudeDriver.defaultPolicy）合并进 terminal 下发——前端默认接管判定
+ * 按服务端策略走（active-only=活跃会话默认接管；always=打开即接管；never=只手动；
+ * 老 server 缺省 → 前端按 active-only 容错）。pi/claude 通道的 statusFor 结果都要带。
+ */
+function stampTerminal(
+  session: SessionListItem,
+  agents?: AgentLinkLike,
+  claudeDriver?: ClaudeDriverLinkLike,
+  defaultPolicy?: TerminalAttachInfo["defaultPolicy"],
+): SessionDto {
+  const withPolicy = (info: TerminalAttachInfo): TerminalAttachInfo =>
+    defaultPolicy === undefined ? info : { ...info, defaultPolicy };
+  if (session.source === "pi" && agents) {
+    return toSessionDto({ ...session, terminal: withPolicy(agents.statusFor(session.id)) });
+  }
+  if (session.source === "claude" && claudeDriver) {
+    return toSessionDto({ ...session, terminal: withPolicy(claudeDriver.statusFor(session.id)) });
+  }
+  return toSessionDto(session);
 }
 
 /** 指令通道仅限本机回环 + 共享 token（防局域网伪造心跳/指令/回执） */
@@ -227,12 +250,12 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
     handle(reply, err);
   });
 
-  /** 冲突保护：attach 接管期间拒绝 parallel 发送/压缩（防 server SDK 与终端 pi 双写同一会话） */
+  /** 冲突保护：attach 接管期间拒绝 parallel 发送/压缩（防双写同一会话：pi 指令队列 / claude hub 驱动） */
   const rejectIfAttached = (id: string): void => {
-    if (deps.agents?.isAttached(id)) {
+    if (deps.agents?.isAttached(id) || deps.claudeDriver?.isAttached(id)) {
       throw new HubError(
         ErrorCodes.ATTACH_ACTIVE,
-        "终端接管中：消息由电脑终端 pi 执行，平行发送已停用（切回 📱 平行模式可恢复）",
+        "终端接管中：消息由电脑上的会话执行，平行发送已停用（切回 📱 平行模式可恢复）",
         409,
       );
     }
@@ -242,7 +265,9 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   app.get("/api/sessions", async (_req, reply) => {
     try {
       const sessions = (await hub.listSessions()).map(decorateSession);
-      return reply.send({ sessions: sessions.map((s) => stampTerminal(s, deps.agents)) });
+      return reply.send({
+        sessions: sessions.map((s) => stampTerminal(s, deps.agents, deps.claudeDriver, deps.config.claudeDriver.defaultPolicy)),
+      });
     } catch (err) {
       return handle(reply, err);
     }
@@ -270,7 +295,12 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
         const all = (await hub.loadMessages(req.params.id)) ?? [];
         // 不带分页查询：保持 v0 全量行为（hasMore=false / nextBefore=null）
         const page = limit === undefined && before === undefined ? fullPage(all) : paginateMessages(all, { before, limit });
-        return reply.send({ session: stampTerminal(session, deps.agents), messages: page.messages, hasMore: page.hasMore, nextBefore: page.nextBefore });
+        return reply.send({
+          session: stampTerminal(session, deps.agents, deps.claudeDriver, deps.config.claudeDriver.defaultPolicy),
+          messages: page.messages,
+          hasMore: page.hasMore,
+          nextBefore: page.nextBefore,
+        });
       } catch (err) {
         return handle(reply, err);
       }
@@ -390,7 +420,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
     }
   });
 
-  // POST /api/sessions/:id/prompt（images：上传图片相对路径数组，pi 直接附图，契约 §1/§11；
+  // POST /api/sessions/:id/prompt（images：上传图片相对路径数组，pi 直接附图，契约 §1/§15；
   // clientMessageId 可选幂等键：同 (sessionId, clientMessageId) 重发只执行一次，重放首次受理响应）
   app.post<{ Params: { id: string } }>("/api/sessions/:id/prompt", async (req, reply) => {
     const body = (typeof req.body === "object" && req.body !== null ? req.body : {}) as {
@@ -473,6 +503,11 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
       if (!session) {
         throw new HubError(ErrorCodes.SESSION_NOT_FOUND, `会话不存在: ${req.params.id}`, 404);
       }
+      // hub 驱动接管中：control interrupt 中止当前 turn（进程存活可续），不走 adapter 杀进程路径
+      if (session.source === "claude" && deps.claudeDriver?.isAttached(req.params.id)) {
+        deps.claudeDriver.abortTurn(req.params.id);
+        return reply.send({ aborted: true });
+      }
       await hub.abort(req.params.id);
       return reply.send({ aborted: true });
     } catch (err) {
@@ -544,6 +579,13 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
     return deps.agents;
   };
 
+  const requireClaudeDriver = (): ClaudeDriverLinkLike => {
+    if (!deps.claudeDriver) {
+      throw new HubError(ErrorCodes.INVALID_REQUEST, "claude 会话接管未启用", 400);
+    }
+    return deps.claudeDriver;
+  };
+
   // POST /api/agents/heartbeat：扩展启动即注册 + 每 30s 续（server 据此判定"终端 pi 在线"）
   app.post("/api/agents/heartbeat", async (req, reply) => {
     try {
@@ -607,18 +649,29 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
     }
   });
 
-  // POST /api/sessions/:id/attach：接管会话（进入 attach 模式，需终端在线）
+  // POST /api/sessions/:id/attach：接管会话（pi=终端扩展指令队列；claude=hub 驱动长驻进程，docs/CLAUDE_DRIVER.md）
   app.post<{ Params: { id: string } }>("/api/sessions/:id/attach", async (req, reply) => {
     try {
       const session = await hub.findSession(req.params.id);
       if (!session) {
         throw new HubError(ErrorCodes.SESSION_NOT_FOUND, `会话不存在: ${req.params.id}`, 404);
       }
-      if (session.source !== "pi") {
-        throw new HubError(ErrorCodes.INVALID_REQUEST, "仅 pi 会话支持终端接管", 400);
+      if (session.source === "pi") {
+        const agent = requireAgents().attach(req.params.id);
+        return reply.status(202).send({ attached: true, agent });
       }
-      const agent = requireAgents().attach(req.params.id);
-      return reply.status(202).send({ attached: true, agent });
+      if (session.source === "claude") {
+        const driver = requireClaudeDriver();
+        const result = await driver.attach(req.params.id, {
+          cwd: session.cwd,
+          sessionFile: session.sessionFile,
+        });
+        return reply.status(202).send({
+          attached: true,
+          agent: { sessionId: req.params.id, cwd: session.cwd, online: true, driver: result.driver, mirror: result.mirror },
+        });
+      }
+      throw new HubError(ErrorCodes.INVALID_REQUEST, "仅 pi / claude 会话支持终端接管", 400);
     } catch (err) {
       return handle(reply, err);
     }
@@ -627,22 +680,33 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   // POST /api/sessions/:id/detach：退出接管（恢复 parallel 通道）
   app.post<{ Params: { id: string } }>("/api/sessions/:id/detach", async (req, reply) => {
     try {
-      requireAgents().detach(req.params.id);
+      const session = await hub.findSession(req.params.id);
+      // 按接管形态分流（未知会话双向容错清理，保持幂等）
+      if (session?.source === "claude" || (!session && deps.claudeDriver?.isAttached(req.params.id))) {
+        requireClaudeDriver().detach(req.params.id);
+      } else {
+        requireAgents().detach(req.params.id);
+      }
       return reply.send({ attached: false });
     } catch (err) {
       return handle(reply, err);
     }
   });
 
-  // POST /api/sessions/:id/message：attach 模式发消息 → 入指令队列（终端 pi 执行）
+  // POST /api/sessions/:id/message：attach 模式发消息（pi=入指令队列；claude=stdin 注入真用户 turn）
   app.post<{ Params: { id: string } }>("/api/sessions/:id/message", async (req, reply) => {
     try {
       const body = (typeof req.body === "object" && req.body !== null ? req.body : {}) as Record<string, unknown>;
-      const command = requireAgents().enqueue(req.params.id, {
+      const session = await hub.findSession(req.params.id);
+      const input = {
         text: typeof body.text === "string" ? body.text : "",
         mode: body.mode as CommandMode | undefined,
         clientMessageId: body.clientMessageId,
-      });
+      };
+      const command =
+        session?.source === "claude"
+          ? requireClaudeDriver().send(req.params.id, input)
+          : requireAgents().enqueue(req.params.id, input);
       return reply.status(202).send({
         accepted: true,
         channel: "attach",
@@ -653,6 +717,65 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
       return handle(reply, err);
     }
   });
+
+  /* ===== host 权限请求（hub 驱动 claude 会话的手机批权限，契约 §12） ===== */
+
+  // POST /api/agents/host-requests：bridge 注册权限请求并挂起等人工应答（仅本机回环 + token）
+  // 响应 {behavior, message} 直接作为 PermissionResult 依据；超时/收尾一律 deny（绝不自动 allow）
+  app.post("/api/agents/host-requests", async (req, reply) => {
+    try {
+      requireAgentChannel(req);
+      requireClaudeDriver();
+      const parsed = parseBridgeHostRequestBody(req.body);
+      if (!parsed) {
+        throw new HubError(ErrorCodes.INVALID_REQUEST, "body 需含 sessionId/requestId/toolName", 400);
+      }
+      const decision = await deps.claudeDriver!.registerHostRequest(parsed);
+      return reply.send({ behavior: decision.behavior, message: decision.message });
+    } catch (err) {
+      return handle(reply, err);
+    }
+  });
+
+  // GET /api/sessions/:id/host-requests：未决权限请求（手机刷新/重连兜底拉取，防 WS 丢事件卡死）
+  app.get<{ Params: { id: string } }>("/api/sessions/:id/host-requests", async (req, reply) => {
+    try {
+      return reply.send({ requests: requireClaudeDriver().listHostRequests(req.params.id) });
+    } catch (err) {
+      return handle(reply, err);
+    }
+  });
+
+  // POST /api/sessions/:id/host-requests/:requestId：手机应答（allow|deny）
+  app.post<{ Params: { id: string; requestId: string } }>(
+    "/api/sessions/:id/host-requests/:requestId",
+    async (req, reply) => {
+      try {
+        const body = (typeof req.body === "object" && req.body !== null ? req.body : {}) as Record<string, unknown>;
+        const outcome = body.outcome;
+        if (outcome !== "allow" && outcome !== "deny") {
+          throw new HubError(ErrorCodes.INVALID_REQUEST, "outcome 必须是 allow|deny");
+        }
+        const message = typeof body.message === "string" ? body.message : undefined;
+        const ok = requireClaudeDriver().respondHostRequest(req.params.id, req.params.requestId, {
+          behavior: outcome,
+          message: message ?? "",
+        });
+        if (!ok) {
+          // 未知 / 已决（契约 §12）：已决记忆判 409 HOST_REQUEST_RESOLVED，其余 404（双重应答/幂等回放不再误报 404）
+          const resolved = requireClaudeDriver().isResolvedHostRequest(req.params.requestId);
+          throw new HubError(
+            resolved ? ErrorCodes.HOST_REQUEST_RESOLVED : ErrorCodes.HOST_REQUEST_NOT_FOUND,
+            resolved ? "该权限请求已决" : "权限请求不存在",
+            resolved ? 409 : 404,
+          );
+        }
+        return reply.send({ resolved: true, outcome });
+      } catch (err) {
+        return handle(reply, err);
+      }
+    },
+  );
 
   // GET /api/system
   app.get("/api/system", async (_req, reply) => {
@@ -843,7 +966,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
     }
   });
 
-  // POST /api/uploads（契约 §11：上传到会话 cwd/.agent-hub-uploads/，base64 JSON）
+  // POST /api/uploads（契约 §15：上传到会话 cwd/.agent-hub-uploads/，base64 JSON）
   app.post("/api/uploads", { bodyLimit: MAX_UPLOAD_BODY_BYTES }, async (req, reply) => {
     try {
       const body = (typeof req.body === "object" && req.body !== null ? req.body : {}) as {

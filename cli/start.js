@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // agent-hub start — 依赖检查 → vite build(web) → tsc(server) → 启动 server/dist/index.js。
+// 发包布局（npm pack / npx）下跳过依赖检查与构建（依赖随 npm 安装、产物随包发布），直接启动。
 // 纯 Node 跨平台；Ctrl+C 干净退出（杀子进程）。
 import fs from 'node:fs';
 import path from 'node:path';
@@ -20,10 +21,22 @@ import {
 } from './lib/process.js';
 import { listLanIps, setupTailscaleServe, tailscaleServeCommand } from './lib/net.js';
 
-/** node_modules 完整性：root + server + web 三处都在才算依赖已装。 */
+/** node_modules 完整性：root + server + web 三处都在才算依赖已装（仅源码仓布局用）。 */
 export function depsInstalled(root, exists = fs.existsSync) {
   return ['node_modules', path.join('server', 'node_modules'), path.join('web', 'node_modules')]
     .every((p) => exists(path.join(root, p)));
+}
+
+/**
+ * 发包布局判定（npm pack / npx 安装形态）：server/package.json 与 web/package.json 都不存在，
+ * 且 server/dist/index.js 与 web/dist/index.html 产物都在 → true。
+ * 此布局下依赖随 npm 安装（解析到包根 node_modules）、产物随包发布，install/build 两步必然无意义且必败。
+ */
+export function isPublishedLayout(root, exists = fs.existsSync) {
+  return !exists(path.join(root, 'server', 'package.json'))
+    && !exists(path.join(root, 'web', 'package.json'))
+    && exists(path.join(root, 'server', 'dist', 'index.js'))
+    && exists(path.join(root, 'web', 'dist', 'index.html'));
 }
 
 /** 面板 URL（host=0.0.0.0 时回退 127.0.0.1 展示本机入口）。 */
@@ -110,58 +123,65 @@ export async function main(argv = [], deps = {}) {
   const port = config.port;
   log(`${colors.info} 面板地址: ${colors.bold(panelUrl(config))}`);
 
-  // 2. 依赖安装（node_modules 缺失时 pnpm install，pnpm 缺失回退 npm）
-  const pm = resolvePackageManager({ platform, env });
-  if (!pm.available) {
-    log(`${colors.fail} 未找到 pnpm / npm。请先安装 Node.js ≥ 20（自带 npm）。`);
-    return 1;
-  }
-  if (!depsInstalled(root)) {
-    log(`${colors.info} 检测到 node_modules 缺失，使用 ${pm.name} install 安装依赖…`);
-    if (dryRun) {
-      log(colors.dim(`  [dry-run] 将执行: ${pm.name} install`));
-    } else {
-      const res = installDeps(pm, { cwd: root, env, platform });
-      if (!res.ok) {
-        log(`${colors.fail} ${pm.name} install 失败: ${res.error || res.stderr.trim()}`);
-        return 1;
-      }
-      log(`${colors.ok} 依赖安装完成`);
+  // 2+3. 依赖安装与构建：仅源码仓布局需要。发包布局（npm pack / npx）依赖随 npm 安装、
+  // 产物已随包发布，install/build 必然无意义且必败（无 server/web/package.json 与源码），直接跳过。
+  const published = isPublishedLayout(root);
+  if (published) {
+    log(`${colors.info} 发包布局：依赖随 npm 安装、产物已随包发布，跳过依赖安装与构建`);
+  } else {
+    // 2. 依赖安装（node_modules 缺失时 pnpm install，pnpm 缺失回退 npm）
+    const pm = resolvePackageManager({ platform, env });
+    if (!pm.available) {
+      log(`${colors.fail} 未找到 pnpm / npm。请先安装 Node.js ≥ 20（自带 npm）。`);
+      return 1;
     }
-  } else {
-    log(`${colors.ok} 依赖已就绪`);
-  }
-
-  // 3. 构建：web（vite build）→ server（tsc），均经包管理器 run build（跨平台无 shell 依赖问题）
-  const buildSteps = [
-    { label: 'web 构建（vite build）', cwd: path.join(root, 'web') },
-    { label: 'server 构建（tsc）', cwd: path.join(root, 'server') },
-  ];
-  if (options.skipBuild) {
-    log(`${colors.info} --skip-build：跳过构建`);
-  } else {
-    for (const step of buildSteps) {
-      log(`${colors.info} ${step.label}…`);
+    if (!depsInstalled(root)) {
+      log(`${colors.info} 检测到 node_modules 缺失，使用 ${pm.name} install 安装依赖…`);
       if (dryRun) {
-        log(colors.dim(`  [dry-run] 将执行: ${pm.name} run build (cwd=${step.cwd})`));
-        continue;
+        log(colors.dim(`  [dry-run] 将执行: ${pm.name} install`));
+      } else {
+        const res = installDeps(pm, { cwd: root, env, platform });
+        if (!res.ok) {
+          log(`${colors.fail} ${pm.name} install 失败: ${res.error || res.stderr.trim()}`);
+          return 1;
+        }
+        log(`${colors.ok} 依赖安装完成`);
       }
-      const res = runPackageManagerScript(pm, 'build', { cwd: step.cwd, env, platform });
-      if (!res.ok) {
-        // 降级：构建失败不阻塞启动（弱网 pnpm 超时 / 并发锁场景实测踩坑）——
-        // 产物存在则用现有构建继续，仅无产物才退出（自启时宁可跑旧版也不躺平）
-        const artifact = step.cwd.endsWith('web')
-          ? path.join(step.cwd, 'dist', 'index.html')
-          : path.join(step.cwd, 'dist', 'index.js');
-        if (fs.existsSync(artifact)) {
-          log(`${colors.warn} ${step.label} 失败（${res.error || res.stderr.trim() || '未知原因'}）`);
-          log(`${colors.warn} 检测到已有构建产物，降级用现有构建继续启动（稍后可手动 npm run build 更新）`);
+    } else {
+      log(`${colors.ok} 依赖已就绪`);
+    }
+
+    // 3. 构建：web（vite build）→ server（tsc），均经包管理器 run build（跨平台无 shell 依赖问题）
+    const buildSteps = [
+      { label: 'web 构建（vite build）', cwd: path.join(root, 'web') },
+      { label: 'server 构建（tsc）', cwd: path.join(root, 'server') },
+    ];
+    if (options.skipBuild) {
+      log(`${colors.info} --skip-build：跳过构建`);
+    } else {
+      for (const step of buildSteps) {
+        log(`${colors.info} ${step.label}…`);
+        if (dryRun) {
+          log(colors.dim(`  [dry-run] 将执行: ${pm.name} run build (cwd=${step.cwd})`));
           continue;
         }
-        log(`${colors.fail} ${step.label} 失败: ${res.error || res.stderr.trim() || res.stdout.trim()}`);
-        return 1;
+        const res = runPackageManagerScript(pm, 'build', { cwd: step.cwd, env, platform });
+        if (!res.ok) {
+          // 降级：构建失败不阻塞启动（弱网 pnpm 超时 / 并发锁场景实测踩坑）——
+          // 产物存在则用现有构建继续，仅无产物才退出（自启时宁可跑旧版也不躺平）
+          const artifact = step.cwd.endsWith('web')
+            ? path.join(step.cwd, 'dist', 'index.html')
+            : path.join(step.cwd, 'dist', 'index.js');
+          if (fs.existsSync(artifact)) {
+            log(`${colors.warn} ${step.label} 失败（${res.error || res.stderr.trim() || '未知原因'}）`);
+            log(`${colors.warn} 检测到已有构建产物，降级用现有构建继续启动（稍后可手动 npm run build 更新）`);
+            continue;
+          }
+          log(`${colors.fail} ${step.label} 失败: ${res.error || res.stderr.trim() || res.stdout.trim()}`);
+          return 1;
+        }
+        log(`${colors.ok} ${step.label} 完成`);
       }
-      log(`${colors.ok} ${step.label} 完成`);
     }
   }
 

@@ -22,7 +22,16 @@ export const ErrorCodes = {
   ATTACH_REQUIRED: "ATTACH_REQUIRED",
   ATTACH_ACTIVE: "ATTACH_ACTIVE",
   ATTACH_QUEUE_FULL: "ATTACH_QUEUE_FULL",
-  // 上传 API（契约 §11）
+  // hub 驱动接管（claude，docs/CLAUDE_DRIVER.md）
+  /** 驱动进程并发上限 */
+  DRIVER_LIMIT: "DRIVER_LIMIT",
+  /** 驱动进程异常退出 */
+  DRIVER_FAILED: "DRIVER_FAILED",
+  /** 权限请求不存在 */
+  HOST_REQUEST_NOT_FOUND: "HOST_REQUEST_NOT_FOUND",
+  /** 权限请求已决（幂等回放终态） */
+  HOST_REQUEST_RESOLVED: "HOST_REQUEST_RESOLVED",
+  // 上传 API（契约 §15）
   UPLOAD_TOO_LARGE: "UPLOAD_TOO_LARGE",
   UNSUPPORTED_MEDIA_TYPE: "UNSUPPORTED_MEDIA_TYPE",
   // 应用锁（契约 §13，F1）

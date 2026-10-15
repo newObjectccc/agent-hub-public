@@ -1,0 +1,118 @@
+/* ============================================================
+ * host 权限请求卡片（hub 驱动 claude 会话，契约 §12）：
+ * sticky 常驻 composer 上方；单手可点（热区 ≥44px）；深浅色走 palette token。
+ * ============================================================ */
+
+.host-request {
+  margin: 8px 12px;
+  padding: 12px;
+  background: var(--card);
+  border: 2px solid var(--border);
+  border-radius: var(--nb-radius);
+  box-shadow: var(--nb-shadow-xs);
+}
+
+.host-request.expired {
+  opacity: 0.65;
+}
+
+.host-request-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.host-request-icon {
+  font-size: 18px;
+  line-height: 1.2;
+}
+
+.host-request-title-wrap {
+  flex: 1;
+  min-width: 0;
+}
+
+.host-request-title {
+  font-family: var(--nb-font-head);
+  font-weight: 900;
+  font-size: 13px;
+  color: var(--card-foreground);
+}
+
+.host-request-sub {
+  font-size: 12px;
+  color: var(--muted-foreground);
+  word-break: break-all;
+  margin-top: 2px;
+}
+
+.host-request-detail-toggle {
+  margin-top: 8px;
+  min-height: 32px;
+  padding: 4px 8px;
+  font-size: 11.5px;
+  color: var(--muted-foreground);
+  background: transparent;
+  border: 1px dashed var(--border);
+  border-radius: var(--nb-radius);
+  cursor: pointer;
+}
+
+.host-request-detail {
+  margin: 8px 0 0;
+  padding: 8px;
+  max-height: 140px;
+  overflow: auto;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--card-foreground);
+  background: color-mix(in srgb, var(--muted) 60%, transparent);
+  border-radius: var(--nb-radius);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.host-request-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.host-request-btn {
+  flex: 1;
+  min-height: 44px; /* 触控标准 */
+  font-family: var(--nb-font-head);
+  font-weight: 900;
+  font-size: 13px;
+  border: 2px solid var(--border);
+  border-radius: var(--nb-radius);
+  box-shadow: var(--nb-shadow-xs);
+  cursor: pointer;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+
+.host-request-btn:active:not(:disabled) {
+  transform: translate(1px, 1px);
+  box-shadow: none;
+}
+
+.host-request-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.host-request-btn.allow {
+  background: var(--card);
+  color: var(--card-foreground);
+}
+
+.host-request-btn.deny {
+  background: var(--card);
+  color: var(--muted-foreground);
+}
+
+.host-request-hint {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--muted-foreground);
+}

@@ -28,11 +28,13 @@
  * - result → message_end（兜底 flush）+ agent_settled + status（idle|error）
  */
 import { ErrorCodes } from "../errors.js";
+import { StringDecoder } from "node:string_decoder";
 import type { MessageDto, ServerEvent, ToolCallDto } from "../types.js";
 import { RESULT_PREVIEW_LIMIT, contentToText, summarizeToolCall, truncateText } from "../sessions/scan.js";
+import { isClaudeMetaText } from "./claude-message.js";
 
 interface LiveMessage {
-  /** 契约事件用的流内 id（live-* 形态，前端按 id upsert） */
+  /** 优先使用落盘同一 API id，重连时工具事件仍能找到原消息。 */
   id: string;
   /** claude API message.id（msg_…），与 transcript 聚合口径一致 */
   apiId: string;
@@ -43,6 +45,41 @@ interface LiveMessage {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+/** 管道数据可能在 UTF-8 字符中间分块，最后一行也可能没有换行。 */
+export class ClaudeJsonlReader {
+  private readonly decoder = new StringDecoder("utf8");
+  private rest = "";
+  private ended = false;
+
+  constructor(private readonly onLine: (line: string) => void) {}
+
+  write(chunk: Buffer | string): void {
+    if (this.ended) return;
+    this.rest += typeof chunk === "string" ? chunk : this.decoder.write(chunk);
+    this.drain();
+  }
+
+  end(): void {
+    if (this.ended) return;
+    this.ended = true;
+    this.rest += this.decoder.end();
+    this.drain();
+    const last = this.rest;
+    this.rest = "";
+    if (last.trim() !== "") this.onLine(last);
+  }
+
+  private drain(): void {
+    let index = this.rest.indexOf("\n");
+    while (index >= 0) {
+      const line = this.rest.slice(0, index);
+      this.rest = this.rest.slice(index + 1);
+      if (line.trim() !== "") this.onLine(line);
+      index = this.rest.indexOf("\n");
+    }
+  }
 }
 
 export class ClaudeStreamTranslator {
@@ -167,6 +204,7 @@ export class ClaudeStreamTranslator {
   }
 
   private handleUser(row: Record<string, unknown>): ServerEvent[] {
+    if (row.isMeta === true || row.turnCompanion === true || row.isSidechain === true) return [];
     const message = row.message;
     if (!isRecord(message)) return [];
     const content = message.content;
@@ -194,7 +232,7 @@ export class ClaudeStreamTranslator {
         });
         continue;
       }
-      if (block.type === "text" && typeof block.text === "string") textParts.push(block.text);
+      if (block.type === "text" && typeof block.text === "string" && !isClaudeMetaText(block.text)) textParts.push(block.text);
     }
     // 输入流回显的用户消息（--input-format stream-json + --replay-user-messages 场景）
     const text = textParts.join("\n").trim();
@@ -237,7 +275,7 @@ export class ClaudeStreamTranslator {
     const ended = this.endMessage();
     if (ended) events.push(ended);
     this.seq += 1;
-    const id = `live-${this.seq}-${Date.now()}`;
+    const id = apiId || `live-${this.seq}-${Date.now()}`;
     this.current = {
       id,
       apiId,

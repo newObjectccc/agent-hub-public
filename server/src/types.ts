@@ -43,7 +43,7 @@ export interface SessionListItem {
    * 实例驱动同一会话文件，电脑终端 pi 需 pi --resume 重开才能看到。可缺省按 terminal。
    */
   lastDrivenBy?: SessionDrivenBy;
-  /** 终端 pi 驱动状态（E3 双模式）：扩展心跳判定的在线/接管状态。仅 pi 会话有值。 */
+  /** 终端驱动状态（E3 双模式）：pi=扩展心跳；claude=hub 驱动进程（可接管/已接管）。pi/claude 会话有值。 */
   terminal?: TerminalAttachInfo | null;
   /**
    * 归档会话（codex `~/.codex/archived_sessions/`，§1 补充）：列表标注「归档」并排
@@ -52,11 +52,46 @@ export interface SessionListItem {
   archived?: boolean;
 }
 
-/** 终端 pi 状态（双模式会话驱动）：online=心跳 90s 内；attached=attach 接管生效 */
+/**
+ * 终端驱动状态（双模式会话驱动）：
+ * - pi：online=扩展心跳 90s 内；attached=attach 接管生效（消息走指令队列注入终端 pi TUI）
+ * - claude（hub 驱动，docs/CLAUDE_DRIVER.md）：online=可接管（hub 随时能拉起驱动进程）；
+ *   attached=驱动进程存活（消息走 stdin 注入 = 真用户 turn）
+ */
 export interface TerminalAttachInfo {
   online: boolean;
   attached: boolean;
+  /** 驱动形态：queue=pi 扩展指令队列；hub=server 持有 claude -p 长驻进程（缺省按 queue 容错） */
+  driver?: "queue" | "hub";
+  /** 投屏（tmux 镜像）就绪（仅 hub 形态） */
+  mirror?: boolean;
+  /**
+   * 智能默认接管策略（config.claudeDriver.defaultPolicy 下发）：
+   * active-only=活跃会话默认接管；always=打开即接管；never=只手动。
+   * 老 server 缺省 → 前端按 active-only 容错（字段可缺省保证前后端版本兼容）。
+   */
+  defaultPolicy?: "active-only" | "always" | "never";
 }
+
+/** host 权限请求（hub 驱动 claude 会话的手机批权限，契约 §12） */
+export interface HostRequestDto {
+  id: string;
+  sessionId: string;
+  /** v1 仅 permission（question 预留：headless 无 AskUserQuestion，模型文字化提问） */
+  kind: "permission" | "question";
+  /** 卡片标题（工具名 + 入参摘要） */
+  title: string;
+  /** 入参预览 */
+  detail: string | null;
+  toolName?: string;
+  allowAlways?: boolean;
+  createdAt: number;
+  /** 人工应答超时（超时一律 deny，绝不自动 allow）；null=未知 */
+  expiresAt: number | null;
+}
+
+/** 手机应答结果 */
+export type HostRequestOutcome = "allow" | "deny" | "timeout" | "cancelled";
 
 export type ToolCallStatus = "pending" | "running" | "done" | "error";
 
@@ -186,6 +221,8 @@ export type ServerEvent =
   | { type: "error"; code: string; message: string }
   | { type: "attach_state"; attached: boolean; terminalOnline: boolean }
   | { type: "command_ack"; commandId: string; ok: boolean; error: string | null }
+  | { type: "host_request"; request: HostRequestDto }
+  | { type: "host_request_resolved"; requestId: string; outcome: HostRequestOutcome }
   | { type: "pong" };
 
 /** KPI 卡片（docs/API_CONTRACT.md §3） */
@@ -548,7 +585,7 @@ export interface ErrorEnvelope {
   error: { code: string; message: string };
 }
 
-/** POST /api/uploads 响应项（契约 §11） */
+/** POST /api/uploads 响应项（契约 §15） */
 export interface UploadDto {
   /** 清洗后的文件名（含扩展名） */
   name: string;

@@ -38,12 +38,12 @@ afterEach(() => {
 });
 
 describe("DrivenBadge 驱动来源徽章", () => {
-  it("panel → 📱 面板驱动（title 含 pi --resume 预期说明）", () => {
+  it("panel → 📱 面板驱动（title 说明电脑端需重新载入会话）", () => {
     const el = render(<DrivenBadge drivenBy="panel" />);
     const badge = el.querySelector(".badge.driven-panel")!;
     expect(badge.textContent).toContain("📱");
     expect(badge.textContent).toContain("面板驱动");
-    expect(badge.getAttribute("title")).toContain("pi --resume");
+    expect(badge.getAttribute("title")).toContain("重新打开该会话，载入新增消息");
   });
 
   it("terminal → 🖥 终端驱动；缺省/非法值不渲染", () => {

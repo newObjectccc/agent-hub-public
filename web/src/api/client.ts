@@ -6,6 +6,7 @@ import { currentLockHeaders } from "../utils/appLock";
 import type {
   AttachMessageResult,
   AttachResult,
+  HostRequestDto,
   CommandList,
   DashboardStats,
   FsTree,
@@ -279,6 +280,29 @@ export const api = {
       body: JSON.stringify(clientMessageId ? { text, mode, clientMessageId } : { text, mode }),
       signal,
     });
+  },
+
+  /* ===== host 权限请求（hub 驱动 claude 会话的手机批权限，契约 §12） ===== */
+
+  /** GET /api/sessions/:id/host-requests：未决权限请求（断线重连兜底拉取） */
+  listHostRequests(id: string): Promise<{ requests: HostRequestDto[] }> {
+    return request(`/api/sessions/${encodeURIComponent(id)}/host-requests`);
+  },
+
+  /** POST /api/sessions/:id/host-requests/:requestId：手机应答（allow|deny） */
+  respondHostRequest(
+    id: string,
+    requestId: string,
+    outcome: "allow" | "deny",
+    message?: string,
+  ): Promise<{ resolved: boolean; outcome: string }> {
+    return request(
+      `/api/sessions/${encodeURIComponent(id)}/host-requests/${encodeURIComponent(requestId)}`,
+      {
+        method: "POST",
+        body: JSON.stringify(message !== undefined ? { outcome, message } : { outcome }),
+      },
+    );
   },
 
   compactSession(id: string): Promise<{ ok: boolean }> {

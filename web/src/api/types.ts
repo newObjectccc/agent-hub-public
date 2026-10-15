@@ -36,7 +36,7 @@ export interface SessionSummary {
    * 驱动同一会话文件，电脑终端 pi 需 pi --resume 重开才能看到。
    */
   lastDrivenBy?: "panel" | "terminal";
-  /** 终端 pi 驱动状态（E3 双模式）：扩展心跳判定的在线/接管状态。仅 pi 会话有值。 */
+  /** 终端驱动状态（E3 双模式）：pi=扩展心跳；claude=hub 驱动进程。pi/claude 会话有值。 */
   terminal?: TerminalAttachInfo | null;
   /**
    * 归档会话（codex `~/.codex/archived_sessions/`，契约 §1）：列表标注「归档」并排尾。
@@ -45,11 +45,40 @@ export interface SessionSummary {
   archived?: boolean;
 }
 
-/** 终端 pi 状态：online=扩展心跳 90s 内；attached=attach 接管生效 */
+/**
+ * 终端驱动状态：pi=扩展心跳（online=90s 内）；claude=hub 驱动（online=可接管，docs/CLAUDE_DRIVER.md）。
+ * attached=attach 接管生效。driver 缺省按 "queue"（pi）容错。
+ */
 export interface TerminalAttachInfo {
   online: boolean;
   attached: boolean;
+  /** 驱动形态：queue=pi 扩展指令队列；hub=server 持有 claude -p 长驻进程 */
+  driver?: "queue" | "hub";
+  /** 投屏（tmux 镜像）就绪（仅 hub 形态） */
+  mirror?: boolean;
+  /**
+   * 智能默认策略（server config.claudeDriver.defaultPolicy 随 terminal 下发，契约增量字段）：
+   * "active-only"=仅活跃会话默认接管；"always"=打开即默认接管（仍须接管当下可行）；
+   * "never"=永不默认接管，只手动切换。可缺省（老 server / 未下发）：按 "active-only"
+   * 容错，与历史智能默认行为一致。
+   */
+  defaultPolicy?: "active-only" | "always" | "never";
 }
+
+/** host 权限请求（hub 驱动 claude 会话的手机批权限，契约 §12） */
+export interface HostRequestDto {
+  id: string;
+  sessionId: string;
+  kind: "permission" | "question";
+  title: string;
+  detail: string | null;
+  toolName?: string;
+  allowAlways?: boolean;
+  createdAt: number;
+  expiresAt: number | null;
+}
+
+export type HostRequestOutcome = "allow" | "deny" | "timeout" | "cancelled";
 
 export type MessageRole = "user" | "assistant" | "toolResult" | "custom";
 
@@ -250,7 +279,15 @@ export type AttachCommandMode = "prompt" | "steer" | "followUp";
 /** POST /api/sessions/:id/attach 响应 */
 export interface AttachResult {
   attached: boolean;
-  agent: { sessionId: string; pid: number | null; cwd: string; online: boolean } | null;
+  agent: {
+    sessionId: string;
+    pid?: number | null;
+    cwd: string;
+    online: boolean;
+    /** hub 驱动形态（claude）附带 */
+    driver?: "queue" | "hub";
+    mirror?: boolean;
+  } | null;
 }
 
 /** POST /api/sessions/:id/message 响应（attach 通道） */

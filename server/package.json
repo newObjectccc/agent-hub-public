@@ -1,6 +1,6 @@
 {
   "name": "@agent-hub/server",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "agent-hub 后端：REST + WS、pi/claude 会话扫描与驱动、KPI 聚合、系统检测（Fastify）",
@@ -30,7 +30,7 @@
     "@earendil-works/pi-coding-agent": "^0.99.1",
     "@fastify/compress": "^9.2.0",
     "@fastify/cors": "^10.0.0",
-    "@fastify/static": "^8.0.0",
+    "@fastify/static": "^10.1.6",
     "fastify": "^5.2.0",
     "ws": "^8.18.0"
   },

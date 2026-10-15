@@ -179,7 +179,7 @@ function SessionRow({ session: s, index, isNew, now, runningSince, usage, onSele
           {/* 驱动来源徽章（心理预期管理）：📱 面板驱动 / 🖥 终端驱动 */}
           <DrivenBadge drivenBy={s.lastDrivenBy} />
           {/* 驱动方式徽章（E3）：🖥⚡ 已接管 / 🖥 终端在线 / 📱 平行线 */}
-          <AttachBadge terminal={s.terminal} />
+          <AttachBadge terminal={s.terminal} status={s.status} />
           <StatusBadge status={s.status} />
           {s.status === "running" && startedAt !== undefined && (
             <span className="session-elapsed">已运行 {elapsedMinutesLabel(startedAt, nowMs)}</span>

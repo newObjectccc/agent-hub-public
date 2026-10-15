@@ -23,7 +23,7 @@
 ## 特性
 
 - **🧩 三源会话支持**：pi / Claude Code / Codex 统一列表、详情与驱动（Codex 含桌面 app 会话：工具卡片 / 用量入账 / 归档会话 📦）
-- **📱 双模式会话驱动**：🖥 接管终端（消息注入终端 pi 进程，屏幕实时显示）/ 📱 平行继续（独立工作线，共享上下文）——自己选；终端在线时自动默认接管（手动选择永远优先），跨设备冲突自动自愈
+- **📱 双模式会话驱动**：🖥 接管终端（pi：消息注入已有终端进程；Claude：hub 新建持续运行的 CLI 进程续接同一会话，支持 tmux 投屏和手机批权限）/ 📱 平行继续（由 server 续接上下文）。支持 pi / Claude 双模式，Codex 目前仅支持平行模式；默认策略可配置，手动选择优先。详见下方模式说明。
 - **🤖 子代理活动面板**：pi / claude 双源子代理实时展示（当前工具 / 输出摘要 / 运行时长），像终端多 agent 面板
 - **🔴 实时旁观**：终端跑的 pi 会话，手机上看思维链、流式回复、工具执行（token 级）
 - **🗂 工作台首页**：按注意力组织（🔥工作中 / ⚠️等你处理 / 今日概览），真实数据；今日概览按来源（pi/claude/codex）细分统计，可按来源过滤
@@ -37,16 +37,35 @@
 - **🖥 Web 终端**（ttyd 可选）：面板内直接开真终端
 - **🌐 中英双语（i18n）**：界面语言跟随系统 / 中文 / English 一键切换，持久化生效
 
+## 旧会话续聊与发送模式
+
+已经完成的会话仍可继续聊：即使电脑上的原终端已关闭，手机发送新消息也会从保存的上下文开始新一轮工作。只打开会话不会自动重发历史任务；会话名称（如“任务完成状态”）也不代表当前运行状态。执行依赖电脑上的 hub 服务及对应 agent 运行环境；关闭 PWA 不会停止已受理的任务，hub 服务重启不会自动恢复执行或接管。
+
+| Claude 场景 | 发送行为 |
+|---|---|
+| 平行模式，当前空闲 | hub 启动一次 CLI 续聊，无需原终端保持打开 |
+| 平行模式，hub 启动的任务正在运行 | 普通发送返回忙；“插话”和“排队”均在该任务结束后发送 |
+| 平行模式，未接管的电脑终端正在运行 | 三种发送模式均返回忙；平行模式无法向这个终端排队 |
+| 接管模式 | hub 持有新的 CLI 进程；“插话”在工具间隙处理，“排队”在本轮结束后处理；正忙时普通发送通过回执报告失败 |
+
+Claude 接管不会控制原来的 TUI 窗口。接管期间请避免同时在原窗口输入；tmux 仅展示 hub 进程的输出。外部活动检测依赖文件更新时间，静默窗不能替代进程锁。
+
+默认 `active-only` 策略下，pi 终端扩展在线时默认接管；Claude 在状态为 `running` **或** `lastDrivenBy=terminal` 时默认尝试接管，其他情况默认平行。`always` 每次打开均尝试接管，`never` 只手动切换；用户手动选择优先，实际接管仍受静默窗、开关及并发上限约束。
+
+回复中的一条消息结束后，整轮任务可能仍在执行工具。页面以整轮结束事件和服务端状态确认完成，静默 5 秒会补查状态，不会仅凭静默就显示完成。
+
+上传图片通过缩略图展示；Claude 的图片尺寸/坐标提示属于内部元数据，不显示为用户消息。旧的 `@.agent-hub-uploads/...` 历史消息在保存了对应的成功读图结果后可恢复预览；仅有路径、尚未读图的历史记录不保证刷新后有预览。完整约束见 [API 契约](docs/API_CONTRACT.md)和 [Claude 驱动说明](docs/CLAUDE_DRIVER.md)。
+
 ## 快速开始
 
 方式一：npm 包（npx / 全局安装）——或直接 git clone（见方式二），两种路径任选：
 
 ```bash
-npx agent-hub remote        # 一键远程：首次自动 setup → 构建 → 启动 + Tailscale
+npx agent-hub remote        # 一键远程：首次 setup → 使用包内产物启动 + Tailscale
 # 或安装后使用完整子命令（dev / setup / start / remote / check / open，doctor 为 check 别名）
 npm install -g agent-hub
 agent-hub setup             # 检测环境、生成 config
-agent-hub remote            # = start --tailscale，已初始化时跳过 setup 直接启动（幂等）
+agent-hub remote            # = 首次 setup + start --tailscale；可重复执行
 ```
 
 方式二：直接 git clone（仓库开发 / 自托管源码）：
@@ -150,7 +169,7 @@ tailscale ping <手机的 Tailscale IP>    # 出现 direct（UDPv6）= P2P 直�
 | `server/` | REST + WS、pi/claude/codex 三源适配、KPI/通知/git/终端集成 |
 | `web/` | PWA（React + Vite + Tailwind v4，野兽派紧凑 UI） |
 | `cli/` | 跨平台 dev/setup/start/remote/check/open（纯 Node 零 bash 依赖） |
-| `integrations/` | pi 扩展（live-feed 实时流出 / pi-command 反向指令） |
+| `integrations/` | pi 扩展（live-feed 实时流出 / pi-command 反向指令）、Claude 权限 MCP bridge |
 | `docs/` | API 契约、架构、平台细则、headscale 自建指南（HEADSCALE.md）、路线图 |
 | `docs/headscale/` | 自建 headscale 控制面部署文件（docker compose + Caddy 自动 HTTPS） |
 
@@ -160,6 +179,7 @@ tailscale ping <手机的 Tailscale IP>    # 出现 direct（UDPv6）= P2P 直�
 |---|---|
 | [docs/API_CONTRACT.md](docs/API_CONTRACT.md) | REST / WS API 契约（二次开发/集成参考） |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 架构设计与数据流（会话文件为唯一事实源） |
+| [docs/CLAUDE_DRIVER.md](docs/CLAUDE_DRIVER.md) | Claude 接管、权限、发送模式与已知限制 |
 | [docs/PLATFORM.md](docs/PLATFORM.md) | 三平台（macOS / Linux / Windows）安装细则 |
 | [docs/HEADSCALE.md](docs/HEADSCALE.md) | 自建 headscale 控制面（不依赖官方 Tailscale） |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | 路线图（规划中） |
@@ -178,6 +198,8 @@ pnpm build && pnpm lint && pnpm test   # 全量验证（1500+ 测试，GitHub Ac
 ```
 
 注意：开发调试入口是 Vite（默认 `http://localhost:5173`），`/api` `/ws` 已代理到 server（默认 7700）；不是直接访问 7700。
+
+若当前工作区正在提供手机服务，请在独立 worktree 中做上述构建验证，避免构建过程改写正在托管的 `web/dist`。发布构建与重启由单一流程执行，见贡献指南。
 
 贡献流程见 [CONTRIBUTING.md](CONTRIBUTING.md)；版本记录见 [CHANGELOG.md](CHANGELOG.md)。
 
@@ -198,7 +220,7 @@ npm run start                  # 前台正式启动（构建 + 启动，配置�
 | 启动 | `launchctl load ~/Library/LaunchAgents/com.agent-hub.plist` | `systemctl --user start agent-hub` |
 | 日志 | `~/Library/Logs/agent-hub.log` | `journalctl --user -u agent-hub` |
 
-> 💡 崩溃自愈：launchd 默认 `KeepAlive=false`（崩溃后下次开机才拉起）；需要崩溃自动重启时把 plist 里 `KeepAlive` 改为 `true`。服务器场景直接用下方 pm2（自带自愈）。
+> 💡 崩溃自愈：新生成的 launchd 配置默认 `KeepAlive=true`，进程退出后会自动拉起。已有旧配置先用上表的 unload，再重新运行 `npm run setup -- --autostart`，让 launchd 读取新配置；主动停止也用 unload。服务重启保留历史，但不会自动续跑任务。
 
 服务器（pm2，崩溃自愈 + 开机自启）：
 
@@ -222,6 +244,12 @@ pm2 save && pm2 startup        # 开机自启
 | `auth` | `{"enabled": false, "token": ""}` | API / WS 鉴权（见安全须知） |
 | `allowOrigins` | `[]` | 跨域白名单（精确 origin，如 `https://app.example.com`；空数组 = 拒绝一切跨域） |
 | `allowLan` | `false` | 显式开启局域网暴露（允许 `host` 通配绑定；`start --lan` 会自动写入） |
+| `claudeDriver.enabled` | `true` | claude 接管（hub 驱动）总开关：关掉后不构造驱动、接管接口回 400，前端回落平行模式 |
+| `claudeDriver.defaultPolicy` | `"active-only"` | 默认接管策略：Claude `running` 或最后由终端驱动时尝试接管 / `always`=打开即尝试 / `never`=只手动；pi 还要求扩展在线，手动选择优先 |
+| `claudeDriver.idleDetachMs` | `1800000` | 空闲自动退出接管（毫秒，30 分钟；`0`=永不，运行中不退） |
+| `claudeDriver.maxConcurrent` | `3` | 并发 hub 驱动上限，含正在准备的接管（超出 409 DRIVER_LIMIT） |
+| `claudeDriver.mirror` | `"tmux"` | 终端投屏（tmux 命名 session，`tmux attach` 实时观看；无 tmux 自动降级 `off`） |
+| `claudeDriver.externalQuietMs` | `3000` | 接管准备前及启动进程前各检查一次文件静默窗；近期外部写入返回 409，无法提供进程级互斥 |
 
 - `config/kpi-sources.json`：可选指标卡数据源（`${ENV_VAR}` 引用密钥）
 
@@ -237,7 +265,7 @@ pm2 save && pm2 startup        # 开机自启
 
 - **开启 API 鉴权**：`config/hub.config.json` 里 `"auth": { "enabled": true, "token": "<长随机串>" }`——开启后全部 API 与 WS 均需 `Authorization: Bearer <token>`
 - `auth.enabled` 默认 `false` 是刻意设计（tailnet 内免 token 的顺手体验）；暴露公网前请务必开启
-- **应用锁（PIN / WebAuthn）是界面锁**，防的是旁人物理接触你的手机/电脑，不是网络鉴权——两层防护独立生效，不要混用
+- **应用锁（PIN / WebAuthn）**保护界面，并在服务端校验业务 HTTP 请求和 WS 发送/中止的解锁令牌；它不能替代 API token，两层可同时启用
 - `host` 默认 `127.0.0.1` 且拒绝通配绑定；局域网开放需显式 `"allowLan": true`（或 `agent-hub start --lan` / `npm run start -- --lan`，CLI 会自动写入 `allowLan`）
 - 发现安全问题请**勿公开 issue**，通过仓库 About 页的联系方式私下告知
 

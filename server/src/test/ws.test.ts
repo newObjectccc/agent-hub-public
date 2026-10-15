@@ -7,15 +7,16 @@ import { strict as assert } from "node:assert";
 import type { AddressInfo } from "node:net";
 import { describe, it } from "node:test";
 import { WebSocket } from "ws";
+import type { AppLockStoreLike } from "../appLock.js";
 import { DEFAULT_CONFIG } from "../config.js";
 import { emptySourceStats } from "../dashboard.js";
 import type { DashboardServiceLike } from "../dashboard.js";
-import { createApp } from "../index.js";
+import { attachSessionWs, createApp } from "../index.js";
 import type { SessionHub } from "../sessions/hub.js";
 import type { SessionTailManager } from "../sessions/tail.js";
 import type { SessionHubLike } from "../routes.js";
 import type { MessageDto, SearchResultDto, SessionListItem, SessionTreeDto, SystemInfo } from "../types.js";
-import { WsHub } from "../ws.js";
+import { WsHub, type WsSessionHub } from "../ws.js";
 import { fakeUnlockedAppLock } from "./fakeAppLock.js";
 
 const sessionFixture: SessionListItem = {
@@ -101,7 +102,7 @@ async function startServer(promptCalls: PromptCall[]) {
     logger: false,
   });
   const wshub = new WsHub();
-  wshub.attach(app.server, makeFakeHub(promptCalls) as unknown as SessionHub);
+  wshub.attach(app.server, makeFakeHub(promptCalls) as unknown as SessionHub, { auth: { enabled: false, token: "" } });
   await app.listen({ port: 0, host: "127.0.0.1" });
   const { port } = app.server.address() as AddressInfo;
   return { app, wshub, url: `ws://127.0.0.1:${port}/ws/sessions/sess-1` };
@@ -201,7 +202,10 @@ describe("ws: 子代理 childTails acquire/release 严格配对（AC8 回归）"
     });
     const wshub = new WsHub();
     wshub.childScanMs = 50; // 测试注入短扫描间隔
-    wshub.attach(app.server, hub as unknown as SessionHub, fakeTails as unknown as SessionTailManager);
+    wshub.attach(app.server, hub as unknown as SessionHub, {
+      tailManager: fakeTails as unknown as SessionTailManager,
+      auth: { enabled: false, token: "" },
+    });
     await app.listen({ port: 0, host: "127.0.0.1" });
     const { port } = app.server.address() as AddressInfo;
     const ws = new WebSocket(`ws://127.0.0.1:${port}/ws/sessions/sess-1`);
@@ -275,7 +279,7 @@ describe("ws: upgrade 鉴权（config.auth.enabled 时必须携带 token）", ()
       appLock: fakeUnlockedAppLock(),
     });
     const wshub = new WsHub();
-    wshub.attach(app.server, makeFakeHub([]) as unknown as SessionHub, undefined, undefined, auth);
+    wshub.attach(app.server, makeFakeHub([]) as unknown as SessionHub, { auth });
     await app.listen({ port: 0, host: "127.0.0.1" });
     const { port } = app.server.address() as AddressInfo;
     return { app, wshub, base: `ws://127.0.0.1:${port}` };
@@ -358,7 +362,10 @@ describe("ws: 连接建立期断连不泄漏 socket / childScan interval", () =>
       ...hub,
       findSession: () => new Promise((r) => setTimeout(() => r(sessionFixture), 200)),
     } as unknown as SessionHub;
-    wshub.attach(app.server, delayedHub, fakeTails as unknown as SessionTailManager);
+    wshub.attach(app.server, delayedHub, {
+      tailManager: fakeTails as unknown as SessionTailManager,
+      auth: { enabled: false, token: "" },
+    });
     await app.listen({ port: 0, host: "127.0.0.1" });
     const { port } = app.server.address() as AddressInfo;
     const ws = new WebSocket(`ws://127.0.0.1:${port}/ws/sessions/sess-1`);
@@ -376,6 +383,261 @@ describe("ws: 连接建立期断连不泄漏 socket / childScan interval", () =>
       assert.deepEqual(acquireIds, [], "断连后不得 acquire tail（防 ref 泄漏）");
     } finally {
       ws.terminate();
+      wshub.closeAll();
+      await app.close();
+    }
+  });
+});
+
+describe("ws: abort 门禁与分发（修复：绕过 promptGuard，锁屏/接管期可中止 turn）", () => {
+  /** 锁屏 fake：应用锁已配置且令牌恒无效（与 promptGuard 锁分支同判据 → 拒绝） */
+  function fakeLockedAppLock(): AppLockStoreLike {
+    return {
+      status: () => ({ configured: true, webauthn: false, expiresAt: null }),
+      setup: () => {
+        throw new Error("fakeLockedAppLock.setup 未实现");
+      },
+      unlock: () => {
+        throw new Error("fakeLockedAppLock.unlock 未实现");
+      },
+      change: () => {
+        throw new Error("fakeLockedAppLock.change 未实现");
+      },
+      disable: () => {
+        throw new Error("fakeLockedAppLock.disable 未实现");
+      },
+      verifyToken: () => ({ ok: false, expiresAt: null }),
+      createChallenge: () => {
+        throw new Error("fakeLockedAppLock.createChallenge 未实现");
+      },
+      consumeChallenge: () => {
+        throw new Error("fakeLockedAppLock.consumeChallenge 未实现");
+      },
+      registerWebAuthn: () => {
+        throw new Error("fakeLockedAppLock.registerWebAuthn 未实现");
+      },
+      loginWebAuthn: () => {
+        throw new Error("fakeLockedAppLock.loginWebAuthn 未实现");
+      },
+    };
+  }
+
+  interface AbortHarness {
+    app: Awaited<ReturnType<typeof createApp>>;
+    wshub: WsHub;
+    ws: WebSocket;
+    abortCalls: string[];
+    abortTurnCalls: string[];
+    errors: Array<{ type?: string; code?: string; message?: string }>;
+    sendAbort(): void;
+    waitForErrorFrame(): Promise<{ type?: string; code?: string; message?: string }>;
+    waitForCalls(calls: unknown[], label: string): Promise<void>;
+    close(): Promise<void>;
+  }
+
+  /** 走生产装配 attachSessionWs（abortHandler 由它派生）+ 真 WS 连接的 abort 测试骨架 */
+  async function startAbortServer(opts: {
+    appLock: AppLockStoreLike;
+    /** 会话来源（镜像 HTTP /abort：仅 claude 源且驱动接管中走 driver.abortTurn） */
+    source: SessionListItem["source"];
+    /** claude 驱动接管中 */
+    attached: boolean;
+  }): Promise<AbortHarness> {
+    const abortCalls: string[] = [];
+    const abortTurnCalls: string[] = [];
+    const errors: Array<{ type?: string; code?: string; message?: string }> = [];
+    const session: SessionListItem = { ...sessionFixture, source: opts.source };
+    const wsHub: WsSessionHub = {
+      isLive: () => false,
+      findSession: async (id: string) => (id === session.id ? session : null),
+      prompt: async () => ({ accepted: true, mode: "prompt" }),
+      abort: async (id: string) => {
+        abortCalls.push(id);
+      },
+    };
+    const app = await createApp({
+      hub: makeFakeHub([]),
+      kpi: { getCards: () => [] },
+      dashboard: makeFakeDashboard(),
+      config: { ...DEFAULT_CONFIG },
+      systemInfo: async () => systemFixture,
+      webRoot: null,
+      appLock: fakeUnlockedAppLock(),
+      logger: false,
+    });
+    const wshub = new WsHub();
+    attachSessionWs(app.server, wsHub, {
+      wshub,
+      config: { ...DEFAULT_CONFIG },
+      appLock: opts.appLock,
+      claudeDriver: {
+        isAttached: () => opts.attached,
+        abortTurn: (id: string) => {
+          abortTurnCalls.push(id);
+        },
+      },
+    });
+    await app.listen({ port: 0, host: "127.0.0.1" });
+    const { port } = app.server.address() as AddressInfo;
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws/sessions/sess-1`);
+    // 消息监听必须先于 open 挂好（握手确认帧可能与 101 同批到达，等 open 再挂会丢帧——
+    // 见 terminal-route.test.ts connectAndFirstMessage 注释）
+    let resolveSession: (() => void) | null = null;
+    const sessionFrame = new Promise<void>((resolve) => {
+      resolveSession = resolve;
+    });
+    ws.on("message", (raw: Buffer) => {
+      const ev = JSON.parse(raw.toString()) as { type?: string; code?: string; message?: string };
+      if (ev.type === "session") resolveSession?.();
+      if (ev.type === "error") errors.push(ev);
+    });
+    // 建立 + 握手确认帧：连接进入 ready（此后 abort 不再进 pending 队列）。
+    // 任一步失败即回收全部句柄（app/wshub/ws），防泄漏句柄挂住整个测试进程
+    try {
+      await new Promise<void>((resolve, reject) => {
+        ws.on("open", () => resolve());
+        ws.on("error", reject);
+      });
+      await Promise.race([
+        sessionFrame,
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("握手确认帧未达")), 2000)),
+      ]);
+    } catch (err) {
+      ws.terminate();
+      wshub.closeAll();
+      await app.close();
+      throw err;
+    }
+    const waitForErrorFrame = async (): Promise<{ type?: string; code?: string; message?: string }> => {
+      const deadline = Date.now() + 2000;
+      while (Date.now() < deadline) {
+        if (errors.length > 0) return errors[0];
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      throw new Error("2s 内未收到 error 帧（abort 未被拒绝）");
+    };
+    const waitForCalls = async (calls: unknown[], label: string): Promise<void> => {
+      const deadline = Date.now() + 2000;
+      while (Date.now() < deadline) {
+        if (calls.length > 0) return;
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      throw new Error(`2s 内 ${label} 未被调用`);
+    };
+    return {
+      app,
+      wshub,
+      ws,
+      abortCalls,
+      abortTurnCalls,
+      errors,
+      sendAbort: () => ws.send(JSON.stringify({ type: "abort" })),
+      waitForErrorFrame,
+      waitForCalls,
+      close: async () => {
+        ws.terminate();
+        wshub.closeAll();
+        await app.close();
+      },
+    };
+  }
+
+  it("锁屏（应用锁已配置未解锁）：WS abort 被拒（APP_LOCKED error 帧），hub.abort 不被调用", async () => {
+    const h = await startAbortServer({ appLock: fakeLockedAppLock(), source: "pi", attached: false });
+    try {
+      h.sendAbort();
+      const err = await h.waitForErrorFrame();
+      assert.equal(err.type, "error", "回 error 帧（对齐 prompt 分支回执形状）");
+      assert.equal(err.code, "APP_LOCKED", "锁屏拒绝 code 与 promptGuard 锁分支同口径");
+      await new Promise((r) => setTimeout(r, 100));
+      assert.deepEqual(h.abortCalls, [], "锁屏时 hub.abort 不得被调用");
+      assert.deepEqual(h.abortTurnCalls, [], "锁屏时 driver.abortTurn 不得被调用");
+    } finally {
+      await h.close();
+    }
+  });
+
+  it("claude 驱动接管期：WS abort 走 driver.abortTurn（fake driver 断言），hub.abort 不被调用", async () => {
+    const h = await startAbortServer({ appLock: fakeUnlockedAppLock(), source: "claude", attached: true });
+    try {
+      h.sendAbort();
+      await h.waitForCalls(h.abortTurnCalls, "driver.abortTurn");
+      assert.deepEqual(h.abortTurnCalls, ["sess-1"], "接管期中止走 driver.abortTurn（control interrupt）");
+      await new Promise((r) => setTimeout(r, 100));
+      assert.deepEqual(h.abortCalls, [], "接管期不得走 hub.abort（adapter 杀进程路径）");
+      assert.deepEqual(h.errors, [], "成功中止不回 error 帧");
+    } finally {
+      await h.close();
+    }
+  });
+
+  it("非接管期：WS abort 走 hub.abort（分发基线）", async () => {
+    const h = await startAbortServer({ appLock: fakeUnlockedAppLock(), source: "claude", attached: false });
+    try {
+      h.sendAbort();
+      await h.waitForCalls(h.abortCalls, "hub.abort");
+      assert.deepEqual(h.abortCalls, ["sess-1"]);
+      await new Promise((r) => setTimeout(r, 100));
+      assert.deepEqual(h.abortTurnCalls, [], "未接管不得走 driver.abortTurn");
+      assert.deepEqual(h.errors, [], "成功中止不回 error 帧");
+    } finally {
+      await h.close();
+    }
+  });
+
+  it("非 claude 源会话即使驱动报接管中也走 hub.abort（镜像 HTTP /abort 的 source 判定）", async () => {
+    const h = await startAbortServer({ appLock: fakeUnlockedAppLock(), source: "pi", attached: true });
+    try {
+      h.sendAbort();
+      await h.waitForCalls(h.abortCalls, "hub.abort");
+      assert.deepEqual(h.abortCalls, ["sess-1"]);
+      await new Promise((r) => setTimeout(r, 100));
+      assert.deepEqual(h.abortTurnCalls, [], "pi 源不得走 driver.abortTurn");
+    } finally {
+      await h.close();
+    }
+  });
+});
+
+describe("ws: 畸形百分号 sessionId 不崩服（pre-auth DoS 回归）", () => {
+  type OpenResult = "open" | "denied" | "timeout";
+
+  function tryOpen(url: string): Promise<OpenResult> {
+    return new Promise((resolve) => {
+      const ws = new WebSocket(url);
+      const timer = setTimeout(() => {
+        ws.terminate();
+        resolve("timeout");
+      }, 2000);
+      ws.on("open", () => {
+        clearTimeout(timer);
+        ws.terminate();
+        resolve("open");
+      });
+      ws.on("error", () => {
+        clearTimeout(timer);
+        resolve("denied");
+      });
+      ws.on("unexpected-response", (_req, res) => {
+        clearTimeout(timer);
+        ws.terminate();
+        resolve(res.statusCode === 400 ? "denied" : "timeout");
+      });
+    });
+  }
+
+  it("decodeURIComponent 抛 URIError 的 sessionId（%ZZ / %）：upgrade 拒绝且进程存活，后续连接正常", async () => {
+    const { app, wshub, url } = await startServer([]);
+    const base = url.replace(/\/ws\/sessions\/[^/]+$/, "");
+    try {
+      // 失败路径：畸形百分号编码必须被拒（400 断连），而不是抛 uncaughtException 崩掉整个 hub
+      assert.equal(await tryOpen(`${base}/ws/sessions/%ZZ`), "denied", "畸形 %ZZ 必须拒连");
+      assert.equal(await tryOpen(`${base}/ws/sessions/%`), "denied", "裸 % 必须拒连");
+      assert.equal(await tryOpen(`${base}/ws/sessions/%E0%A4%A`), "denied", "截断 UTF-8 序列必须拒连");
+      // 进程存活证明：同一 server 上正常会话与全局通道仍可连（崩服则此处超时/拒绝）
+      assert.equal(await tryOpen(`${base}/ws/sessions/sess-1`), "open", "正常 sessionId 不受影响");
+      assert.equal(await tryOpen(`${base}/ws/events`), "open", "全局通道不受影响");
+    } finally {
       wshub.closeAll();
       await app.close();
     }

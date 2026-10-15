@@ -6,6 +6,8 @@
  * 4. 用户手动选择永远最高优先：选过一次（pin）重进不被自动改回（含 server attached=true 也不改）
  * 5. 终端在线但用户选过平行 → 尊重平行
  * 6. 自动接管不写 pin：每次打开都重新判定（在线接管/离线回落）
+ * 7. defaultPolicy（server 随 terminal 下发，D3）：never=永不自动接管；always=历史空闲也接管（仍须当下可行）
+ * 8. 残留 attach 卡死自愈：pin=attach 但接管不可用（claude 无 terminal / pi 离线）→ 本次回落平行，不改写 pin
  * mock 模式参照 ChatPage.attach.test.tsx（额外 mock attachSession/detachSession 握手）。
  */
 import { act } from "react";
@@ -31,6 +33,8 @@ const mocks = vi.hoisted(() => ({
   getSessionAgents: vi.fn(),
   attachSession: vi.fn(),
   detachSession: vi.fn(),
+  listHostRequests: vi.fn(),
+  respondHostRequest: vi.fn(),
 }));
 
 vi.mock("../api/client", () => ({
@@ -43,6 +47,8 @@ vi.mock("../api/client", () => ({
     getSessionAgents: mocks.getSessionAgents,
     attachSession: mocks.attachSession,
     detachSession: mocks.detachSession,
+    listHostRequests: mocks.listHostRequests,
+    respondHostRequest: mocks.respondHostRequest,
   },
 }));
 
@@ -107,10 +113,22 @@ async function render(): Promise<HTMLElement> {
   return container;
 }
 
-/** 会话详情 mock（terminal 缺省 = claude/codex 等无终端状态的会话） */
-function mockDetail(terminal?: { online: boolean; attached: boolean }, source = "pi"): void {
+/** 会话详情 mock（terminal 缺省 = codex 等无终端状态的会话） */
+function mockDetail(
+  terminal?: {
+    online: boolean;
+    attached: boolean;
+    driver?: "queue" | "hub";
+    mirror?: boolean;
+    /** 智能默认策略（server 随 terminal 下发；缺省 = 老 server active-only） */
+    defaultPolicy?: "active-only" | "always" | "never";
+  },
+  source = "pi",
+  extra?: Partial<SessionSummary>,
+): void {
+  mocks.listHostRequests.mockResolvedValue({ requests: [] });
   mocks.getSession.mockResolvedValue({
-    session: { ...baseSession, source, ...(terminal ? { terminal } : {}) },
+    session: { ...baseSession, source, ...(terminal ? { terminal } : {}), ...(extra ?? {}) },
     messages: [],
     hasMore: false,
     nextBefore: null,
@@ -345,5 +363,204 @@ describe("自动默认只在打开时判定一次（不写 pin，逐次重估）
     expect(modeLabel(el)).toContain("接管终端");
     expect(container!.textContent).toContain("终端在线，已默认接管终端");
     expect(window.localStorage.getItem(PINNED_KEY)).toBeNull();
+  });
+});
+
+describe("claude hub 驱动接管默认策略（D3 active-only）", () => {
+  it("claude 活跃（status=running + driver=hub）→ 自动默认接管 + 轻提示，不写 pin", async () => {
+    mockDetail({ online: true, attached: false, driver: "hub" }, "claude", { status: "running" });
+    const el = await render();
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(mocks.attachSession).toHaveBeenCalledTimes(1);
+    expect(modeLabel(el)).toContain("接管终端");
+    expect(container!.textContent).toContain("已默认接管");
+    expect(window.localStorage.getItem(PINNED_KEY)).toBeNull();
+  });
+
+  it("claude 历史空闲（status=idle）→ 不自动接管，保持 📱 平行继续", async () => {
+    mockDetail({ online: true, attached: false, driver: "hub" }, "claude", { status: "idle" });
+    const el = await render();
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(mocks.attachSession).not.toHaveBeenCalled();
+    expect(modeLabel(el)).toContain("平行继续");
+    expect(window.localStorage.getItem(PINNED_KEY)).toBeNull();
+  });
+
+  it("claude 最后由终端驱动（lastDrivenBy=terminal）→ 自动接管", async () => {
+    mockDetail({ online: true, attached: false, driver: "hub" }, "claude", {
+      status: "idle",
+      lastDrivenBy: "terminal",
+    });
+    const el = await render();
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(mocks.attachSession).toHaveBeenCalledTimes(1);
+    expect(modeLabel(el)).toContain("接管终端");
+  });
+
+  it("claude 活跃但用户 pin=parallel → 尊重手动选择，不接管", async () => {
+    window.localStorage.setItem(PINNED_KEY, "parallel");
+    mockDetail({ online: true, attached: false, driver: "hub" }, "claude", { status: "running" });
+    const el = await render();
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(mocks.attachSession).not.toHaveBeenCalled();
+    expect(modeLabel(el)).toContain("平行继续");
+  });
+
+  it("claude 已接管（attached=true）→ 校正为 🖥 接管，不重复握手", async () => {
+    mockDetail({ online: true, attached: true, driver: "hub" }, "claude", { status: "running" });
+    const el = await render();
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(mocks.attachSession).not.toHaveBeenCalled();
+    expect(modeLabel(el)).toContain("接管终端");
+    expect(window.localStorage.getItem(PINNED_KEY)).toBeNull();
+  });
+});
+
+describe("defaultPolicy 策略消费（D3，随 terminal 下发）", () => {
+  it("defaultPolicy 缺省（老 server）→ active-only 行为不变：活跃接管、历史空闲不接管", async () => {
+    // 活跃 → 接管（回归）
+    mockDetail({ online: true, attached: false, driver: "hub" }, "claude", { status: "running" });
+    let el = await render();
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(mocks.attachSession).toHaveBeenCalledTimes(1);
+    expect(modeLabel(el)).toContain("接管终端");
+
+    // 历史空闲 → 不接管（回归）
+    act(() => {
+      root!.unmount();
+    });
+    mockDetail({ online: true, attached: false, driver: "hub" }, "claude", { status: "idle" });
+    el = await render();
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(mocks.attachSession).toHaveBeenCalledTimes(1); // 仍是首开那次，不新增
+    expect(modeLabel(el)).toContain("平行继续");
+    expect(window.localStorage.getItem(PINNED_KEY)).toBeNull();
+  });
+
+  it("never → 活跃会话也不自动接管，保持 📱 平行继续（只手动）", async () => {
+    mockDetail({ online: true, attached: false, driver: "hub", defaultPolicy: "never" }, "claude", {
+      status: "running",
+    });
+    const el = await render();
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(mocks.attachSession).not.toHaveBeenCalled();
+    expect(modeLabel(el)).toContain("平行继续");
+    expect(container!.textContent).not.toContain("已默认接管");
+    expect(window.localStorage.getItem(PINNED_KEY)).toBeNull();
+
+    typeInput(el, "你好");
+    click(el.querySelector(".composer-send"));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(mocks.sendPromptWithMode).toHaveBeenCalledTimes(1);
+    expect(mocks.sendAttachMessage).not.toHaveBeenCalled();
+  });
+
+  it("always → 历史空闲 claude 会话也自动接管（与 active-only 的区别）", async () => {
+    mockDetail({ online: true, attached: false, driver: "hub", defaultPolicy: "always" }, "claude", {
+      status: "idle",
+      lastDrivenBy: "panel",
+    });
+    const el = await render();
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(mocks.attachSession).toHaveBeenCalledTimes(1);
+    expect(modeLabel(el)).toContain("接管终端");
+    expect(container!.textContent).toContain("已默认接管");
+    expect(window.localStorage.getItem(PINNED_KEY)).toBeNull();
+  });
+
+  it("always 但接管当下不可行（pi 终端离线）→ 仍不接管", async () => {
+    mockDetail({ online: false, attached: false, defaultPolicy: "always" });
+    const el = await render();
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(mocks.attachSession).not.toHaveBeenCalled();
+    expect(modeLabel(el)).toContain("平行继续");
+    expect(window.localStorage.getItem(PINNED_KEY)).toBeNull();
+  });
+});
+
+describe("残留 attach 模式卡死自愈（claudeDriver.enabled=false / 老 server）", () => {
+  it("pin=attach 但 claude 无 terminal（attachAvailability false）→ 本次回落平行，pin 仍为 attach，发送走 parallel", async () => {
+    // 复现：曾手动 pin 过 attach，server 随后 claudeDriver.enabled=false（terminal 不下发）或旧 server
+    // 修复前：pinned 分支直接 applyAttachMode("attach") 不查 attachAvailability → 发送走 attach 通道
+    // → server 400「claude 会话接管未启用」，detach 也 400，用户卡死当场无法切换
+    window.localStorage.setItem(PINNED_KEY, "attach");
+    window.localStorage.setItem(MODE_KEY, "attach"); // 残留生效模式也是 attach
+    mockDetail(undefined, "claude"); // claude 会话无 terminal 字段
+    const el = await render();
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // 本次打开优雅回落：不握手、模式为平行（发送不会走 attach 通道吃 400）
+    expect(mocks.attachSession).not.toHaveBeenCalled();
+    expect(modeLabel(el)).toContain("平行继续");
+    // 不改写 pin：用户手动选择永久优先，attach 仍可手动再选
+    expect(window.localStorage.getItem(PINNED_KEY)).toBe("attach");
+    expect(window.localStorage.getItem(MODE_KEY)).toBe("parallel");
+
+    typeInput(el, "卡死自愈");
+    click(el.querySelector(".composer-send"));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(mocks.sendPromptWithMode).toHaveBeenCalledTimes(1);
+    expect(mocks.sendAttachMessage).not.toHaveBeenCalled();
+  });
+
+  it("pin=attach 但 pi 终端离线（attachAvailability false）→ 本次回落平行，pin 仍为 attach", async () => {
+    window.localStorage.setItem(PINNED_KEY, "attach");
+    mockDetail({ online: false, attached: false });
+    const el = await render();
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(mocks.attachSession).not.toHaveBeenCalled();
+    expect(modeLabel(el)).toContain("平行继续");
+    expect(window.localStorage.getItem(PINNED_KEY)).toBe("attach");
+    expect(window.localStorage.getItem(MODE_KEY)).toBe("parallel");
+  });
+
+  it("pin=attach 且接管可用（terminal 在线）→ 仍按 pin 恢复接管（自愈只在不可用时回落）", async () => {
+    window.localStorage.setItem(PINNED_KEY, "attach");
+    mockDetail({ online: true, attached: false });
+    const el = await render();
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(mocks.attachSession).toHaveBeenCalledTimes(1);
+    expect(modeLabel(el)).toContain("接管终端");
+    expect(window.localStorage.getItem(PINNED_KEY)).toBe("attach");
   });
 });

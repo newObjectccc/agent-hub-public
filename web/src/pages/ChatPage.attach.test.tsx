@@ -73,6 +73,9 @@ const baseSession: SessionSummary = {
   isSubAgent: false,
 };
 
+const MODE_KEY = "agent-hub.attachMode.v1:s1";
+const PINNED_KEY = "agent-hub.attachModePinned.v1:s1";
+
 function fakeStorage(): StorageLike {
   const data = new Map<string, string>();
   return {
@@ -122,6 +125,9 @@ function modeLabel(el: HTMLElement): string {
 
 beforeEach(() => {
   wsEvent = null;
+  // 模式/pin 残留清零（用例间隔离：上一用例自愈写入的生效模式/手动 pin 不影响下一用例）
+  localStorage.removeItem(MODE_KEY);
+  localStorage.removeItem(PINNED_KEY);
   // 队列单例重置为空（用例间隔离）
   getOfflineQueue(fakeStorage());
   mocks.sendPromptWithMode.mockReset();
@@ -195,6 +201,17 @@ describe("loadSession 校正本地 attachMode（server 是事实源）", () => {
 
 describe("409 ATTACH_ACTIVE 死锁自愈（跨设备）", () => {
   it("parallel 发送被 409 挡 → 自动切 🖥 接管 + 提示 + 同键改走 attach 补发，队列不死信", async () => {
+    // 跨设备现实：电脑已 attach（server terminal 真值 attached=true），手机用户 pin 过平行——
+    // pin 压住 loadSession 的 attached 校正，首条消息才走 parallel 撞 409（自愈前提）。
+    // terminal 真值在场也是 isAttachSending 修复后的回归语义：terminal 存在且 attached!==false → 走 attach
+    //（terminal 缺失才不走 attach，防 claudeDriver.enabled=false / 老 server 400 卡死，见下方专门用例）
+    localStorage.setItem(PINNED_KEY, "parallel");
+    mocks.getSession.mockResolvedValue({
+      session: { ...baseSession, terminal: { online: true, attached: true } },
+      messages: [],
+      hasMore: false,
+      nextBefore: null,
+    });
     mocks.sendPromptWithMode.mockRejectedValue(
       Object.assign(new Error("终端接管中：消息由电脑终端 pi 执行"), { code: "ATTACH_ACTIVE", status: 409 }),
     );
@@ -230,6 +247,30 @@ describe("409 ATTACH_ACTIVE 死锁自愈（跨设备）", () => {
     });
     expect(mocks.sendPromptWithMode).toHaveBeenCalledTimes(1);
     expect(mocks.sendAttachMessage).toHaveBeenCalledTimes(2);
+  });
+
+  it("terminal 缺失（claudeDriver.enabled=false / 老 server）→ 首发走平行，409 自愈补发仍送达，不死信", async () => {
+    // isAttachSending 修复后：terminal 缺失不走 attach 发送通道（防「claude 会话接管未启用」400 卡死）；
+    // 若 server 端仍在接管（409 ATTACH_ACTIVE），自愈链路照常 attach 补发，消息不丢
+    mocks.sendPromptWithMode.mockRejectedValue(
+      Object.assign(new Error("终端接管中：消息由电脑终端 pi 执行"), { code: "ATTACH_ACTIVE", status: 409 }),
+    );
+    const el = await render(); // beforeEach 默认 getSession 无 terminal 字段
+    typeInput(el, "terminal 缺失");
+    click(el.querySelector(".composer-send"));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // 首发走平行（不进 attach 通道吃 400），自愈后由 attach 补发送达
+    expect(mocks.sendAttachMessage).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(getOfflineQueue().pending("s1")).toHaveLength(0);
   });
 
   it("409 ATTACH_REQUIRED（终端未接管）→ 自动切回 📱 平行模式 + 提示 + parallel 补发", async () => {

@@ -34,7 +34,7 @@ import { appendAttachmentHints } from "../uploads.js";
 import { decidePromptAction, parsePromptMode } from "../sessions/prompt-policy.js";
 import { inferExternalStatus, registerTailStatusSink } from "../sessions/tail.js";
 import type { MessageDto, PromptImageAttachment, ServerEvent, SessionListItem, SessionStatus } from "../types.js";
-import { ClaudeStreamTranslator } from "./claude-stream.js";
+import { ClaudeJsonlReader, ClaudeStreamTranslator } from "./claude-stream.js";
 import {
   loadClaudeProviderEnv,
   mergeClaudeEnvSync,
@@ -64,6 +64,8 @@ export interface ClaudeAdapterOptions {
    * 接管期间拒绝 parallel 发送，防 server spawn 与驱动进程双写同一 transcript。
    */
   driverBusy?: (id: string) => boolean;
+  /** 已接管会话的真实运行态，未接管返回 null。 */
+  driverStatus?: (id: string) => SessionStatus | null;
 }
 
 /** stderr 预览上限（错误提示用） */
@@ -80,6 +82,11 @@ interface RunningRun {
   aborted: boolean;
 }
 
+interface PendingPrompt {
+  text: string;
+  images?: PromptImageAttachment[];
+}
+
 export class ClaudeAdapter implements SessionAdapter {
   readonly source = "claude" as const;
   private readonly projectsDir: string;
@@ -89,8 +96,10 @@ export class ClaudeAdapter implements SessionAdapter {
   private readonly claudeBin: string;
   /** 防双写（D8）：hub 驱动接管判定（构造注入） */
   private readonly driverBusy?: (id: string) => boolean;
+  private readonly driverStatus?: (id: string) => SessionStatus | null;
   private readonly running = new Map<string, RunningRun>();
-  private readonly queues = new Map<string, string[]>();
+  private readonly pendingPrompts = new Map<string, Set<{ aborted: boolean }>>();
+  private readonly queues = new Map<string, PendingPrompt[]>();
   /** 内存运行态（含显式 idle）：带登记时间，超 STATE_TTL 清扫（外部 `claude --resume` 写 transcript 时状态可随 mtime 自愈） */
   private readonly statuses = new Map<string, { status: SessionStatus; at: number }>();
   private historyIndex: Map<string, string> | null = null;
@@ -114,6 +123,7 @@ export class ClaudeAdapter implements SessionAdapter {
     this.spawnFn = options.spawnFn ?? spawn;
     this.claudeBin = options.claudeBin ?? "claude";
     this.driverBusy = options.driverBusy;
+    this.driverStatus = options.driverStatus;
     // tail 的 status 事件只走 WS 广播，不回写会让 getStatus 与 WS 显示分叉（镜像 hub.ts 同机制）
     this.unregisterTailStatus = registerTailStatusSink((id, status) => {
       this.statuses.set(id, { status, at: Date.now() });
@@ -126,14 +136,19 @@ export class ClaudeAdapter implements SessionAdapter {
   }
 
   getStatus(id: string): SessionStatus {
-    return this.statuses.get(id)?.status ?? "idle";
+    const run = this.running.get(id);
+    return this.driverStatus?.(id) ?? (run ? (run.aborted ? "idle" : "running") : this.statuses.get(id)?.status ?? "idle");
   }
 
   private statusWithInference(id: string, updatedMs: number): SessionStatus {
     // 本进程状态优先（含显式 idle）：与 sessions/hub.ts 同口径——刚创建/刚 settled 的
     // 文件 mtime 必然新鲜，丢弃 idle 走时间推断会误判 running 60s（新会话显示「思考中」）
-    const own = this.statuses.get(id)?.status;
-    if (own) return own;
+    const driver = this.driverStatus?.(id);
+    if (driver) return driver;
+    const run = this.running.get(id);
+    if (run) return run.aborted ? "idle" : "running";
+    const own = this.statuses.get(id);
+    if (own && Math.floor(updatedMs) <= own.at) return own.status;
     return inferExternalStatus(updatedMs);
   }
 
@@ -141,16 +156,15 @@ export class ClaudeAdapter implements SessionAdapter {
    * 防双写加固（D8）：本进程 run / hub 驱动接管 / 外部写入（终端 TUI 活跃）任一为真即 busy。
    * 外部 running 用 statusWithInference（own 显式 idle 优先，防 settled 后 mtime 新鲜误判）。
    */
-  private isEffectivelyBusy(id: string, updatedAt: string): boolean {
+  private isEffectivelyBusy(id: string, updatedMs: number): boolean {
     if (this.running.has(id)) return true;
     if (this.driverBusy?.(id)) return true;
-    const updatedMs = Date.parse(updatedAt);
     if (Number.isNaN(updatedMs)) return false;
     return this.statusWithInference(id, updatedMs) === "running";
   }
 
   private setStatus(id: string, status: SessionStatus): void {
-    if (this.getStatus(id) === status) return;
+    if (this.statuses.get(id)?.status === status) return;
     this.dispatch(id, { type: "status", status });
   }
 
@@ -418,7 +432,8 @@ export class ClaudeAdapter implements SessionAdapter {
    * 发送消息：
    * - 空闲：spawn `claude -p <text> --resume <id> --output-format stream-json …`
    * - 正忙且 mode 缺省/"prompt" → busy（调用方转 409 SESSION_BUSY，与 pi 一致）
-   * - 正忙且 steer/followUp → 排队到当前 run 结束（claude CLI 无运行中转向能力，保守降级为排队）
+   * - 本进程正忙且 steer/followUp → 排队到当前 run 结束
+   * - 外部终端正忙 → 明确拒绝，不能接受无人消费的队列
    */
   async prompt(id: string, text: unknown, modeRaw: unknown, images?: PromptImageAttachment[]): Promise<PromptResult> {
     if (typeof text !== "string" || text.trim() === "") {
@@ -432,31 +447,54 @@ export class ClaudeAdapter implements SessionAdapter {
     // 降级为 @path 引用提示（通道 a），由 claude 的 Read 工具读图（见 uploads.ts 调研结论）。
     const effectiveText = appendAttachmentHints(text, images);
 
-    const found = await this.findSession(id);
-    if (!found) {
-      throw new HubError(ErrorCodes.SESSION_NOT_FOUND, `会话不存在: ${id}`, 404);
-    }
+    const attempt = { aborted: false };
+    const pending = this.pendingPrompts.get(id) ?? new Set<{ aborted: boolean }>();
+    pending.add(attempt);
+    this.pendingPrompts.set(id, pending);
+    try {
+      const found = await this.findSession(id);
+      if (!found) {
+        throw new HubError(ErrorCodes.SESSION_NOT_FOUND, `会话不存在: ${id}`, 404);
+      }
 
-    const decision = decidePromptAction(this.isEffectivelyBusy(id, found.updatedAt), mode);
-    if (decision.kind === "busy") {
-      return { accepted: false, mode: mode ?? "prompt", busy: true };
-    }
-    if (decision.kind === "steer" || decision.kind === "followUp") {
-      const queue = this.queues.get(id) ?? [];
-      queue.push(effectiveText);
-      this.queues.set(id, queue);
-      return { accepted: true, mode: decision.kind };
-    }
+      // 所有异步准备完成后再作最后的 busy 判定，判定到 spawn 之间不能 await，
+      // 否则两个手机请求能同时越过空闲检查、双写同一个会话。
+      await loadClaudeProviderEnv();
+      const updatedMs = await stat(found.sessionFile)
+        .then((info) => Math.max(Math.floor(info.mtimeMs), Date.parse(found.updatedAt)))
+        .catch(() => Date.parse(found.updatedAt));
+      if (attempt.aborted || this.disposed) {
+        throw new HubError(ErrorCodes.PROMPT_FAILED, "会话启动已取消，请重新发送", 409);
+      }
+      const decision = decidePromptAction(this.isEffectivelyBusy(id, updatedMs), mode);
+      if (decision.kind === "busy") {
+        return { accepted: false, mode: mode ?? "prompt", busy: true };
+      }
+      if (decision.kind === "steer" || decision.kind === "followUp") {
+        if (!this.running.has(id)) {
+          throw new HubError(
+            ErrorCodes.SESSION_BUSY,
+            "电脑端会话仍在运行，平行模式无法向该终端排队；请等待当前任务结束后重试",
+            409,
+          );
+        }
+        const queue = this.queues.get(id) ?? [];
+        queue.push({ text: effectiveText, images });
+        this.queues.set(id, queue);
+        return { accepted: true, mode: decision.kind };
+      }
 
-    // 预热 provider 环境缓存（自定义 BASE_URL/API_KEY 等），startRun 同步取用
-    await loadClaudeProviderEnv();
-
-    this.startRun(found, effectiveText);
-    return { accepted: true, mode: "prompt" };
+      this.startRun(found, effectiveText, images);
+      return { accepted: true, mode: "prompt" };
+    } finally {
+      pending.delete(attempt);
+      if (pending.size === 0) this.pendingPrompts.delete(id);
+    }
   }
 
   /** 中止当前运行（幂等）：杀子进程 + 清空排队 */
   async abort(id: string): Promise<void> {
+    for (const attempt of this.pendingPrompts.get(id) ?? []) attempt.aborted = true;
     this.queues.delete(id);
     const run = this.running.get(id);
     if (!run) return;
@@ -501,18 +539,21 @@ export class ClaudeAdapter implements SessionAdapter {
 
   /** 合成 user 消息（-p 模式不回显 prompt）：只发 message_end，
    *  前端去重层会把同 role+同 text 的乐观占位（local-*）合并为权威消息，避免重复气泡 */
-  private emitUserMessage(id: string, text: string): void {
+  private emitUserMessage(id: string, text: string, images?: PromptImageAttachment[]): void {
     this.seq += 1;
     const messageId = `live-user-${this.seq}-${Date.now()}`;
     this.emit(id, {
       type: "message_end",
-      message: { id: messageId, role: "user", timestamp: Date.now(), text, toolCalls: [] },
+      message: {
+        id: messageId, role: "user", timestamp: Date.now(), text, toolCalls: [],
+        ...(images?.length ? { images: images.map((image) => ({ url: `data:${image.mimeType};base64,${image.data}`, alt: image.path })) } : {}),
+      },
     });
   }
 
   private seq = 0;
 
-  private startRun(session: SessionListItem, text: string): void {
+  private startRun(session: SessionListItem, text: string, images?: PromptImageAttachment[]): void {
     if (this.disposed) {
       throw new HubError(ErrorCodes.INTERNAL, "server 正在关闭", 503);
     }
@@ -543,20 +584,15 @@ export class ClaudeAdapter implements SessionAdapter {
     this.running.set(session.id, run);
     this.setStatus(session.id, "running");
     this.onLive?.(session.id);
-    this.emitUserMessage(session.id, text);
+    this.emitUserMessage(session.id, text, images);
 
-    let stdoutRest = "";
-    child.stdout?.on("data", (chunk: Buffer | string) => {
-      stdoutRest += String(chunk);
-      let idx = stdoutRest.indexOf("\n");
-      while (idx >= 0) {
-        const line = stdoutRest.slice(0, idx);
-        stdoutRest = stdoutRest.slice(idx + 1);
-        for (const event of translator.feed(line)) {
-          this.dispatch(session.id, event);
-        }
-        idx = stdoutRest.indexOf("\n");
+    const reader = new ClaudeJsonlReader((line) => {
+      for (const event of translator.feed(line)) {
+        this.dispatch(session.id, event);
       }
+    });
+    child.stdout?.on("data", (chunk: Buffer | string) => {
+      if (!run.aborted) reader.write(chunk);
     });
     child.stderr?.on("data", (chunk: Buffer | string) => {
       run.stderrTail = (run.stderrTail + String(chunk)).slice(-STDERR_PREVIEW_LIMIT);
@@ -581,7 +617,7 @@ export class ClaudeAdapter implements SessionAdapter {
       if (next !== undefined && !this.disposed) {
         if (queue.length > 0) this.queues.set(session.id, queue);
         try {
-          this.startRun(session, next);
+          this.startRun(session, next.text, next.images);
         } catch {
           this.setStatus(session.id, "error");
         }
@@ -597,6 +633,7 @@ export class ClaudeAdapter implements SessionAdapter {
       finish(true);
     });
     child.on("close", (code: number | null) => {
+      if (!run.aborted) reader.end();
       const failed = code !== 0 && code !== null && !translator.finished && !run.aborted;
       if (failed) {
         const detail = run.stderrTail.trim() !== "" ? run.stderrTail.trim() : `claude 退出码 ${code}`;

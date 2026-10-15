@@ -1,4 +1,5 @@
-# CI：build + lint + test 全量验证（Node 20 / 22 矩阵，与 engines >= 20 对齐）
+# CI：build + lint + test 全量验证（Node 20/22 × Ubuntu/macOS 矩阵，与 engines >= 20 对齐；
+# 不加 Windows：win32 走降级路径且测试含 POSIX 假设）
 name: CI
 
 on:
@@ -8,10 +9,11 @@ on:
 
 jobs:
   verify:
-    runs-on: ubuntu-latest
     strategy:
       matrix:
+        os: [ubuntu-latest, macos-latest]
         node-version: [20, 22]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -26,5 +28,17 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
       - run: pnpm -r build
+
+      # 发布物冒烟：npm pack 清单 + 根依赖断言（缺文件/缺依赖要到用户安装才发现，这里先挡；
+      # 打包清单与平台无关，仅 ubuntu 跑一次即可）
+      - name: pack smoke / 发布物冒烟
+        if: matrix.os == 'ubuntu-latest'
+        run: node scripts/pack-smoke.mjs
+
       - run: pnpm -r lint
       - run: pnpm -r test
+
+      # 依赖漏洞门禁：--prod 只看运行时依赖；--audit-level=high 只挡 high/critical
+      #（宽松级别防传递性 moderate 噪音卡 CI）
+      - name: dependency audit / 依赖漏洞门禁
+        run: pnpm audit --prod --audit-level=high

@@ -1,4 +1,4 @@
-# API 契约（v0，前后端并行开发的唯一接口基准）
+# API 契约（当前版本 v0.3）
 
 > 本文件是 server/ 与 web/ 的强制契约。任何一方不得单方面修改字段名/路径；
 > 需要变更时记录到本文件并在合并收口时由主会话统一裁决。
@@ -7,19 +7,26 @@ Base URL: `http://<host>:<port>/api`（默认端口 7700）
 所有响应 `Content-Type: application/json`。错误统一为：
 `{ "error": { "code": string, "message": string } }`，HTTP 4xx/5xx。
 
+`auth.enabled=true` 且 token 非空时，HTTP 需 Bearer token；WS upgrade 支持 Authorization、
+`bearer.<token>`（亦支持 token/access_token）子协议或兼容的 `?token=` 参数，并检查 Origin/Host。
+浏览器优先使用子协议，避免 token 进 URL。
+应用锁另行校验解锁令牌，范围见应用锁一节；两层同时启用时须分别满足。
+
 ## 1. 会话（sessions）
 
 ### GET /api/sessions
-列出全部会话，**合并两个来源**：
+列出全部会话，**合并三个来源**：
 - `source: "pi"`：`~/.pi/agent/sessions/` 全目录扫描（session-format v3 JSONL）
 - `source: "claude"`：`~/.claude/projects/<encoded-cwd>/<session-uuid>.jsonl`（Claude Code transcript）
+- `source: "codex"`：`~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` 扫描（rollout JSONL，
+  含 `~/.codex/archived_sessions/` 归档；同一会话跨多个 rollout 分段文件按 session_id 归并）
 
 ```json
 {
   "sessions": [
     {
       "id": "uuid-or-slug",
-      "source": "pi | claude",
+      "source": "pi | claude | codex",
       "name": "pi-report-KPI",
       "cwd": "/Users/me/Workspace/demo-project",
       "updatedAt": "2026-02-18T12:00:00.000Z",
@@ -27,7 +34,6 @@ Base URL: `http://<host>:<port>/api`（默认端口 7700）
       "status": "idle | running | error",
       "lastUserMessage": "帮我检查周报 KPI 口径（截断 120 字符）",
       "lastAssistantMessage": "好的，我先查 ETL 水位…（截断 120 字符）",
-      "sessionFile": "/Users/me/.pi/agent/sessions/--Users-me-.../2026-02-18_xxx.jsonl",
       "isSubAgent": false,
       "parentSessionId": null,
       "lastDrivenBy": "terminal"
@@ -35,8 +41,10 @@ Base URL: `http://<host>:<port>/api`（默认端口 7700）
   ]
 }
 ```
-排序：`updatedAt` 倒序（跨来源统一排序；同刻按 id 稳定排序）；归档会话（`archived: true`）整体排列表尾部。`status` 由 server 内存中的运行态决定
-（本进程启动的 prompt 才可能是 `running`），否则按文件活动推断（60s 内有写盘 = running）。
+排序：`updatedAt` 倒序（跨来源统一排序；同刻按 id 稳定排序）；归档会话（`archived: true`）整体排列表尾部。
+列表、详情及 create/fork 响应剥离内部路径 `sessionFile`。`status` 优先取 hub 实际运行态
+（含空闲的 Claude 接管进程）；无自有运行态时结合显式状态及文件活动推断。外部文件在 60s 内写入
+通常视为 running，tail 还会按下文静默规则收尾，不能理解为外部进程的精确状态。
 
 `source` 为 v0 新增契约字段：列表项与详情里的 `session` 均带该字段；前端按其渲染来源徽章。
 
@@ -55,9 +63,9 @@ header 的 `parentSession`（文件路径）解析出的父会话 id（文件名
 `lastDrivenBy` 为驱动来源标注契约字段（列表项与详情里的 `session` 均带，可缺省）：
 `"panel" | "terminal"`。`POST /api/sessions/:id/prompt` 接受成功后 server 把会话记入
 “面板驱动过”集合（持久化 `data/panel-driven.json`，重启不丢；只增不减，claude 会话同理），
-命中即 `"panel"`，否则 `"terminal"`；缺省按 `"terminal"` 容错。语义：手机面板发消息 =
-server 进程的 pi SDK 实例驱动**同一会话文件**追加，电脑终端 pi 需 `pi --resume` 重开
-才能看到；前端按其渲染 📱 面板驱动 / 🖥 终端驱动 徽章与预期提示条。
+命中即 `"panel"`，否则 `"terminal"`；缺省按 `"terminal"` 容错。这是“曾经由面板平行驱动”的标记，
+不是对当前进程所有者的探测。平行模式由 server 的 SDK/CLI 向同一上下文追加；原终端需重新 resume
+才能看到，前端按其渲染来源提示，也用它判断 Claude 默认接管策略。
 
 `archived` 为归档会话标注契约字段（列表项与详情里的 `session` 均带，可缺省）：codex 归档
 目录 `~/.codex/archived_sessions/` 扫描出的会话为 `true`（任一分段在归档目录即视为归档），
@@ -106,9 +114,11 @@ claude 会话（`source: "claude"`）返回同构映射后的消息：transcript
 映射到 `user`/`assistant`/`toolResult` role；同 `message.id` 的 assistant block 行聚合为一条消息，
 `tool_use` 聚合为 `toolCalls[]`（`tool_result` 折叠回填 status/resultPreview）；thinking 跳过；
 `ai-title` 行作为 `name`；不识别的行/块优雅跳过。
-`thinking` 服务端保证不省略（无思维链为 `null`）；客户端兼容旧数据缺省（视为无思维链）。
+pi 消息的 `thinking` 无思维链时为 `null`；Claude 当前跳过 thinking 块，不能据此承诺三源均返回思维链。
+客户端兼容 `thinking` 缺省（视为无思维链）。Claude 的内部图片尺寸/坐标提示、命令元数据及 sidechain
+不作为主会话用户消息展示；成功读图结果可补回旧上传消息的图片，见消息内嵌图片一节。
 ### POST /api/sessions
-新建会话。请求：`{ "cwd": "/abs/path", "name": "可选", "source": "pi | claude（可选，缺省 pi）" }`
+新建会话。请求：`{ "cwd": "/abs/path", "name": "可选", "source": "pi | claude | codex（可选，缺省 pi）" }`
 响应 201：`{ "session": { ...列表项... } }`
 
 - `source` 缺省/空 → `"pi"`；非法值 → 400 `INVALID_REQUEST`。registry 按 source 分发到对应适配器。
@@ -118,6 +128,8 @@ claude 会话（`source: "claude"`）返回同构映射后的消息：transcript
   首条消息走既有 `claude -p --resume <id>` 流程。
   > 实测（claude 2.1.267）：空文件 `--resume` 报 `No conversation found`；含 isMeta 占位行的合成
   > transcript 可正常 resume 并向同一文件 append。故“新建”= 合成空白会话文件，而非“引导首条消息才建会话”。
+- `source: "codex"`：写最小 rollout 文件（仅 `session_meta` 行），后续 prompt 走
+  `codex exec resume <id> --json` 本地 spawn 驱动。
 - `cwd` 必须是绝对路径（否则 400 `INVALID_CWD`），且必须存在（否则 400 `INVALID_CWD`）。
 
 ### POST /api/sessions/:id/fork
@@ -131,10 +143,12 @@ cwd、消息历史；**原会话文件只读，完全不受影响**，新旧会�
 - `source: "claude"`：server 侧把 transcript 文件复制为**新 UUID** 的会话文件（行内 `sessionId`
   同步替换为新 id，消息 `uuid/parentUuid` 链原样保留），后续 prompt 走 `claude -p --resume <new-id>`。
   实测：fork 后新会话独立 append，原文件字节不变。
+- `source: "codex"`：复制**全部分段 rollout** 为新 UUID 会话（行内 `session_id`/`id` 同步替换，
+  原文件只读），后续 prompt 走 `codex exec resume <new-id> --json`。
 - 名称随上下文继承（pi 的 `session_info` / claude 的 `ai-title` 均在复制范围内）。
 
 ### POST /api/sessions/:id/prompt
-发送消息。`mode` 语义与 pi SDK 一致：
+发送消息。以下为 pi SDK 的模式语义；Claude 的差异见本节下方：
 - `"prompt"`（默认）：空闲时发送；**会话正忙且未指定 mode 时返回 409** `SESSION_BUSY`
 - `"steer"`：插入当前运行之后（转向）
 - `"followUp"`：排队到当前 run 结束后
@@ -145,15 +159,35 @@ cwd、消息历史；**原会话文件只读，完全不受影响**，新旧会�
 
 claude 会话：server 本地 spawn
 `claude -p <text> --resume <session-id> --output-format stream-json --verbose --include-partial-messages --permission-mode manual`，
-解析 stream-json 事件映射到 §4 WS 事件；`steer`/`followUp` 降级为排队（run 结束后自动发送）；
-安全默认：`--permission-mode manual`（覆盖用户 settings，不可无人确认执行破坏性操作），
+解析 stream-json 事件映射到 WS 事件；本服务启动的 run 正忙时，`steer`/`followUp` 均排队（进程 close 后自动发送，附件随队列保留）；
+若是未接管的外部终端正在运行，平行模式三种 mode 均返回 `409 SESSION_BUSY`，不受理无法投递的队列；
+平行通道显式使用 `--permission-mode manual`（覆盖用户的默认权限模式；具体工具许可仍由 CLI 配置决定），
 不使用 `--dangerously-skip-permissions` / `--allowedTools`。
 
+历史会话无需原终端在线即可 resume；打开页面本身不发送历史任务。Claude 发送在异步环境准备结束后，
+依据实际自有运行状态与最新文件 mtime 再检查 busy，并在无额外 await 的情况下启动进程，避免同会话双开。
+abort 会取消准备中的请求及尚未消费的本地队列，已取消的准备不会继续启动。
+
 ### POST /api/sessions/:id/abort
-中止当前运行（claude 会话：杀 spawn 的子进程）。响应 200：`{ "aborted": true }`（空闲时也返回 true，幂等）。
+中止当前运行（Claude 平行模式：终止自有子进程并取消准备/队列；接管模式：向驱动发送 control interrupt，
+进程可继续接下一轮）。响应 200：`{ "aborted": true }`（空闲时也返回 true，幂等）。
 
 ### POST /api/sessions/:id/compact
 手动压缩上下文（仅 pi 会话；claude 会话返回 400 `INVALID_REQUEST`，由其自身 autocompact 管理）。响应 200：`{ "ok": true }`。
+
+### POST /api/sessions/:id/rename
+会话改名（手机可维护）。请求：`{ "name": "新名字" }`——`name` 必须是字符串，
+**空串 = 清空名字**（恢复无名）；最长 200 字符。
+响应 200：`{ "session": { ...会话列表项... } }`（改名后的会话，`name` 为新名/清空后 `null`）。
+
+- `source: "pi"`：向会话 JSONL 追加 `session_info` entry（与 pi `/name` 同机制）。
+- `source: "claude"`：追加 `ai-title` 行（transcript 会话名栏位，最新一条为当前名）。
+- `source: "codex"`：400 `INVALID_REQUEST`（`来源 codex 暂不支持重命名会话`）。
+- 两源改名均在写盘**前**快照推断状态（实时 mtime），防写盘刷新 mtime 后被 60s 时间窗误判 running。
+- 错误：会话不存在 → 404 `SESSION_NOT_FOUND`；`name` 非字符串 / 超 200 字符 → 400 `INVALID_REQUEST`。
+- 注意：本端点响应当前为适配层原样 `SessionListItem`（含内部字段 `sessionFile`），与
+  create/fork 的瘦身出参（剥离 `sessionFile`）口径不一致——消费方按列表项字段使用，
+  **勿依赖 `sessionFile`**。
 
 ### GET /api/search
 跨全部会话搜消息文本（大小写不敏感子串匹配，无需全文索引）。
@@ -205,6 +239,40 @@ claude 会话：server 本地 spawn
 - `activePath` = 当前活跃分支到根的 id 路径，**root→leaf 顺序**（与 `messages` 顺序一致）。
 - 防御：v1 线性文件（无 `id`/`parentId`）按顺序补 `anon-<i>` 成链；悬空 `parentId` 的节点视为根。
 
+### GET /api/sessions/:id/agents
+子代理活动快照（父会话面板初始化用）：聚合该会话下「正在干活的子代理」。
+会话不存在 / 无子代理 → 200 `{ "agents": [] }`（**不报 404**，面板空态即可）。
+
+```json
+{
+  "agents": [
+    {
+      "sessionId": "sub-uuid",
+      "name": "developer#abc123",
+      "status": "idle | running | error",
+      "currentTool": "bash: pnpm test",
+      "toolRunning": true,
+      "lastOutput": "正在执行测试…（截断 160 字符）",
+      "startedAt": 1770000000000,
+      "updatedAt": 1770000012000,
+      "done": false,
+      "resultSummary": null
+    }
+  ]
+}
+```
+
+说明：
+- **pi**：只聚合 pi-subagents 派生子代理（`isSubAgent && parentSessionId === :id`）；
+  fork 分支虽带 `parentSessionId` 但不是「子代理在干活」，不进面板。
+- **claude**：Task 子代理（transcript sidechain）与主会话同文件，从解析产物直接聚合
+  （同构 `SubAgentActivityDto`）。
+- **codex**：无子代理概念 → 恒空数组。
+- 字段口径：`currentTool` 为当前/最近工具 summary（`toolRunning` 标注是否仍在执行）；
+  `lastOutput` 最后一条 assistant 文本（截断 160 字符）；`startedAt` 首次活动时间（ms，算已运行时长）；
+  `done` = 已结束（非 running），结束卡片转「✅ 完成，点击查看结果」，`resultSummary` 为结果摘要。
+- 实时增量走 WS `subagent_activity`（§6 事件表），本端点为冷启动快照（二者形状对齐）。
+
 ## 2. 系统状态（system）
 
 ### GET /api/system
@@ -238,7 +306,7 @@ claude 会话：server 本地 spawn
 ```
 `available:false` 不是错误——前端展示为"可选增强未安装"。`claude` 为 CLI 探测（可选增强）。
 
-`terminal` 为 F2 新增（ttyd Web 终端运行态，详见 §13；旧 server 可缺省，前端按未启用容错）：
+`terminal` 为 F2 新增（ttyd Web 终端运行态，详见“ttyd Web 终端”一节；旧 server 可缺省，前端按未启用容错）：
 `supported`=平台支持（仅 POSIX）、`installed`=ttyd 已安装、`running`=按需拉起的 ttyd 在运行、
 `version` 同其它工具探测、`hint`=降级提示（未安装给安装命令 / Windows 给「不支持（WSL 内可用）」）。
 
@@ -402,7 +470,7 @@ claude 会话：server 本地 spawn
 ## 6. WebSocket 事件流
 
 ### WS /ws/sessions/:id
-连接即进入"订阅"模式：server 推送 pi 会话事件（与 pi JSON event stream 语义对齐）。
+连接即进入“订阅”模式：server 将三个来源的事件映射为下列统一结构。
 
 server → client（每条一个 JSON 对象）：
 | type | 字段 | 说明 |
@@ -413,12 +481,15 @@ server → client（每条一个 JSON 对象）：
 | `thinking_delta` | `messageId, delta` | 流式思维链增量（累积到消息 `thinking` 字段） |
 | `tool_start` | `messageId, toolCall: {name, summary}` | 工具开始 |
 | `tool_end` | `messageId, toolCall: {name, summary, status, resultPreview}` | 工具结束；`status:"running"` 时为执行中快照（`resultPreview` 为部分结果，前端按 `name` 合并进同一工具卡） |
-| `message_end` | `message: {同 GET 详情的 message 结构（含 thinking）}` | 消息完成（权威数据） |
-| `agent_settled` | — | 本轮工作全部结束（UI 恢复输入框） |
+| `message_end` | `message: {同 GET 详情的 message 结构}` | 单条消息完成（权威数据），不代表整轮完成，后续仍可执行工具 |
+| `agent_settled` | — | 本轮工作结束；UI 恢复输入，保留已经收到的 error 状态 |
 | `status` | `status: "idle\|running\|error"` | 状态变化 |
+| `subagent_activity` | `sessionId, parentSessionId, activity` | 子代理活动增量（§1 GET agents 的 `SubAgentActivityDto` 变化字段并集，恒含 `sessionId`，通常带 `name`）；推送到**父会话**通道（订阅 `/ws/sessions/<父 id>` 收到） |
 | `error` | `code, message` | 运行期错误 |
 | `attach_state` | `attached, terminalOnline` | 终端驱动状态变化（§12：接管建立/失效） |
 | `command_ack` | `commandId, ok, error` | attach 指令回执（成功/失败原因） |
+| `host_request` | `request: HostRequestDto` | hub 驱动 claude 会话的权限请求（§12，手机批权限卡片） |
+| `host_request_resolved` | `requestId, outcome: "allow\|deny\|timeout\|cancelled"` | 权限请求已决 |
 
 client → server（可选，替代 REST）：
 | type | 字段 |
@@ -428,15 +499,25 @@ client → server（可选，替代 REST）：
 | `ping` | —（保活，server 回 `pong`） |
 
 断线重连：client 指数退避重连；重连后通过 `GET /api/sessions/:id` 全量对账（不做增量恢复，v0 简化）。
+Claude 流式 assistant 使用原生 `message.id`（缺失才回退临时 id），与 transcript 聚合及工具结果回填一致。
+图片对账先按 id 保留已有附件；临时用户消息换成落盘 id 时，只对文本一致、时间差不超过 60 秒的消息
+就近一对一匹配。服务端显式返回的 `images`（含空数组）优先，不覆盖为旧图片。
 
-> 两个 source（pi / claude）事件形状完全一致；claude 会话的流事件由 server 解析
+前端在 assistant `message_end` 后静默 5 秒会查询 `GET /api/sessions/:id?limit=1`；只有服务端状态
+确认结束才恢复空闲。仍在运行或查询失败时继续等待并重查；新事件、新发送/重试、整轮结束或卸载页面
+会作废旧查询，迟到响应不能覆盖新一轮状态。Claude 接管的 init 不代表 running，`result` 必须先广播
+本轮 idle/error 与 settled，再消费 followUp；常驻进程本身不代表任务正在运行。
+
+> 三个 source（pi / claude / codex）事件形状完全一致；claude 会话的流事件由 server 解析
 > `claude --output-format stream-json` 后映射（text_delta / tool_start / tool_end /
-> message_end / agent_settled / status / error），tail 场景由 transcript 解析器 diff 新消息补齐。
+> message_end / agent_settled / status / error），codex 会话由 `codex exec --json` 事件流映射，
+> tail 场景由各自解析器（transcript / rollout）diff 新消息补齐。
 
-## 5. 约定
+### 外部运行状态约定
 补充：
-- 文件 tail 推断的外部会话 run 结束（静默 60s）同样发 `agent_settled` + `status:idle`
-  （"本轮工作全部结束"语义一致，供通知聚合与 UI 恢复输入框）。
+- 文件 tail 对外部会话只能推断结束：最后新增消息是非空 assistant 文本后静默 3 秒，或无新增消息
+  60 秒，会发 `agent_settled` + `status:idle`。这是文件活动启发式，不能证明外部进程已经停止；
+  hub 管理的运行状态优先，不能用短暂静默结束仍在执行的自有任务。
 - hub 运行活动（steer/followUp 插话、abort 中止）内部上报给通知聚合，不新增 WS 事件类型。
 
 ### WS /ws/events（全局频道）
@@ -450,12 +531,12 @@ server → client：
 | `notification` | `notification: NotificationItem` | 新通知（横幅/震动/声音/未读角标） |
 | `pong` | — | ping 响应（保活） |
 
-## 7. 约定
+### 通用约定
 - 时间一律 ISO 8601 UTC（`timestamp` 毫秒为 pi 原始值）。
-- 所有列表字段缺省 `[]`，对象缺省 `null`，不得省略字段。
+- 必填列表字段无数据时为 `[]`，必填可空对象为 `null`；明确标注可选的字段允许缺省。
 - 端口、session 目录、workspace root 可由 `config/hub.config.json` 覆盖。
 
-## 6. Git 与文件（只读，硬约束）
+## 7. Git 与文件（只读，硬约束）
 
 > **只读硬保证**：server 只调用只读 git 子命令（rev-parse/status/log/diff/show/branch/rev-list），
 > **不提供**任何写操作（commit/checkout/push/…）；`file`/`path`/`commit` 参数全部校验：
@@ -565,12 +646,12 @@ unified diff 原文。`file` 省略 = 全部变更；`commit` 省略 = 工作区
 | `INVALID_FILE` | 400 | 二进制文件不支持预览 |
 | `FILE_NOT_FOUND` | 404 | 文件不存在 / 是目录 |
 | `GIT_FAILED` | 500 | git 命令执行失败 |
-## 6. pi 实时旁观接入（live ingest，2026-02 新增）
+## pi 实时旁观接入（live ingest）
 
 ### POST /api/live/:sessionId
 
 pi 扩展 `integrations/pi-live-feed/live-feed.ts` 把**任意终端 pi 会话**的实时事件流
-（思维链/流式回复/工具执行，token 级）推给 server，server 转成 §4 的 WS 事件广播到
+（思维链/流式回复/工具执行，token 级）推给 server，server 转成 §6 的 WS 事件广播到
 `/ws/sessions/:sessionId`。fire-and-forget 语义：扩展侧失败静默，server 侧坏数据丢弃，绝不 500。
 
 请求体（三种形态等价）：
@@ -579,7 +660,7 @@ pi 扩展 `integrations/pi-live-feed/live-feed.ts` 把**任意终端 pi 会话**
 { "events": [ { "type": "text_delta", "messageId": "live-1-…", "delta": "你" } ] }
 ```
 
-事件对象即 §4 的 server→client 事件子集：`message_start` / `text_delta` / `thinking_delta` /
+事件对象即 §6 的 server→client 事件子集：`message_start` / `text_delta` / `thinking_delta` /
 `tool_start` / `tool_end`（含 `status:"running"` 执行中快照）/ `message_end`（message 含 `thinking`）/
 `agent_settled` / `status`。未知 `type`、缺关键字段的条目静默丢弃。
 
@@ -610,9 +691,9 @@ chat 输入区 `/` 触发命令面板：server 按 source 分发命令清单（�
   不可用（实测 `claude -p "/help"` → "/help isn't available in this environment."，`/compact` `/clear`
   静默无输出），UI 按 `terminalOnly` 标注"仅终端可用"并给降级提示。
 
-### GET /api/commands?source=pi|claude
+### GET /api/commands?source=pi|claude|codex
 
-`source` 缺失或非 `pi|claude` → 400 `INVALID_REQUEST`。
+`source` 缺失或非 `pi|claude|codex` → 400 `INVALID_REQUEST`。
 
 ```json
 {
@@ -632,6 +713,8 @@ chat 输入区 `/` 触发命令面板：server 按 source 分发命令清单（�
   + 扫描 `~/.claude/commands/` 的 .md 自定义命令（一层子目录 → `/dir:name` 命名空间，
   `terminalOnly:false`）。
   `description` 取 frontmatter `description:`，缺省取首个文本行；扫描失败降级为空列表，不 500。
+- `codex`：恒返回**空清单**（`codex exec` 通道不支持 slash 命令展开，自定义命令目录未约定；
+  UI 标注无可用命令）。
 - 条目上限 300/source；命令名限定 `[A-Za-z0-9][A-Za-z0-9._:-]{0,63}`（防注入响应）。
 
 ## 9. 文件树（GET /api/fs/tree，只读，硬约束）
@@ -639,7 +722,7 @@ chat 输入区 `/` 触发命令面板：server 按 source 分发命令清单（�
 chat 输入区 `@` 触发文件选择面板（多选插入 `@rel/path` 引用，pi `@path` / claude @-mentions）。
 
 > **只读硬保证**：仅 `readdir`+`stat`，无任何写入口；`cwd` 必须是存在的绝对目录；
-> `path` 参数 resolve 后必须仍在 `cwd` 内（防 `../` 穿越，与 §6 git 同口径）；
+> `path` 参数 resolve 后必须仍在 `cwd` 内（防 `../` 穿越，与 §7 git 同口径）；
 > 单层列表，深度 ≤ 24、条目 ≤ 500（截断时 `truncated:true`）。
 
 ### GET /api/fs/tree?cwd=&path=&q=&hidden=
@@ -672,29 +755,51 @@ chat 输入区 `@` 触发文件选择面板（多选插入 `@rel/path` 引用，
 ## 10. 消息内嵌图片（MessageDto.images，§1 补充）
 
 消息 DTO 新增可选字段 `images`（无图**缺省**，向后兼容）：pi `ImageContent` / claude `image` block
-统一映射为 `{ "url": "data:image/…;base64,… | https://…", "alt": null }`，每消息最多 8 张。
+统一映射为 `{ "url": "data:image/…;base64,… | https://…", "alt": "string | null" }`，每消息最多 8 张。
 text 仍为纯文本（claude 纯图消息 text 为 `[image]` 占位）；前端渲染为 `<img>`（max-width 100%，
 不拦截长按，保留 Android Chrome 原生"保存图片"菜单）。markdown 正文中的 `![alt](src)` 同样渲染
 （src 白名单：http(s) / data:image / 相对路径）。
 
+Claude 平行模式发送时即在合成的用户消息中携带附件预览；本地队列保留附件，前端对账不因临时 id
+换成落盘 id 而丢图。旧版只有 `@.agent-hub-uploads/...` 的用户消息，可从随后对应 Read 工具的
+成功图片结果恢复预览：要求用户文本明确引用该路径、路径位于允许的上传根、tool_use_id 对应，
+排除错误结果及无关文件图片，去重后仍至多 8 张。恢复依赖保存的成功读图结果，不能保证仅有路径的
+历史记录在刷新后就有图。
+
+`isMeta` / `turnCompanion` / sidechain 及图片尺寸提示（如 `[Image: original …, displayed at ….
+Multiply coordinates …]`）不展示为额外用户消息；stdout 即使丢失标志也会过滤这种内部提示。
+这不影响正常用户文本和工具结果处理。
+
 ## 11. 终端驱动状态（SessionListItem.terminal，§1 补充）
 
-`SessionListItem` 新增可选字段 `terminal`（claude 会话与旧 server **缺省**，向后兼容）：
+`SessionListItem` 可选字段 `terminal`（codex 会话与旧 server **缺省**，向后兼容）：
 
 ```json
-{ "online": true, "attached": false }
+{ "online": true, "attached": false, "driver": "queue", "mirror": false, "defaultPolicy": "active-only" }
 ```
 
-- `online`：终端 pi 扩展心跳在 90s 内（§12）。
-- `attached`：会话处于 attach 接管模式（消息走指令队列发往终端 pi）。
-- `GET /api/sessions` 与 `GET /api/sessions/:id` 均注入；前端据此渲染会话列表徽章
-  （🖥⚡ 已接管 / 🖥 终端在线 / 📱 平行线）与模式菜单可用性。
+- `online`：pi=扩展心跳 90s 内；Claude（hub 驱动）=服务提供接管能力，不代表原 TUI 在线，
+  也不保证此次 attach 一定成功。
+- `attached`：会话处于 attach 接管模式（pi=消息走指令队列注入终端 TUI；claude=hub 持有长驻
+  `claude -p --resume` 进程，stdin 注入真用户 turn）。
+- `driver`：`"queue"`（pi 扩展指令队列）| `"hub"`（claude 驱动进程）；缺省按 queue 容错。
+- `mirror`：tmux 投屏就绪（仅 hub 形态）。
+- `defaultPolicy`（v0.3 新增，可选）：智能默认接管策略，取自 `config.claudeDriver.defaultPolicy`
+  并随 terminal 下发（pi/claude 双通道均带；codex terminal 缺省不下发）：
+  `"active-only"` = pi 扩展在线时默认接管，Claude 在 `status === "running"` 或
+  `lastDrivenBy === "terminal"` 时默认尝试接管（后者也可能是空闲历史会话）；`"always"` = 打开即尝试，
+  pi 仍须 `online === true`；`"never"` = 只手动切换。Claude 实际 attach 仍受开关、静默窗和并发上限约束。
+  **老 server 缺省该字段 → 前端按 `"active-only"` 容错**（行为与历史一致）；用户手动选择（pin）
+  永远优先于该策略。
+- `GET /api/sessions` 与 `GET /api/sessions/:id` 均注入（pi/claude）；前端据此渲染会话列表徽章
+  （🖥⚡ 已接管 / 🖥 终端在线|可接管 / 📱 平行线）与模式菜单可用性。
 
 ## 12. 终端接管 / 指令队列（E3 双模式会话驱动）
 
-双模式：**📱 parallel**（消息走 §1 prompt，server 内 SDK 实例处理，现状）与
-**🖥 attach**（消息入指令队列，电脑终端 pi 进程经 `integrations/pi-command` 扩展取走并注入，
-终端 TUI 实时显示并执行）。用户在 chat 顶栏徽章自行选择。
+双模式：**📱 parallel**（消息走 prompt；pi 使用 SDK，Claude/Codex 启动各自 CLI）与
+**🖥 attach**（pi 经 `integrations/pi-command` 注入已有终端进程；Claude 由 hub 新建持续运行的
+CLI 进程续接同一上下文，支持 tmux 投屏）。Claude 不控制原 TUI，Codex 暂不支持 attach。
+用户在 chat 顶栏徽章选择；接管期间请避免同时在原 Claude TUI 输入。
 
 ### POST /api/agents/heartbeat（扩展 → server，30s 一续）
 
@@ -721,32 +826,69 @@ text 仍为纯文本（claude 纯图消息 text 为 `[image]` 占位）；前端
 结果经 WS `command_ack` 回流到 web。
 
 > **指令通道安全**：以上 `/api/agents/*` 三端点**仅限本机回环**访问，且 `auth.token` 非空时必须
-> 携带 `Authorization: Bearer <token>`（与 §6 live 接入同 token）——局域网伪造心跳/指令/回执一律 401。
+> 携带 `Authorization: Bearer <token>`（与 pi live 接入同 token）——局域网伪造心跳/指令/回执一律 401。
 
 ### POST /api/sessions/:id/attach（接管会话）
 
-响应 202：`{ "attached": true, "agent": { "sessionId", "pid", "cwd", "online" } }`。
-终端离线 → 409 `ATTACH_UNAVAILABLE`；会话不存在 → 404；claude 会话 → 400 `INVALID_REQUEST`。
+按 `session.source` 分流（pi → 指令队列；claude → hub 驱动；codex → 400）。
+
+pi 响应 202：`{ "attached": true, "agent": { "sessionId", "pid", "cwd", "online", "capabilities", "lastSeen" } }`。
+claude 响应 202：`{ "attached": true, "agent": { "sessionId", "cwd", "online", "driver": "hub", "mirror" } }`。
+终端离线（pi）→ 409 `ATTACH_UNAVAILABLE`；claude 外部写入静默窗内 → 409 `ATTACH_UNAVAILABLE`；
+驱动并发满 → 409 `DRIVER_LIMIT`；会话不存在 → 404；codex → 400 `INVALID_REQUEST`。
+
+Claude 同会话并发 attach 共享一次启动；准备中的接管计入 `maxConcurrent`。detach/dispose 可取消
+尚未完成的启动。文件静默窗在准备前与启动进程前各检查一次，默认 3000ms；只能降低并发写入风险，
+不能锁住原 TUI 或检测一直未写盘的外部计算。
+
+**`config.claudeDriver.enabled=false`（行为收紧，v0.3）**：server 不构造 claude 驱动
+（`claudeDriver=null`），此时 claude 源的 `attach`/`detach`/`message` 与 host-requests 端点
+一律 **400 `INVALID_REQUEST`**（message「claude 会话接管未启用」）；前端据此回落 📱 平行模式
+（与「旧 server 无此路由」同一条回落路径）。`terminal` 也不再下发（灰显原因文案：
+「暂无法接管：server 未启用 claude 接管（需 v0.3+ 且 claudeDriver.enabled）」）。
 
 ### POST /api/sessions/:id/detach（退出接管）
 
-响应 200：`{ "attached": false }`。未投递指令取消（回执失败原因）。
+响应 200：`{ "attached": false }`。未投递指令取消（回执失败原因）；挂起权限请求一律 deny 收尾。
 
 ### POST /api/sessions/:id/message（attach 通道发消息）
 
 请求：`{ "text": "…", "mode": "prompt|steer|followUp", "clientMessageId": "可选幂等键" }`
 响应 202：`{ "accepted": true, "channel": "attach", "commandId": "cmd-…", "mode": "…" }`。
-未 attach → 409 `ATTACH_REQUIRED`；队列满 → 409 `ATTACH_QUEUE_FULL`；同 `clientMessageId`
+未 attach → 409 `ATTACH_REQUIRED`；队列满（pi）→ 409 `ATTACH_QUEUE_FULL`；同 `clientMessageId`
 重复提交返回同一 `commandId`（不重复入队）。
 
-注入语义（pi 扩展 API `sendUserMessage`）：`prompt`=空闲时发（正忙回执失败原因）、
-`steer`=插话当前 run 后、`followUp`=排队到 run 待办结束（空闲时等价立即发）。
+注入语义（pi=扩展 API `sendUserMessage`；claude=stdin 注入真用户 turn，docs/CLAUDE_DRIVER.md）：
+`prompt`=空闲时发（正忙回执失败原因）、`steer`=插话当前 run 后（claude 实测=工具间隙转向）、
+`followUp`=排队到 run 待办结束（空闲时等价立即发）。
+Claude 忙时的普通 `prompt` 通过 `command_ack{ok:false,error:...}` 报告失败，HTTP 已返回的 202
+只表示受理指令，不表示已写入模型；调用方须消费回执。详情见 [CLAUDE_DRIVER.md](CLAUDE_DRIVER.md)。
+
+### host 权限请求（hub 驱动 claude 会话的手机批权限）
+
+非 bypass 环境下工具需确认时，驱动进程经 `--permission-prompt-tool` MCP bridge 回连：
+
+- `POST /api/agents/host-requests`（bridge → server，仅本机回环 + token）：
+  请求 `{ "sessionId", "requestId", "toolName", "toolUseId", "input", "description?" }`；
+  **挂起**至人工应答/超时后返回 `{ "behavior": "allow|deny", "message" }`（bridge 据此回注
+  PermissionResult）。超时/收尾一律 `deny`（**绝不自动 allow**）。
+- `GET /api/sessions/:id/host-requests`（手机）→ `{ "requests": HostRequestDto[] }`
+  （断线重连兜底拉取，防 WS 丢事件卡死）。
+- `POST /api/sessions/:id/host-requests/:requestId`（手机）：`{ "outcome": "allow|deny", "message"? }`
+  → `{ "resolved": true, "outcome" }`；未知 → 404 `HOST_REQUEST_NOT_FOUND`；已决 → 409 `HOST_REQUEST_RESOLVED`
+  （已决 id 短期记忆 TTL 约 5 分钟、上限约 200 条，过期/淘汰后回 404）。
+
+`HostRequestDto`：`{ id, sessionId, kind: "permission"|"question", title, detail, toolName?, allowAlways?, createdAt, expiresAt }`。
+bypassPermissions 环境不产生请求（全自动放行）；headless 无 AskUserQuestion（模型文字化提问）。
 
 ### 冲突保护
 
 attach 生效期间同会话 parallel 发送（`POST /prompt` 与 WS `prompt`）一律 409 `ATTACH_ACTIVE`
-（防 server SDK 实例与终端 pi 双写同一会话文件）；`/compact` 同样拒绝。detach 后恢复。
-心跳超时（90s）attach 自动失效并广播 `attach_state {attached:false}`，web 自动回落 📱 平行模式。
+（覆盖 pi 指令队列 / Claude hub 驱动并集）；`/compact` 同样拒绝。detach 后恢复。
+parallel 的 busy 判定覆盖本进程 run、hub 驱动接管与最新文件活动；外部 TUI 忙时三种 mode 均拒绝，
+只有本服务自有平行 run 的 steer/followUp 会入本地队列。这些检查不能提供跨进程互斥。
+心跳超时（pi 90s）/ 驱动进程退出（claude）attach 自动失效并广播 `attach_state {attached:false}`，
+web 自动回落 📱 平行模式。
 
 ## 13. 应用锁（app lock，F1 新增）
 
@@ -754,11 +896,14 @@ attach 生效期间同会话 parallel 发送（`POST /prompt` 与 WS `prompt`）
 **绝不存明文**），解锁成功发短期令牌（7 天），前端存 localStorage，过期/失效显示解锁屏。
 
 **与 `auth.token` 的关系（两者完全独立）**：
-- `auth.token`（§6/§12）= **API 鉴权**（可选）：live-feed / 指令通道共享密钥，防局域网伪造调用。
-- 应用锁 = **UI 解锁**：防手机被他人拿到直接看会话；锁屏期间前端不挂载任何业务页面组件
-  （不拉会话/看板/通知数据）。
-- 解锁令牌只走 `X-App-Lock-Token` 请求头（**绝不进 URL/日志**），只用于应用锁自身端点的
-  "已解锁"证明（改密/注册生物识别）；不参与业务 API 鉴权，也不受 `auth.token` 影响。
+- `auth.token` = **API / WS 鉴权**（可选）；live-feed / 指令通道也使用此共享密钥。
+- 应用锁 = **界面解锁与操作门禁**：锁屏时前端不挂载业务页面；服务端对普通业务 HTTP API
+  校验解锁令牌（缺失 → 423 `APP_LOCKED`，失效 → 401），WS prompt/abort 同样校验。
+  `/api/app-lock/*` 的解锁入口、静态资源及本机机器通道 `/api/agents/*`、`/api/live/*` 豁免全局锁门禁；
+  机器通道仍受回环与 token 校验，应用锁自身敏感操作另行验证。
+- 浏览器 HTTP 使用 `X-App-Lock-Token`，WS 使用 `lock-token.<token>` 子协议；旧客户端的
+  `?lockToken=` 兼容读取。前端不把解锁令牌写入 URL，日志对凭据参数脱敏。
+  解锁令牌不能替代 `auth.token`，也不等于重新认证已建立的 WS 订阅。
 
 密钥规则：4-6 位数字 PIN，或 8-128 字符口令（passphrase）。哈希口径：`sha256(salt:secret)`，
 salt 随机 16 字节 hex 与记录同存；令牌为 32 字节随机 base64url，server 只存 `sha256(token)`。
@@ -823,8 +968,8 @@ rpIdHash / userPresent / userVerified / signCount 防克隆）→ 200 发解锁�
 刷新/杀 App 不丢）；`online` 事件 + WS 重连自动按序重发（复用既有 `POST /prompt` /
 `POST /message` 通道，attach 通道以 `clientMessageId=localId` 幂等）。业务拒绝（4xx）标
 手动重试不自动重发。附件/图片随消息入队：已上传存引用路径，未上传存 base64（联网后补
-`POST /api/uploads`），base64 持久化上限单图 1MB / 队列 3MB，超限提示并退化为本次页面内暂存。
-## 13. ttyd Web 终端（F2：同源反代 /terminal/*）
+`POST /api/uploads`，§15），base64 持久化上限单图 1MB / 队列 3MB，超限提示并退化为本次页面内暂存。
+## ttyd Web 终端（F2：同源反代 /terminal/*）
 
 可选增强：ttyd 已安装（POSIX）时，手机 PWA 提供「真终端」入口（iframe 内嵌同源反代页）。
 Windows 不支持（hint：「不支持（WSL 内可用）」）；未安装给安装指引（macOS `brew install ttyd`、
@@ -857,7 +1002,7 @@ Linux `sudo apt install ttyd`）。与 §12 的「终端接管」是两回事：
 - `WS /terminal/ws`：upgrade 字节流管道到 ttyd `/ws`（同样 token 校验 + 凭证注入）。
 - 鉴权：token 能力凭证（`?t=` 查询串）或 `hub-terminal-token` HttpOnly Cookie（Path=/terminal）。
   无效/过期 → 401 信封；ttyd 未运行 → 503。token 校验不过的 upgrade 直接断连。
-- 与 §6 的 SPA 路由 `/terminal`（无斜杠）不冲突：`/terminal` 回前端页面，`/terminal/*` 走反代。
+- 与 SPA 路由 `/terminal`（无斜杠）不冲突：`/terminal` 回前端页面，`/terminal/*` 走反代。
 ## 14. Token 用量统计（GET /api/usage，pi + codex 源）
 
 pi 会话 JSONL 中每条 assistant 消息的 `message.usage` 记录一次 API 调用的用量，
@@ -917,3 +1062,68 @@ rollout 分段文件时采样合并为一条会话汇总。claude 源延后。
 
 - 工作台「今日概览」：今日 tokens / 近 7 天 tokens；会话列表行内显示该会话 tokens
 - 加载失败 / 无数据安静降级（占位或隐藏），不阻塞其它面板
+
+## 15. 文件上传（POST /api/uploads）
+
+chat 输入区上传文件/图片：base64 JSON 落盘到会话 `cwd/.agent-hub-uploads/`，产出可引用路径
+（配合 `@path` 引用与 `POST /prompt` 的 `images` 附件，§1/§10）。
+
+### POST /api/uploads
+
+请求（`Content-Type: application/json`，body 上限 14MB）：
+
+```json
+{
+  "sessionId": "uuid-or-slug（推荐）",
+  "cwd": "/abs/path（可选，与 sessionId 均缺省时兜底临时目录）",
+  "name": "report.pdf",
+  "mimeType": "application/pdf",
+  "data": "<base64，不含 data: 前缀>"
+}
+```
+
+响应 201：
+
+```json
+{
+  "upload": {
+    "name": "report.pdf",
+    "path": ".agent-hub-uploads/report.pdf",
+    "absPath": "/Users/me/Workspace/demo/.agent-hub-uploads/report.pdf",
+    "mimeType": "application/pdf",
+    "size": 12345,
+    "isImage": false
+  }
+}
+```
+
+说明：
+- 落盘目录 `<cwd>/.agent-hub-uploads/`；`name` 清洗（最长 100 字符，空名回退 `upload.bin`），
+  重名自动 `name-1.ext`、`name-2.ext`… 去重。
+- `path` = 可引用路径：cwd 内为**相对路径**（`.agent-hub-uploads/x.png`，`@` 引用与 prompt
+  `images` 用它）；cwd 不可用时兜底临时目录，`path`/`absPath` 为绝对路径。
+- **写入范围约束（防任意目录写入）**：带 `sessionId` 时 cwd 取该会话归属目录（不存在 →
+  404 `SESSION_NOT_FOUND`）；带 `cwd` 时必须是绝对路径且落在 `workspaceRoot` 或已知会话
+  cwd 内（否则 400 `INVALID_CWD`）；`sessionId` 与 `cwd` 均缺省则兜底临时目录
+  `<tmpdir>/agent-hub-uploads/`（201 正常落盘，不报 400）。realpath 二次校验防符号链接逃逸
+  （越界 → 400 `INVALID_PATH`）。
+- 类型白名单：MIME 白名单（image/png、image/jpeg、image/webp、image/gif、image/avif、
+  image/bmp、image/svg+xml、text/plain、text/markdown、text/csv、text/html、
+  application/json、application/pdf、application/zip、application/x-tar、application/gzip）
+  优先；`application/octet-stream`/缺失走扩展名兜底（含常见代码/文本扩展名）；都不命中 →
+  415 `UNSUPPORTED_MEDIA_TYPE`。MIME 命中时扩展名以规范值统一（防伪装）。
+- `isImage` = MIME 属 image/*（决定 UI 缩略图预览；prompt `images` 仅收图片，非图片 → 415）。
+  pi 通过 SDK ImageContent 直接附图；Claude/Codex CLI 当前以文本 `@path` 提示 agent 读文件，
+  不应将缩略图已显示理解为 CLI 已直接收到原生图片块。
+- 大小上限：单文件 10MB（超出 413 `UPLOAD_TOO_LARGE`）；`data` 非法 base64 / 空文件 →
+  400 `INVALID_REQUEST`。
+
+### 错误码（本节新增）
+
+| code | HTTP | 含义 |
+|---|---|---|
+| `SESSION_NOT_FOUND` | 404 | `sessionId` 不存在 |
+| `INVALID_CWD` | 400 | cwd 非法 / 不在 workspaceRoot 或已知会话目录内 |
+| `INVALID_PATH` | 400 | 上传路径越界（含符号链接逃逸） |
+| `UPLOAD_TOO_LARGE` | 413 | 文件超过 10MB 上限 |
+| `UNSUPPORTED_MEDIA_TYPE` | 415 | 不在 MIME/扩展名白名单 |

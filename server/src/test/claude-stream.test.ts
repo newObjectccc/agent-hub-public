@@ -5,7 +5,7 @@
  */
 import { strict as assert } from "node:assert";
 import { describe, it } from "node:test";
-import { ClaudeStreamTranslator } from "../adapters/claude-stream.js";
+import { ClaudeJsonlReader, ClaudeStreamTranslator } from "../adapters/claude-stream.js";
 import type { ServerEvent } from "../types.js";
 
 function feedAll(translator: ClaudeStreamTranslator, lines: string[]): ServerEvent[] {
@@ -17,6 +17,56 @@ function feedAll(translator: ClaudeStreamTranslator, lines: string[]): ServerEve
 function types(events: ServerEvent[]): string[] {
   return events.map((e) => e.type);
 }
+
+describe("claude JSONL 管道边界", () => {
+  it("UTF-8 中文跨字节分块不乱码，末尾无换行也只消费一次", () => {
+    const lines: string[] = [];
+    const reader = new ClaudeJsonlReader((line) => lines.push(line));
+    const wire = Buffer.from('{"text":"你好，手机"}\n{"type":"result","subtype":"success"}');
+    const split = wire.indexOf(Buffer.from("你")) + 1;
+    reader.write(wire.subarray(0, split));
+    reader.write(wire.subarray(split, split + 1));
+    reader.write(wire.subarray(split + 1));
+    reader.end();
+    reader.end();
+    assert.deepEqual(lines.map((line) => JSON.parse(line)), [{ text: "你好，手机" }, { type: "result", subtype: "success" }]);
+  });
+});
+
+describe("claude stream: 图片伴随说明", () => {
+  const note = "[Image: original 1156x2510, displayed at 921x2000. Multiply coordinates by 1.26 to map to original image.]";
+
+  it("meta/turnCompanion/sidechain 用户行不生成气泡，丢失标记的尺寸说明也过滤", () => {
+    const translator = new ClaudeStreamTranslator();
+    for (const flags of [{ isMeta: true }, { turnCompanion: true }, { isSidechain: true }]) {
+      assert.deepEqual(translator.feed(JSON.stringify({
+        type: "user", ...flags, message: { role: "user", content: [{ type: "text", text: "系统伴随内容" }] },
+      })), []);
+    }
+    assert.deepEqual(translator.feed(JSON.stringify({
+      type: "user", message: { content: [{ type: "text", text: note }] },
+    })), []);
+    const events = translator.feed(JSON.stringify({
+      type: "user", message: { role: "user", content: [{ type: "text", text: "请检查这张截图" }, { type: "text", text: note }] },
+    }));
+    assert.equal(events.length, 1);
+    const event = events[0];
+    assert.equal(event.type, "message_end");
+    if (event.type === "message_end") assert.equal(event.message.text, "请检查这张截图");
+  });
+
+  it("图片结果与尺寸说明混在同一行时，工具完成事件仍保留", () => {
+    const translator = new ClaudeStreamTranslator();
+    translator.feed(JSON.stringify({ type: "assistant", message: { id: "image-read", content: [
+      { type: "tool_use", id: "read-image", name: "Read", input: { file_path: "/tmp/screenshot.jpg" } },
+    ] } }));
+    const events = translator.feed(JSON.stringify({ type: "user", message: { content: [
+      { type: "tool_result", tool_use_id: "read-image", content: [{ type: "image", source: { type: "base64", media_type: "image/jpeg", data: "aW1hZ2U=" } }] },
+      { type: "text", text: note },
+    ] } }));
+    assert.deepEqual(types(events), ["tool_end"]);
+  });
+});
 
 describe("claude stream: 文本轮映射", () => {
   it("init → status running；text_delta → message_end → result → idle + agent_settled", () => {
@@ -53,6 +103,7 @@ describe("claude stream: 文本轮映射", () => {
     const start = events[1] as { message: { id: string; role: string } };
     assert.equal(start.message.role, "assistant");
     const messageId = start.message.id;
+    assert.equal(messageId, "msg_A", "实时消息与历史 transcript 使用相同 id，重连不重复、工具卡不失联");
     assert.equal((events[2] as { messageId: string }).messageId, messageId);
     assert.equal((events[2] as { delta: string }).delta, "命令");
     const end = events.find((e) => e.type === "message_end") as { message: { id: string; text: string; role: string } };

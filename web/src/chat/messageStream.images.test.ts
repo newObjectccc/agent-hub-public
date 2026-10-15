@@ -9,9 +9,49 @@
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { MessageImage, SessionMessage } from "../api/types";
-import { applyWsEvent } from "./messageStream";
+import { applyWsEvent, reconcileMessages } from "./messageStream";
 
 const img = (url: string): MessageImage[] => [{ url, alt: null }];
+
+describe("历史对账保留图片", () => {
+  const user = (id: string, timestamp: number, images?: MessageImage[]): SessionMessage => ({
+    id, timestamp, role: "user", text: "@.agent-hub-uploads/screenshot.jpg 检查图片", toolCalls: [],
+    ...(images !== undefined ? { images } : {}),
+  });
+
+  it("已完成的同 id 消息重新加载时图片不丢", () => {
+    const previous = [user("u1", 1000, img("data:image/jpeg;base64,AAA"))];
+    const fresh = [user("u1", 1000)];
+    const merged = reconcileMessages(previous, fresh);
+    expect(merged[0].images).toEqual(previous[0].images);
+    expect(merged[0].streaming).not.toBe(true);
+  });
+
+  it("Claude live id 换成落盘 UUID 时一对一保留预览，相同正文不串图", () => {
+    const previous = [user("live-user-1", 1000, img("data:image/jpeg;base64,AAA")), user("live-user-2", 3000, img("data:image/jpeg;base64,BBB"))];
+    const fresh = [user("uuid-1", 2000), user("uuid-2", 4000), user("uuid-3", 5000)];
+    const merged = reconcileMessages(previous, fresh);
+    expect(merged.map((message) => message.id)).toEqual(fresh.map((message) => message.id));
+    expect(merged[0].images).toEqual(previous[0].images);
+    expect(merged[1].images).toEqual(previous[1].images);
+    expect(merged[2].images).toBeUndefined();
+  });
+
+  it("显式空图片数组、相同正文的旧历史和不同正文不回填", () => {
+    const previous = [user("live-user-1", 1000, img("data:image/jpeg;base64,AAA"))];
+    expect(reconcileMessages(previous, [user("live-user-1", 1000, [])])[0].images).toEqual([]);
+    expect(reconcileMessages(previous, [user("uuid-old", 90_000)])[0].images).toBeUndefined();
+    expect(reconcileMessages(previous, [{ ...user("uuid-other", 1000), text: "另一条消息" }])[0].images).toBeUndefined();
+    expect(reconcileMessages([user("historical-id", 1000, img("data:image/jpeg;base64,AAA"))], [user("uuid-new", 2000)])[0].images).toBeUndefined();
+  });
+
+  it("一分钟内的同正文旧消息不抢走最近发送消息的图片", () => {
+    const previous = [user("live-user-1", 60_000, img("data:image/jpeg;base64,AAA"))];
+    const merged = reconcileMessages(previous, [user("uuid-earlier", 10_000), user("uuid-current", 61_000)]);
+    expect(merged[0].images).toBeUndefined();
+    expect(merged[1].images).toEqual(previous[0].images);
+  });
+});
 
 describe("messageStream images 保留/回退", () => {
   it("message_start 带 images 时占位消息保留图片", () => {

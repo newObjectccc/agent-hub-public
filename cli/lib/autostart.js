@@ -43,7 +43,7 @@ ${args}
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
-  <false/>
+  <true/>
   <key>StandardOutPath</key>
   <string>${escapeXml(path.join(logDir, 'agent-hub.log'))}</string>
   <key>StandardErrorPath</key>

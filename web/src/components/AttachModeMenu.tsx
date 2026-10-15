@@ -5,7 +5,7 @@
  * 接管不可用（终端离线/扩展未装）时接管项灰显 + 原因。
  */
 import { useRef, useState } from "react";
-import type { TerminalAttachInfo } from "../api/types";
+import type { SessionSource, TerminalAttachInfo } from "../api/types";
 import { attachAvailability, type AttachMode } from "../api/attach";
 import { useDismissable } from "../hooks/useDismissable";
 import { CaretDownIcon, MonitorIcon, PhoneIcon } from "./icons";
@@ -13,14 +13,30 @@ import { CaretDownIcon, MonitorIcon, PhoneIcon } from "./icons";
 export interface AttachModeMenuProps {
   mode: AttachMode;
   terminal: TerminalAttachInfo | null | undefined;
+  /** 会话来源（codex 灰显文案区分用） */
+  source?: SessionSource;
   onChange: (mode: AttachMode) => void;
   busy?: boolean;
 }
 
-const MODE_HINTS: Record<AttachMode, string> = {
-  parallel: "手机消息由 server 里的 pi 实例继续处理（现状，双方互不干扰）",
-  attach: "手机消息发往电脑终端 pi 进程，终端实时显示并执行",
-};
+const PARALLEL_HINT = "手机消息由 server 里的实例继续处理（双方互不干扰）";
+
+/** hub 形态（claude）的平行模式说明：历史会话默认平行、接管可手动切换（预期管理） */
+const PARALLEL_HINT_HUB =
+  "手机消息由 server 里的 claude 实例继续处理（双方互不干扰）。历史会话默认此模式；想让 hub 接管执行可切换 🖥 接管终端";
+
+/** attach hint 按驱动形态分支（D9）：pi=注入终端 TUI；claude=hub 驱动 + 投屏 */
+function attachHint(terminal: TerminalAttachInfo | null | undefined): string {
+  if (terminal?.driver === "hub") {
+    return "手机消息由 hub 直接驱动 claude 执行并写回同一会话，电脑终端投屏实时显示。接管期间请勿在电脑原窗口继续输入；退出接管后可 claude --resume 无缝接回";
+  }
+  return "手机消息发往电脑终端 pi 进程，终端实时显示并执行";
+}
+
+function modeHint(mode: AttachMode, terminal: TerminalAttachInfo | null | undefined): string {
+  if (mode === "attach") return attachHint(terminal);
+  return terminal?.driver === "hub" ? PARALLEL_HINT_HUB : PARALLEL_HINT;
+}
 
 /** 模式短名（aria-label / title / 菜单文字用；触发器本体不显示文字） */
 const MODE_NAMES: Record<AttachMode, string> = {
@@ -33,11 +49,11 @@ function ModeIcon({ mode }: { mode: AttachMode }) {
   return mode === "attach" ? <MonitorIcon /> : <PhoneIcon />;
 }
 
-export function AttachModeMenu({ mode, terminal, onChange, busy }: AttachModeMenuProps) {
+export function AttachModeMenu({ mode, terminal, source, onChange, busy }: AttachModeMenuProps) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const btnRef = useRef<HTMLButtonElement | null>(null);
-  const { attachEnabled, attachDisabledReason } = attachAvailability(terminal);
+  const { attachEnabled, attachDisabledReason } = attachAvailability(terminal, source);
 
   useDismissable({ open, onDismiss: () => setOpen(false), rootRef: wrapRef, anchorRefs: [btnRef] });
 
@@ -50,7 +66,7 @@ export function AttachModeMenu({ mode, terminal, onChange, busy }: AttachModeMen
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label={`会话驱动模式：${MODE_NAMES[mode]}（点击切换）`}
-        title={`会话驱动模式：${MODE_NAMES[mode]}——${MODE_HINTS[mode]}`}
+        title={`会话驱动模式：${MODE_NAMES[mode]}——${modeHint(mode, terminal)}`}
         disabled={busy === true}
         onClick={() => setOpen((v) => !v)}
       >
@@ -80,7 +96,7 @@ export function AttachModeMenu({ mode, terminal, onChange, busy }: AttachModeMen
               </span>
               平行继续
             </span>
-            <span className="attach-menu-hint">{MODE_HINTS.parallel}</span>
+            <span className="attach-menu-hint">{PARALLEL_HINT}</span>
           </button>
           <button
             type="button"
@@ -88,7 +104,7 @@ export function AttachModeMenu({ mode, terminal, onChange, busy }: AttachModeMen
             aria-checked={mode === "attach"}
             className={`attach-menu-item${mode === "attach" ? " active" : ""}${attachEnabled ? "" : " disabled"}`}
             aria-disabled={!attachEnabled}
-            title={attachEnabled ? MODE_HINTS.attach : (attachDisabledReason ?? "")}
+            title={attachEnabled ? attachHint(terminal) : (attachDisabledReason ?? "")}
             onClick={() => {
               if (!attachEnabled) return;
               onChange("attach");
@@ -102,7 +118,7 @@ export function AttachModeMenu({ mode, terminal, onChange, busy }: AttachModeMen
               </span>
               接管终端
             </span>
-            <span className="attach-menu-hint">{attachEnabled ? MODE_HINTS.attach : attachDisabledReason}</span>
+            <span className="attach-menu-hint">{attachEnabled ? attachHint(terminal) : attachDisabledReason}</span>
           </button>
         </div>
       )}

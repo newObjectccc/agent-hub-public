@@ -257,13 +257,15 @@ describe("attach 路由：生命周期 / 冲突保护 / terminal 状态注入", 
   it("会话列表 / 详情注入 terminal 状态（徽章数据源）", async () => {
     const list = await app.inject({ method: "GET", url: "/api/sessions" });
     const sessions = (list.json() as { sessions: SessionListItem[] }).sessions;
-    assert.deepEqual(sessions[0].terminal, { online: true, attached: false });
+    // terminal 带 defaultPolicy（config.claudeDriver.defaultPolicy 下发，缺省 active-only）
+    assert.deepEqual(sessions[0].terminal, { online: true, attached: false, defaultPolicy: "active-only" });
 
     await app.inject({ method: "POST", url: "/api/sessions/sess-1/attach", payload: {} });
     const detail = await app.inject({ method: "GET", url: "/api/sessions/sess-1" });
     assert.deepEqual((detail.json() as { session: SessionListItem }).session.terminal, {
       online: true,
       attached: true,
+      defaultPolicy: "active-only",
     });
     await app.inject({ method: "POST", url: "/api/sessions/sess-1/detach", payload: {} });
   });

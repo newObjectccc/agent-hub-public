@@ -23,7 +23,7 @@ Open the PWA panel in any device's browser → see every agent session and its w
 ## Features
 
 - **🧩 Three session sources**: pi / Claude Code / Codex in one list, detail view, and drive channel (Codex includes desktop-app sessions: tool cards / usage accounting / archived sessions 📦)
-- **📱 Dual-mode session drive**: 🖥 Take over the terminal (messages are injected into the terminal pi process, shown live on screen) / 📱 Parallel continue (a separate worker line sharing the same context) — your call; auto-defaults to takeover when the terminal is online (your manual choice always wins), with cross-device conflict self-healing
+- **📱 Dual-mode session drive**: 🖥 Takeover (pi: inject messages into the existing terminal process; Claude: the hub starts a persistent CLI process resuming the same session, with tmux mirroring and phone-side permission approval) / 📱 Parallel continue (resume context through the server). Both modes support pi and Claude; Codex currently supports parallel only. Defaults are configurable, and your manual choice takes priority. See the mode guide below.
 - **🤖 Sub-agent activity panel**: sub-agents from pi **and claude** shown live (current tool / output summary / runtime), like a terminal multi-agent panel
 - 🔴 **Live spectating**: watch the thinking chain, streaming replies, and tool calls of terminal pi sessions from your phone (token-level)
 - 🗂 **Workbench home**: organized by attention (🔥 working / ⚠️ needs you / today's overview), real data only; today's overview broken down by source (pi/claude/codex), with per-source filter chips
@@ -37,16 +37,35 @@ Open the PWA panel in any device's browser → see every agent session and its w
 - 🖥 **Web terminal** (ttyd optional): a real terminal right inside the panel
 - 🌐 **Bilingual UI (i18n)**: switch the interface language between follow-system / 中文 / English in one tap, persisted
 
+## Resuming old sessions and choosing a mode
+
+Completed sessions can continue: sending from your phone starts a new turn from saved context even after the original computer terminal has closed. Opening a session does not resend old tasks, and a session title does not indicate its current run status. The computer's hub service and the relevant agent runtime must be available. Closing the PWA does not stop accepted work; restarting the hub does not automatically resume execution or takeover.
+
+| Claude scenario | Sending behavior |
+|---|---|
+| Parallel, idle | The hub starts a CLI run; the original terminal can stay closed |
+| Parallel, a hub-owned run is busy | Normal send returns busy; both steer and follow-up queue until that run ends |
+| Parallel, an external terminal is busy | All three modes return busy; parallel mode cannot queue into that terminal |
+| Takeover | The hub owns a new persistent CLI process; steer is handled between tools, follow-up after the turn; a normal send while busy fails through the command acknowledgment |
+
+Claude takeover does not control the original TUI window. Avoid simultaneous input there during takeover; tmux mirrors the hub process. External activity detection uses file timestamps, and its quiet window is not a process lock.
+
+With the default `active-only` policy, pi defaults to takeover when its terminal extension is online. Claude attempts takeover when `status=running` **or** `lastDrivenBy=terminal`; otherwise it defaults to parallel. `always` attempts takeover on every open; `never` requires a manual choice. Manual choices take priority, while quiet-window checks, the enabled switch, and concurrency limits still apply.
+
+One completed assistant message can be followed by more tools. The page confirms completion through turn-end events and server status; after five seconds of silence it checks status rather than marking the task complete.
+
+Uploaded images appear as thumbnails. Claude's image dimensions/coordinate hints are internal metadata and are hidden from the conversation. Older `@.agent-hub-uploads/...` messages can regain previews when a matching successful image-read result is saved; a path alone does not guarantee a preview after refresh. See the [API contract](docs/API_CONTRACT.md) and [Claude driver guide](docs/CLAUDE_DRIVER.md) for details.
+
 ## Quick Start
 
 Option 1: npm package (npx / global install) — or just git clone (see Option 2):
 
 ```bash
-npx agent-hub remote        # one-command remote: auto setup → build → start + Tailscale
+npx agent-hub remote        # one-command remote: setup → start bundled build + Tailscale
 # or install for the full subcommands (dev / setup / start / remote / check / open; doctor is an alias of check)
 npm install -g agent-hub
 agent-hub setup             # detect environment, generate config
-agent-hub remote            # = start --tailscale, skips setup once initialized (idempotent)
+agent-hub remote            # = setup when needed + start --tailscale; safe to repeat
 ```
 
 Option 2: git clone (repo development / self-hosted from source):
@@ -152,7 +171,7 @@ Mobile PWA ──HTTP/WS──▶ server (Fastify) ──▶ pi SDK / claude CLI
 | `server/` | REST + WS, pi/claude/codex adapters, KPI / notifications / git / terminal integration |
 | `web/` | PWA (React + Vite + Tailwind v4, brutalist compact UI) |
 | `cli/` | Cross-platform dev/setup/start/remote/check/open (pure Node, zero bash dependency) |
-| `integrations/` | pi extensions (live-feed streaming / pi-command reverse control) |
+| `integrations/` | pi extensions (live-feed streaming / pi-command reverse control), Claude permission MCP bridge |
 | `docs/` | API contract, architecture, platform details, headscale guide (HEADSCALE.md), roadmap |
 | `docs/headscale/` | Self-hosted headscale control-plane deployment files (docker compose + Caddy auto-HTTPS) |
 
@@ -162,6 +181,7 @@ Mobile PWA ──HTTP/WS──▶ server (Fastify) ──▶ pi SDK / claude CLI
 |---|---|
 | [docs/API_CONTRACT.md](docs/API_CONTRACT.md) | REST / WS API contract (for integrations) |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Architecture & data flow (session files as the single source of truth) |
+| [docs/CLAUDE_DRIVER.md](docs/CLAUDE_DRIVER.md) | Claude takeover, permissions, sending modes, and limitations |
 | [docs/PLATFORM.md](docs/PLATFORM.md) | Platform-specific setup (macOS / Linux / Windows) |
 | [docs/HEADSCALE.md](docs/HEADSCALE.md) | Self-hosted headscale control plane (no official Tailscale required) |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | Roadmap |
@@ -180,6 +200,8 @@ pnpm build && pnpm lint && pnpm test   # full verification (1500+ tests, GitHub 
 ```
 
 Note: the dev entry is Vite (default `http://localhost:5173`) with `/api` and `/ws` proxied to the server (default 7700) — not 7700 directly.
+
+If this checkout serves your phone, run build verification in a separate worktree so it cannot rewrite the live `web/dist`. Use one coordinated process for production builds and restarts; see the contribution guide.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution workflow and [CHANGELOG.md](CHANGELOG.md) for release history.
 
@@ -200,7 +222,7 @@ Once registered it starts on boot with no manual steps. When tailscale is detect
 | Start | `launchctl load ~/Library/LaunchAgents/com.agent-hub.plist` | `systemctl --user start agent-hub` |
 | Logs | `~/Library/Logs/agent-hub.log` | `journalctl --user -u agent-hub` |
 
-> 💡 Crash recovery: launchd defaults to `KeepAlive=false` (restarts on next boot only); set `KeepAlive` to `true` in the plist for automatic restart after a crash. On servers just use pm2 below (self-healing built in).
+> 💡 Crash recovery: newly generated launchd configurations default to `KeepAlive=true` and restart the process after it exits. To update an older configuration, unload it as above, then re-run `npm run setup -- --autostart` so launchd reads the new settings. Use unload for an intentional stop too. Restarting preserves history but does not automatically resume tasks.
 
 On a server (pm2, self-healing + start on boot):
 
@@ -224,6 +246,12 @@ pm2 save && pm2 startup        # start on boot
 | `auth` | `{"enabled": false, "token": ""}` | API / WS auth (see Security Notes) |
 | `allowOrigins` | `[]` | CORS allowlist (exact origins, e.g. `https://app.example.com`; empty array = deny all cross-origin) |
 | `allowLan` | `false` | Explicit LAN exposure opt-in (allows wildcard `host`; `start --lan` writes it automatically) |
+| `claudeDriver.enabled` | `true` | Master switch for claude takeover (hub-driven): when off no driver is constructed, takeover routes return 400, the UI falls back to parallel |
+| `claudeDriver.defaultPolicy` | `"active-only"` | Claude attempts takeover when running or last driven by the terminal; `always`=attempt on open / `never`=manual only. Pi also requires its extension online; manual choices take priority |
+| `claudeDriver.idleDetachMs` | `1800000` | Auto-detach after idle (ms, 30 min; `0`=never, never detaches mid-turn) |
+| `claudeDriver.maxConcurrent` | `3` | Max concurrent hub drivers, including pending startups (excess → 409 DRIVER_LIMIT) |
+| `claudeDriver.mirror` | `"tmux"` | Terminal mirroring (named tmux session, watch via `tmux attach`; auto-degrades to `off` without tmux) |
+| `claudeDriver.externalQuietMs` | `3000` | File quiet window checked before preparation and immediately before process startup; recent external writes return 409. This does not provide a process lock |
 
 - `config/kpi-sources.json`: optional metric-card data sources (`${ENV_VAR}` for secrets)
 
@@ -239,7 +267,7 @@ This project ships with **zero authentication by default** — the trust boundar
 
 - **Enable API auth**: set `"auth": { "enabled": true, "token": "<long random string>" }` in `config/hub.config.json` — all APIs and WS then require `Authorization: Bearer <token>`
 - `auth.enabled` defaults to `false` on purpose (frictionless tailnet experience); turn it on before exposing to the internet
-- **The app lock (PIN / WebAuthn) is a UI lock** against physical access to your phone/computer — it is not network auth; the two layers are independent
+- **The app lock (PIN / WebAuthn)** protects the UI and validates unlock tokens for business HTTP requests and WS send/abort operations. It does not replace the API token; both layers can be enabled together
 - `host` defaults to `127.0.0.1` and wildcard binding is rejected; LAN exposure requires explicit `"allowLan": true` (or `agent-hub start --lan` / `npm run start -- --lan`, which writes `allowLan` automatically)
 - Found a security issue? **Do not open a public issue** — contact the maintainer privately via the repo's About page
 

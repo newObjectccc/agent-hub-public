@@ -1,5 +1,66 @@
 # Changelog
 
+## 未发布（2026-10-15）会话恢复与消息可靠性
+
+### 修复
+- Claude 历史与实时流共用元数据过滤，图片尺寸/坐标提示不再被当成用户消息；旧 `@上传路径` 消息仅从匹配的成功 Read 图片结果恢复预览，排除无关文件和错误结果。
+- Claude 平行发送与本地队列保留图片预览；前端对账保留附件，并在临时用户 id 替换为落盘 id 时按文本和时间就近一对一匹配，避免刷新消息时丢图。
+- Claude 流式 assistant 沿用原生 `message.id`，与历史和工具结果回填一致；stdout 安全处理 UTF-8/JSONL 分块、无换行尾行与无效 JSON 值，避免中文损坏、丢尾消息或进程异常。
+- 平行模式仅为 hub 自有 run 排队；未接管的外部 TUI 忙时三种发送模式均明确返回 `SESSION_BUSY`。异步准备结束后再次检查实际运行状态与最新 mtime，再立即启动，防同会话并发双开；abort 同时取消准备中的请求与未消费队列。
+- Claude 接管启动按会话共享，准备计入并发上限，取消后不再启动；准备前及 spawn 前各检查静默窗，降低外部写入冲突风险。外部状态仍是启发式，不提供进程级互斥。
+- 接管 init 后保持 idle，发送后 running；result 先结束本轮、保留错误状态，再处理 followUp，常驻进程不再等于工作中。
+- Chat 不再把单条 `message_end` 或 5 秒静默当成整轮完成；补查服务端状态，仍运行/查询失败时继续等待，旧查询结果不能覆盖新一轮，settled 不覆盖已有 error。
+- macOS 新生成的自启配置默认 `KeepAlive=true`，服务进程退出后自动拉起；旧配置需重新加载。服务重启保留历史，不自动恢复执行。
+- 三源会话共用的驱动提示、复制会话说明不再误写成 pi 专属流程，避免在 Claude/Codex 会话中提示执行 `pi --resume`；说明复制只隔离聊天记录，仍共享工作区文件。
+- Claude 权限 bridge 选择合并用户、项目及项目本地配置，按更具体配置覆盖并继承未声明字段；修复只读到第一份配置就返回、项目要求审批却因用户 bypass 漏挂 bridge 的问题，增加 5 个权限覆盖回归。
+
+### 文档与发布检查
+- 中英 README、架构、API 契约、平台说明、Claude 驱动说明与路线图同步现有实现：旧终端关闭后续聊、两种驱动所有权、忙时排队边界、图片恢复条件、默认接管策略、HTTP/WS 鉴权和应用锁门禁。
+- 纠正 Claude 接管忙时普通发送的回执语义：`/message` 返回 202 后通过失败 `command_ack` 报告；平行 `/prompt` 返回 HTTP 409。
+- 发布物检查覆盖新增 Claude 驱动/权限协议/元数据过滤/投屏模块及驱动说明，防止 npm 包缺少运行依赖文件。
+
+### 本次验证（2026-10-15）
+- 独立 worktree：冻结锁文件安装、全量 build/lint/test 均通过；server 747、web 930（133 文件）、cli 84、pi 扩展 18，共 1779 passed、0 fail。
+- 发布物检查通过：25 个关键文件、6 个运行时依赖完整；prod 审计无 moderate/high/critical，仍有包名 `cli` 的 1 条 low（GHSA-6cpc-mj5c-m9rq，workspace 撞名疑似误报）。
+- 浏览器使用构建产物与模拟数据验证 320/360/390/430/768/1024 六档无横向溢出、图片加载、导航跳转及权限详情/拒绝交互；390 深浅色截图见 [Claude 驱动说明](docs/CLAUDE_DRIVER.md)。这不替代 CLI 真机权限实验。
+
+## v0.3.0（2026-10-14）claude 接管终端（hub 驱动会话）
+
+### 功能批（claude 接管 / 手机批权限 / tmux 投屏）
+- claude 会话「接管终端」（hub 驱动会话形态，docs/CLAUDE_DRIVER.md）：attach 期间 hub 持有长驻 `claude -p --resume --input-format stream-json --permission-prompts host` 进程，手机消息 stdin 注入 = 真用户 turn；三模式映射实测定型（prompt 空闲直发/正忙回执失败、steer=工具间隙真插话、followUp=result 后排队）；abort 走 control interrupt（turn 收尾进程存活）；detach 后电脑 `claude --resume` 无缝接回
+- 手机批权限：`--permission-prompt-tool` + MCP bridge（integrations/claude-perm-bridge）回连 hub，权限卡片（允许/拒绝）+ WS `host_request` 推送 + GET host-requests 断线兜底；超时一律 deny；bypassPermissions 环境全自动放行；本次 headless 实验没有 AskUserQuestion，模型以文字提问、手机文字答
+- tmux 投屏（D7）：attach 自动创建 `hub-<id8>` 命名 session + 无依赖渲染器（cli/mirror.js，防终端注入），`tmux attach` 实时观看；无 tmux 自动降级；detach 打印 resume 交接提示
+- 默认策略（D3 active-only）：Claude 在 `status=running` 或 `lastDrivenBy=terminal` 时默认尝试接管，其他情况默认平行；最后由终端驱动的空闲历史会话也可能默认接管，手动 pin 优先，实际启动仍须通过 server 检查
+- 会话内导航条（ConversationNav，K1 Codex 风格刻度时间线）：web/src/components/ConversationNav.tsx + web/src/chat/navTicks.ts——视口指示器 / 悬停预览 / 点击跳转，长会话内快速定位（20 例测试：navTicks 15 + ConversationNav 5）
+- 权限协议契约与实验记录（E1-E4 精确 JSON 形状）落 docs/CLAUDE_DRIVER.md
+
+### 加固（并行防双写，D8）
+- ClaudeAdapter busy 判定三源并集：本进程 run / hub 驱动接管中 / 外部文件活动；发送前读取最新 mtime，自有显式状态仅在没有更新的外部写入时优先。可避免已检测到的并发驱动，不保证阻止原 TUI 再次输入
+- attach 准备前及 spawn 前的 sessionFile 静默窗（默认 3s）：近期外部写入时 409 ATTACH_UNAVAILABLE
+- 冲突保护并集：rejectIfAttached 与 WS promptGuard 覆盖 pi 指令队列 + claude hub 驱动
+
+### 修复批（第二轮收口）
+- `@fastify/static` v10 setHeaders 契约适配：v10 的 `setHeaders` 回调收 FastifyReply（v8 传原生 res，无 `setHeader`），改用 `reply.header` 写缓存头——上一稿 tsc 编译阻断点清零
+- WS upgrade Origin 校验（防跨站 WebSocket 劫持）：upgrade 闸与 HTTP CORS 闸共用 hostTrust/同源判定单一事实源——同源放行，跨域只放 `allowOrigins` 精确白名单（缺省空 = 拒绝一切跨域），反代感知走可信 Host 判定
+- WS abort 过应用锁门禁：WS `abort` 此前绕过 promptGuard，锁屏期可中止 turn——补锁屏门禁（同 promptGuard 锁分支判据，但不复用其 ATTACH_ACTIVE 拒绝，接管期 abort 合法且必要）；通过后 hub 驱动接管中走 `driver.abortTurn`（control interrupt，进程存活可续），否则 `hub.abort`（镜像 HTTP `/abort` 语义）
+- host-request 已决 409 语义落地：已决 id 短期记忆（TTL 约 5 分钟、上限约 200 条）内重复应答 → 409 `HOST_REQUEST_RESOLVED`，未知 → 404 `HOST_REQUEST_NOT_FOUND`——双重应答/幂等回放不再误报 404
+- auth 空 token 告警（fail-open 拦截）：`auth.enabled=true` 且 `token` 为空（含缺失/非字符串吞成空串）时启动 warnings 告警，防「开了鉴权却形同虚设」静默失守
+- web attach 残留自愈：pin=attach 但本次打开接管不可用（claudeDriver.enabled=false 等）时自动回退，不再卡死在 attach 模式
+- pack 冒烟补强：`scripts/pack-smoke.mjs` 断言从 8 个关键路径扩到 20 个关键文件 + 6 个运行时依赖声明齐全
+
+### 修复批（本轮收口）
+- [blocker] WS 鉴权接线：`WsHub.attach` 改为 opts 选项对象且 `auth` 必填（漏传 = 编译错误，此前可选参数导致生产装配漏传、auth.enabled 时 WS 完全绕过鉴权）；server 新增导出 `attachSessionWs`（封装 promptGuard 锁屏门禁 + ATTACH_ACTIVE 并集 + 从 config.auth 派生 upgrade 鉴权）作为 `startHub` 唯一 WS 挂载路径，鉴权装配断裂在生产同一路径上可回归（ws-auth-wiring）
+- claudeDriver 死旋钮接线：`claudeDriver.enabled=false` 时不构造 ClaudeDriverHub（driverBusy / createApp deps / promptGuard / close.disposeAll 全可选链），claude 源 attach 路由回 400「claude 会话接管未启用」前端回落 parallel；`defaultPolicy` 随 `terminal.defaultPolicy` 下发（pi/claude 双通道、列表与详情），前端按策略决策（never=只手动 / always=打开即接管 / 缺省=active-only 容错）
+- 发布物三修：根 dependencies 补 `@fastify/compress`（npm 发包后 server/dist 运行期依赖可解析）；files 白名单精确追加 integrations/ 三个源文件（bridge.mjs / pi-command / pi-live-feed，npm pack 实测入包）；`@fastify/static` ^8 升 ^10.1.6（根与 server，4 个 CVE 清零）
+- 版本对齐 0.3.0（根 / cli / web / server 四个 package.json 统一）；npx 发包布局（`isPublishedLayout`：双 package.json 缺失 + 双产物在 → 发包布局）跳过依赖安装与构建两步直接启动 server/dist（源码仓布局行为逐字不变）
+- CI 加固：矩阵扩为 ubuntu-latest / macos-latest × Node[20,22] 共 4 组合（不加 windows）；build 后通过 `scripts/pack-smoke.mjs` 检查真实发布清单与根运行时依赖；末尾 `pnpm audit --prod --audit-level=high` 检查 high/critical 漏洞
+
+### 当时的验证记录（2026-10-14）
+- 自动化：server 722、web 922（133 文件）、cli 84、pi 扩展 18，合计 1746 passed、0 fail；install/build/lint/test/pack-smoke 均通过
+- 发布物：当时检查 20 个关键文件、6 个运行时依赖，后续新增检查见上方未发布记录
+- 依赖审计：当时 high/critical 门禁通过；完整 prod 审计剩余 1 条 low（GHSA-6cpc-mj5c-m9rq，workspace cli 撞名疑似误报）
+- 真机实验：stream-json 多轮注入、权限 allow/deny、工具间隙转向、control interrupt、驱动链路和 tmux 投屏，环境与结论见驱动说明
+
 ## v0.2.0（2026-10-10）首个开源版本
 
 ### 功能批（国际化 / codex 桌面 app / 首页分源统计）

@@ -181,19 +181,20 @@ describe("阶段化等待反馈（状态条生命周期 + 秒级计时）", () =
     expect(bar()).toBeNull();
   });
 
-  it("message_end 后 5s 无事件（待定收尾）→ 阶段条随 idle 消失", async () => {
+  it("message_end 后 5s 无事件，核对服务器 idle 后阶段条消失", async () => {
     vi.useFakeTimers();
     const el = await render();
     act(() => {
       wsEvent?.({ type: "status", status: "running" });
     });
     expect(el.querySelector(".wait-stage-bar")).not.toBeNull();
-    act(() => {
+    await act(async () => {
       wsEvent?.({
         type: "message_end",
         message: { id: "a1", role: "assistant", timestamp: 1, text: "完成", toolCalls: [] },
       });
       vi.advanceTimersByTime(5_100);
+      await Promise.resolve();
     });
     expect(el.querySelector(".wait-stage-bar")).toBeNull();
   });
@@ -303,7 +304,7 @@ describe("驱动来源标注与预期提示条", () => {
     const el = await render();
     const hint = el.querySelector(".driver-hint");
     expect(hint).not.toBeNull();
-    expect(hint!.textContent).toContain("pi --resume");
+    expect(hint!.textContent).toContain("重新打开该会话，载入新增消息");
     // 顶栏 📱 面板驱动 徽章
     expect(el.querySelector(".badge.driven-panel")).not.toBeNull();
 
