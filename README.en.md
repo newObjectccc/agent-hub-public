@@ -23,7 +23,7 @@ Open the PWA panel in any device's browser → see every agent session and its w
 ## Features
 
 - **🧩 Three session sources**: pi / Claude Code / Codex in one list, detail view, and drive channel (Codex includes desktop-app sessions: tool cards / usage accounting / archived sessions 📦)
-- **📱 Dual-mode session drive**: 🖥 Takeover (pi: inject messages into the existing terminal process; Claude: the hub starts a persistent CLI process resuming the same session, with tmux mirroring and phone-side permission approval) / 📱 Parallel continue (resume context through the server). Both modes support pi and Claude; Codex currently supports parallel only. Defaults are configurable, and your manual choice takes priority. See the mode guide below.
+- **📱 Dual-mode session drive**: 🖥 Takeover (pi: inject messages into the existing terminal process; Claude: the hub starts a persistent CLI process resuming the same session, with tmux mirroring and phone-side permission approval) / 📱 Parallel continue (resume context through the server; pi tool calls really execute on your computer with no human approval, stated up front on first entry). Both modes support pi and Claude; Codex currently supports parallel only. Defaults are configurable, and your manual choice takes priority. Parallel sends are blocked with an actionable reason while a computer terminal is writing the same session (anti double-write fork); model/network failures surface inline in the bubble with the original text and a self-help action. See the mode guide below.
 - **🤖 Sub-agent activity panel**: sub-agents from pi **and claude** shown live (current tool / output summary / runtime), like a terminal multi-agent panel
 - 🔴 **Live spectating**: watch the thinking chain, streaming replies, and tool calls of terminal pi sessions from your phone (token-level)
 - 🗂 **Workbench home**: organized by attention (🔥 working / ⚠️ needs you / today's overview), real data only; today's overview broken down by source (pi/claude/codex), with per-source filter chips
@@ -45,8 +45,10 @@ Completed sessions can continue: sending from your phone starts a new turn from 
 |---|---|
 | Parallel, idle | The hub starts a CLI run; the original terminal can stay closed |
 | Parallel, a hub-owned run is busy | Normal send returns busy; both steer and follow-up queue until that run ends |
-| Parallel, an external terminal is busy | All three modes return busy; parallel mode cannot queue into that terminal |
+| Parallel, an external terminal is busy (pi / Claude) | All three modes return busy (pi: `EXTERNAL_ACTIVE`, Claude: `SESSION_BUSY`) with an actionable reason; parallel mode cannot queue into that terminal |
 | Takeover | The hub owns a new persistent CLI process; steer is handled between tools, follow-up after the turn; a normal send while busy fails through the command acknowledgment |
+
+pi parallel continue resumes through an SDK instance inside the hub process: **tool calls (file reads/writes, shell commands) really execute on your computer with no human approval** — use it only in repos you trust. Claude parallel is pinned to `--permission-mode manual`, so tools that need confirmation are refused. Model/network failures (including out-of-credits, connection errors and context overflow) do not throw in pi; they land on the message's stopReason, and the hub surfaces them as an inline error bar: context overflow offers a one-tap "compact context" self-help, manual abort uses a neutral tone. Error notices stay until dismissed. Messages blocked by the double-write gate, or not executed by the terminal, fall back to the offline queue and keep a failed bubble with a retry entry — the text is never lost.
 
 Claude takeover does not control the original TUI window. Avoid simultaneous input there during takeover; tmux mirrors the hub process. External activity detection uses file timestamps, and its quiet window is not a process lock.
 

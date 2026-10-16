@@ -1,5 +1,49 @@
 # Changelog
 
+## 未发布（2026-10-15）手机继续不活跃会话：正确性与性能批
+
+> 场景：会话没有活跃在电脑终端里（无 pi 进程 / 无 claude TUI），从手机 PWA 找到它并继续对话——
+> 即默认的 📱 平行继续路径。本批全部改动围绕这条链路的「不丢数据 / 不丢消息 / 失败可见 / 不卡」。
+
+### 修复（P0：正确性、会丢数据/丢消息）
+- **pi 平行发送双写闸门**（新错误码 `EXTERNAL_ACTIVE`，409）：此前 `hub.prompt` 的 busy 判定只看 server 内 SDK 实例的 `isIdle`，完全不看外部——终端只要没装 `pi-command` 扩展就是**零保护**，两边同时 append 会让 JSONL 出现同 parent 分叉（一侧消息在 `selectActiveBranch` 回溯下静默不可见），版本迁移触发 `_rewriteFile()`（`openSync(f,"w")` 截断重写）时更会**永久抹掉对方已追加的行**。现按三路信号拦截（终端心跳在线 / live-feed 60s 内有事件 / 文件 mtime 在 60s 静默窗内），`/compact` 同闸门，文案给具体出路。
+- **闸门防自锁**（两处实测踩到的坑）：本进程持有 live 实例时直接放行；mtime 判据采用 claude 同口径的 `mtime <= own.at` 比较；并额外记录 `SessionManager.open` 可能触发的迁移重写时刻。否则「手机新建会话后发第一条消息」与「建实例后发第二条」都会被自己的闸门拦死 60s。
+- **模型错误不再被吞成「（无内容）」**：pi 的余额耗尽 / `Connection error.` / 上下文溢出都**不抛异常**，只落在 assistant 消息的 `stopReason`+`errorMessage` 上，而 DTO 此前不取这两个字段（实测用户语料里就有 `"You have no credits remaining…"`）。现在实时流式与历史加载两条路径同口径透出 `error{message,kind}`，本轮以错误收尾时 `status=error` 并补发 `error` 事件；`contextOverflow` 给「压缩上下文」一键自救，`aborted` 用中性语气不当报错。
+- **「假接管」不再吞消息**：心跳 TTL 是 90s，用户关掉终端后的这 90s 里 `isOnline` 仍为 true → 前端自动接管并提示“终端在线，已默认接管终端” → 消息入队却没人取 → 60s 后一条小字提示 → detach 取消指令，而消息**既不入离线队列也不回落平行**，输入框已清空 = 文本彻底消失。现 server 记录扩展长轮询活性（`POLL_TTL_MS=45s`，比心跳硬得多）并下发 `terminal.responsive`：`attach` 与 `/message` 在**入队前**就拒绝死终端（`ATTACH_UNAVAILABLE`，文案明说“这条消息没有发出去”）；前端 `responsive===false` 不自动接管；`command_ack{ok:false}` 与 `ATTACH_UNAVAILABLE` 都把原文退回离线队列并切回 📱 平行（前者标**手动**重试——无法排除“终端其实执行了、只是回执丢了”，自动重发会重复执行；后者标自动重试——server 入队前就拒了，明确未投递）。
+- **中止竞态**：实例建成前点「停止」此前是空操作（`abort` 撞上 `live.get(id)===undefined` 直接 return，任务照样跑完整轮）。现登记中止请求 + 立即恢复 UI + 实例建成后跳过执行。
+- **幂等占位期不再伪报成功**：同 `clientMessageId` 的上一次提交还在 flight 时，此前直接回 `accepted:true`（`modeOf` 为 null 时还伪报 `mode:"prompt"`）；若首发最终 409/500，重发方已以为成功 → 消息静默消失。现回 409 `PROMPT_IN_FLIGHT`，前端归入自动重试（幂等键保证不双执行）。
+- **浏览器真机验证抓到并修复的三个闸门/保留缺陷**（ego-browser + 独立验证实例，非单测能覆盖）：
+  1. **闸门被 tail 启发式回写绕过**：WS 握手启动文件 tail，tail 对「只有 user 消息、尚无 assistant 回复」的文件启发式收尾置 idle 并回写 `statuses`；闸门的 own 判据不分来源时会把这个 idle 当成本进程登记 → 同一 60s 窗口内先 409 后 202，消息真的被执行。现 `statuses` 条目带 `source: "own"|"tail"`，闸门只信 `own`，且 tail 回写不覆盖本进程权威登记。
+  2. **`live.has` 无条件放行让闸门失效 10 分钟**：abort 只中止 run 不删实例（空闲 10min 才逐出），期间外部写盘完全拦不住。现改为比较「文件 mtime vs 本进程实例最后活动时刻 + 5s 容差」：run 进行中放行（steer/followUp 不自锁），实例空闲后外部写入仍能拦。
+  3. **对账先于入队的竞态清掉失败气泡**：发送被拒前 ~10ms 的一次 GET 对账会 reconcile 掉 local-* 占位（那时消息还没入队，既有保留逻辑救不了），队列里的文本因此在界面上没有重试入口。现入队时若占位已不在列表则补回失败气泡（含图片预览重建）。
+
+### 性能（本机真实语料实测：pi 241 文件/284MB、claude 321 文件/145MB、最大单文件 24.9MB）
+- **`ensureLive` 移出 HTTP 响应路径**：`createAgentSession` 打开 24.9MB 会话实测**同步阻塞事件循环 ~600ms**，而它此前在 `prompt()` 返回 202 **之前**——手机发一条消息要等半秒才收到受理，且期间所有客户端的 WS/HTTP 集体卡住。改为先受理后建实例（依据：`sweep` 只逐出「已收尾且 isIdle」的实例，故无 live 实例 ⟹ 必然空闲，busy 判定不需等实例）。
+- **claude 清单 per-file 快照缓存 + 并发分批**：热扫 **380ms → 6.8ms（~54x）**，6 遍连扫 fileReads 294 → 49；此前每次 5s TTL 过期就全量重读 145MB，会话活跃时被 presence 持续触发。
+- **快照缓存按根目录分键**：此前是模块级单一 Map + 按「本次文件集合」全局 prune，两个根目录交替扫描会互相清空缓存（实测每轮都退化成 1150ms 全量冷扫、`cacheHits=0`，连与空目录交替也一样）。现每轮 **5ms**、hits 正常累积（**~230x**）。当前生产未爆只因 search 与 hub 恰好同目录，而 `lineageFileCaches` 早已按目录分键——同代码两种口径，接第二个源就会炸。
+- **parallel 路径 delta 节流 + WS 背压**：attach 路径早有 100ms 合并，parallel 却每个 SDK chunk 直接广播一帧，而 parallel 正是本场景走的路。现两条路径共用同一个 `EventThrottle`（防口径漂移）；WS 广播增加背压——单连接 `bufferedAmount` 超 512KB 时丢弃 delta 帧（`message_end` 带完整文本 + 前端按 id upsert，丢了会自动补齐），生命周期事件一律不丢，消掉弱网手机下唯一无上界的内存增长点。
+
+### 体验
+- 会话唤醒失败不再统一英文 `internal error`：新错误码 `SESSION_CORRUPT`（409）给中文可行动原因（会话文件损坏 / 已被清理 / 工作目录不存在），并保留原始错误尾巴便于排障。
+- 双模式说明 sheet 不再绑「终端在线」——终端离线恰恰是平行模式的主场景，此前最需要知情的人永远看不到说明；并按 source 明示权限真相（pi：bash/edit/write 在电脑上真实执行且**无人工批准**；claude：固定 `manual`，需确认的工具被拒）。
+- 错误类提示常驻（发送失败 / 接管失败 / 终端未执行 / 压缩失败），不再 6s 自动消失；普通轻提示保持原样。
+- 切后台/锁屏回来立即对账（此前停在旧画面，漏掉的增量要等重连或手动下拉，很容易被当成卡死）。
+
+### 本次验证
+- `server` **802 passed / 0 fail**（基线 747，新增 55：外部活跃闸门 14、轮询活性 7、缓存分键 6、节流与背压 9、claude 快照缓存 18、中止竞态 1）；`web` **961 passed / 0 fail**（基线 930，新增 31：错误渲染与分类 14、错误透传 7、假接管与知情权 9、幂等分类 1）。双端 `tsc --noEmit` 干净；cli 84、integrations lint 全绿。
+- **浏览器真机验证**（ego-browser + 独立验证实例：独立 config/data/端口，未触碰线上 `server/dist` 与 `web/dist`）：
+  - 真实历史会话（含 `You have no credits remaining…` / `Connection error.` / `Operation aborted`）→ 错误条正确渲染、原文完整、「（无内容）」清零；aborted 中性语气不带 alert 角色
+  - 终端离线打开历史会话 → 双模式说明 sheet 弹出且明示「真实执行且无人工批准」；claude 源给 manual 准确语义
+  - 320/390/768 三档视口无横向溢出
+  - 双写闸门：mtime 新鲜 → 409 + 常驻 notice + 文本保留为失败气泡（含重试入口）+ 文件未被执行写入；mtime 老化 5 分钟 → 放行；对账后失败气泡不消失
+  - 上下文溢出会话 → 「压缩上下文」按钮可点且有反馈
+- 性能数字均为改动前后同机同语料实测（脚本走独立 `.tmp-dist`）。
+
+### 已知未做（评估后主动放弃 / 留待后续）
+- **详情加载仍全量读大文件**：24.9MB 会话实测 78ms、heapUsed +71MB，而最终只返回 53 条消息（JSON 仅 0.04MB）；`MAX_JSONL_PARSE_BYTES=50MB` 太宽松使尾部窗口分支从未生效。未做原因：尾部窗口会切断 `selectActiveBranch` 的 `parentId` 回溯链，**丢消息的风险高于省字节的收益**；若要做需「窗口不足则向前扩大重读」的渐进策略 + 逐条一致性回归。
+- WS `prompt` 通道仍无幂等键（重连重放可双执行）；两台手机并发同一会话缺 per-id 串行闸（`isIdle` 置位前有多个 await，判定窗口存在）。
+- `loadClaudeSubAgents` / `loadClaudeSessionMessages` 仍每次全量读盘（单个 transcript 实测最大 10MB），可复用本批的快照缓存。
+
 ## 未发布（2026-10-15）会话恢复与消息可靠性
 
 ### 修复

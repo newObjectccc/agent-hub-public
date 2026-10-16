@@ -70,6 +70,33 @@
 ### T11 一键集成 ✅
 - Tailscale 检测假阳性修复、npm run remote、npm 发包就绪（npx 冒烟通过）、workspaceRoot 回落
 
+### 批次 5（✅ 完成）— 手机继续不活跃会话：正确性与性能（含真机验证抓 bug）
+
+> 场景：会话没有活跃在电脑终端里，从手机 PWA 找到它并继续对话（默认 📱 平行继续路径）。
+
+### T12 平行路径正确性（P0）✅
+- pi 平行发送双写闸门（`EXTERNAL_ACTIVE`）：三路信号（终端心跳 / live-feed 60s / mtime 静默窗）+ 防自锁三坑（实例最后活动比较、own 登记 source 标记、open 迁移重写打点）；`/compact` 同闸门
+- 模型错误透出（stopReason/errorMessage → 气泡错误条 + status=error + WS error 事件，实时与历史同口径）；上下文溢出一键压缩；aborted 中性语气
+- 假接管根治：扩展 poll 活性（`POLL_TTL_MS=45s`）→ attach/enqueue 入队前拒死终端；ack 失败与 `ATTACH_UNAVAILABLE` 原文退回离线队列 + 自动切平行
+- 幂等占位期不伪报 accepted（`PROMPT_IN_FLIGHT`）；abort 竞态（实例建成前点停止不再是空操作）
+
+### T13 平行路径性能（P1，同机同语料实测）✅
+- `ensureLive` 移出 202 响应路径（`createAgentSession` 实测同步阻塞事件循环 600ms @24.9MB 会话）
+- claude 清单 per-file 快照缓存 + 并发分批：热扫 380ms → 6.8ms（54x）
+- 快照缓存按根目录分键：交替扫描 1150ms → 5ms（230x），拆掉「接第二个源即炸」的地雷
+- parallel delta 复用 `EventThrottle`（与 attach 路径同一实现）+ WS 背压（bufferedAmount>512KB 丢 delta，生命周期事件不丢）
+
+### T14 体验与知情权（P2）✅
+- `SESSION_CORRUPT` 中文可行动文案（保留原始错误尾巴）；错误类 notice 常驻不 6s 消失；切后台/锁屏回来立即对账
+- 双模式说明 sheet 无条件首弹 + 按 source 明示权限真相（pi：工具真实执行且无人工批准；claude：manual 拒需确认工具）
+
+### 真机验证（ego-browser + 独立验证实例）抓到并修复 3 个单测覆盖不到的 bug ✅
+- 闸门被 tail 启发式回写绕过（WS 握手启动 tail，对「只有 user 消息」的文件置 idle 回写 statuses → 同窗口先 409 后 202 且真执行）→ statuses 加 `source: own|tail`，闸门只信 own
+- `live.has` 无条件放行让闸门失效 10min（abort 不删实例）→ 改为 mtime vs 实例最后活动 + 5s 容差
+- 对账先于入队清掉失败气泡（409 返回前 ~10ms 的 GET 对账 reconcile 掉 local-* 占位）→ 入队时补回失败气泡（含图片预览重建）
+- 验证：server 802 / web 961 / cli 84 全绿；320/390/768 三档无横向溢出；真实语料错误条 / intro / 闸门保留 / 溢出按钮截图留证（diff-review.html）
+- 未做（评估后放弃）：详情加载尾部窗口化（会切断 `selectActiveBranch` 的 parentId 回溯链，丢消息风险 > 省字节收益）；WS prompt 幂等键；两台手机并发 per-id 串行闸
+
 ## 批次 3 之后的候选（⬜ 未排期）
 - ⬜ Web Push 锁屏通知（HTTPS 依赖解除后）
 - ✅ Claude 会话接管已在 v0.3 完成，见下方接入记录与 [驱动说明](CLAUDE_DRIVER.md)

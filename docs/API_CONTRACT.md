@@ -98,7 +98,8 @@ header 的 `parentSession`（文件路径）解析出的父会话 id（文件名
       "thinking": "思维链全文（assistant 的 thinking 块，无则 null）",
       "toolCalls": [
         { "name": "bash", "summary": "ls -la", "status": "pending|running|done|error", "resultPreview": "…" }
-      ]
+      ],
+      "error": { "message": "模型/流式错误原文", "kind": "contextOverflow|aborted|other" }
     }
   ],
   "hasMore": false,
@@ -117,6 +118,20 @@ claude 会话（`source: "claude"`）返回同构映射后的消息：transcript
 pi 消息的 `thinking` 无思维链时为 `null`；Claude 当前跳过 thinking 块，不能据此承诺三源均返回思维链。
 客户端兼容 `thinking` 缺省（视为无思维链）。Claude 的内部图片尺寸/坐标提示、命令元数据及 sidechain
 不作为主会话用户消息展示；成功读图结果可补回旧上传消息的图片，见消息内嵌图片一节。
+
+#### `error` 字段（模型/流式错误透出）
+
+pi 的**余额耗尽 / 网络中断 / 上下文溢出 / 主动中止**都不抛异常，而是产生一条 `content` 可能为空、
+带 `stopReason: "error"|"aborted"` + `errorMessage` 的 assistant 消息。此前 DTO 不取这两个字段，
+前端只能渲染成灰色「（无内容）」气泡——用户零原因、零出路（实测语料里就有
+`"You have no credits remaining…"`、`"Connection error."`）。现在：
+
+- `error.message`：SDK 的 `errorMessage` 原文（不美化也不隐藏；缺失时给中文兜底）
+- `error.kind`：`contextOverflow`（前端据此给「压缩上下文」一键自救）/ `aborted`（中性语气，不算错误）/ `other`
+- 溢出分类按 `errorMessage` 文本特征粗判（SDK 内部 `isContextOverflow` 不对外导出），**宁可漏判为 `other`也不误判为可压缩**
+- 实时流式与历史加载（`buildMessages`）**两条路径同口径**，否则刷新页面后错误条会消失
+- 本轮以错误收尾时：`status` 置 `error`，并补发一条 `error` 事件（code = `CONTEXT_OVERFLOW` 或 `PROMPT_FAILED`）
+- 仅 assistant 消息可带 `error`；claude/codex 源暂不下发（它们的失败走 spawn/stderr 路径）
 ### POST /api/sessions
 新建会话。请求：`{ "cwd": "/abs/path", "name": "可选", "source": "pi | claude | codex（可选，缺省 pi）" }`
 响应 201：`{ "session": { ...列表项... } }`
@@ -167,6 +182,21 @@ claude 会话：server 本地 spawn
 历史会话无需原终端在线即可 resume；打开页面本身不发送历史任务。Claude 发送在异步环境准备结束后，
 依据实际自有运行状态与最新文件 mtime 再检查 busy，并在无额外 await 的情况下启动进程，避免同会话双开。
 abort 会取消准备中的请求及尚未消费的本地队列，已取消的准备不会继续启动。
+
+### 发送类错误码（prompt / compact / attach 共用）
+
+| code | HTTP | 含义与客户端应有行为 |
+|---|---|---|
+| `SESSION_BUSY` | 409 | 本服务自有 run 正忙且 `mode` 缺省（可用 `steer`/`followUp`） |
+| `EXTERNAL_ACTIVE` | 409 | **pi 源**：外部（电脑终端）正持有/正在写该会话，平行发送会双写分叉。message 是可直接展示的中文原因（带出路）；客户端应**常驻**展示，不得自动重发（重发也一样被拒） |
+| `PROMPT_IN_FLIGHT` | 409 | 同 `clientMessageId` 的上一次提交还在处理中（结果未出）。**不得当成成功**；客户端归入自动重试（幂等键保证不双执行） |
+| `SESSION_CORRUPT` | 409 | 会话文件损坏/已删除/工作目录失效，无法唤醒该会话。message 带中文原因 + 原始错误尾巴（此前一律被归为 500 `internal error`，手机端零出路） |
+| `CONTEXT_OVERFLOW` | — | 仅 WS `error` 事件：本轮因上下文溢出失败，客户端应给「压缩上下文」一键动作 |
+| `ATTACH_UNAVAILABLE` | 409 | 终端不在线，**或心跳在但扩展已停止轮询**（见下节 `responsive`）。message 明说「这条消息没有发出去」，客户端据此自愈切平行并自动补发 |
+
+幂等语义修正：同 `clientMessageId` 重复提交时，**仅当首发已得出受理结果**才重放 202；
+首发仍在 flight 时回 409 `PROMPT_IN_FLIGHT`。此前这种情况伪报 `accepted:true`，
+若首发最终 409/500，重发方已以为成功（输入框已清、气泡显示已发送），消息就静默消失了。
 
 ### POST /api/sessions/:id/abort
 中止当前运行（Claude 平行模式：终止自有子进程并取消准备/队列；接管模式：向驱动发送 control interrupt，
@@ -676,6 +706,12 @@ server 行为：
   防止 tail 与 live 双推送产生重复气泡。
 - 同一会话已由本进程 SDK 接管时丢弃 live 事件（SDK 流是权威源）。
 - `text_delta`/`thinking_delta` 按会话做 100ms 节流合并广播；生命周期事件即时广播并保序。
+  同一个 `EventThrottle` 实现也用于 **parallel 路径**（server 内 SDK 实例的事件流）：此前只有
+  attach/live-feed 路径节流，parallel 每个 chunk 直接广播，而 parallel 恰恰是「手机继续
+  不活跃会话」走的路，弱网下帧数放大数十倍。
+- WS 广播带**背压保护**：单连接 `bufferedAmount` 超 512KB 时丢弃 delta 帧（`text_delta` /
+  `thinking_delta`），生命周期事件一律不丢。丢 delta 是安全的：`message_end` 携带完整文本，
+  前端按 id upsert 会用权威内容替换流式占位，另有详情全量对账兼底。
 - 扩展侧地址可用 `AGENT_HUB_LIVE_URL` 覆盖（默认 `http://127.0.0.1:7700`）。
 ## 8. Slash 命令清单（GET /api/commands）
 
@@ -775,7 +811,7 @@ Multiply coordinates …]`）不展示为额外用户消息；stdout 即使丢�
 `SessionListItem` 可选字段 `terminal`（codex 会话与旧 server **缺省**，向后兼容）：
 
 ```json
-{ "online": true, "attached": false, "driver": "queue", "mirror": false, "defaultPolicy": "active-only" }
+{ "online": true, "attached": false, "driver": "queue", "mirror": false, "defaultPolicy": "active-only", "responsive": true }
 ```
 
 - `online`：pi=扩展心跳 90s 内；Claude（hub 驱动）=服务提供接管能力，不代表原 TUI 在线，
@@ -784,6 +820,10 @@ Multiply coordinates …]`）不展示为额外用户消息；stdout 即使丢�
   `claude -p --resume` 进程，stdin 注入真用户 turn）。
 - `driver`：`"queue"`（pi 扩展指令队列）| `"hub"`（claude 驱动进程）；缺省按 queue 容错。
 - `mirror`：tmux 投屏就绪（仅 hub 形态）。
+- `responsive`（可选，仅 pi/queue 形态有意义）：终端扩展是否仍在长轮询取指令。心跳 TTL 是 90s，
+  终端关掉后这 90s 里 `online` 仍为 true；`responsive: false` 表示心跳在但扩展已超 45s 没来取指令
+  （死终端），客户端不得据此自动接管（否则消息入队无人取）。缺省（老 server）按 true 容错。
+  详见 §12 的 `terminal.responsive` 一节。
 - `defaultPolicy`（v0.3 新增，可选）：智能默认接管策略，取自 `config.claudeDriver.defaultPolicy`
   并随 terminal 下发（pi/claude 双通道均带；codex terminal 缺省不下发）：
   `"active-only"` = pi 扩展在线时默认接管，Claude 在 `status === "running"` 或
@@ -837,6 +877,19 @@ claude 响应 202：`{ "attached": true, "agent": { "sessionId", "cwd", "online"
 终端离线（pi）→ 409 `ATTACH_UNAVAILABLE`；claude 外部写入静默窗内 → 409 `ATTACH_UNAVAILABLE`；
 驱动并发满 → 409 `DRIVER_LIMIT`；会话不存在 → 404；codex → 400 `INVALID_REQUEST`。
 
+**`terminal.responsive`（pi 防「假接管」）**：心跳 TTL 是 90s，用户关掉终端后的这 90s 里
+`online` 仍为 `true`，此时接管必然变成假接管（消息入队无人取，用户等一分钟才知道、文本还会丢）。
+扩展的长轮询上限是 30s，活着就必然每 ≤30s 来一次，所以 server 另记录 poll 活性并下发：
+
+- `responsive: false` = 心跳在但扩展已超 45s（`POLL_TTL_MS`）没来取指令 → `attach` 与 `POST /message`
+  均回 409 `ATTACH_UNAVAILABLE`（**在入队前就拒**，不让消息在队列里干等 30s×3 重投）
+- **从未 poll 过**（扩展刚启动 / 老版本扩展）按 `true` 宽容，不得误拒接管
+- 字段可缺省：老 server 不下发 → 客户端按 `true` 容错（保持历史行为），但**不得自动接管**
+  `responsive === false` 的终端（`attachDefaultWorthy` 已加此闸门）
+- 客户端收到 `ATTACH_UNAVAILABLE` 或 `command_ack {ok:false}` 时，必须把原文退回离线队列并切回
+  📱 平行模式：前者自动重发（server 入队前就拒了 = 明确未投递），后者标**手动**重试
+  （无法排除“终端其实执行了、只是回执丢了”，自动重发会重复执行）
+
 Claude 同会话并发 attach 共享一次启动；准备中的接管计入 `maxConcurrent`。detach/dispose 可取消
 尚未完成的启动。文件静默窗在准备前与启动进程前各检查一次，默认 3000ms；只能降低并发写入风险，
 不能锁住原 TUI 或检测一直未写盘的外部计算。
@@ -889,6 +942,27 @@ parallel 的 busy 判定覆盖本进程 run、hub 驱动接管与最新文件活
 只有本服务自有平行 run 的 steer/followUp 会入本地队列。这些检查不能提供跨进程互斥。
 心跳超时（pi 90s）/ 驱动进程退出（claude）attach 自动失效并广播 `attach_state {attached:false}`，
 web 自动回落 📱 平行模式。
+
+### pi 平行发送的外部活跃闸门（`EXTERNAL_ACTIVE`）
+
+pi 会话文件是 **append-only + leafId 树**：终端 pi 进程与 server 内 SDK 实例各自维护 leafId，
+同时 append 会产生同 parent 分叉（一侧消息在 `selectActiveBranch` 回溯下**静默不可见**）；
+版本不一致触发 `migrateToCurrentVersion` → `_rewriteFile()`（`openSync(f,"w")` 截断重写）时，
+更会用自己内存的 entries 全量覆盖、**永久抹掉对方已追加的行**。
+
+因此 `POST /prompt`（pi 源）与 `POST /compact` 在受理前多一道闸门，三路信号任一命中即 409
+`EXTERNAL_ACTIVE`（三种 mode 一律拒，steer/followUp 对外部进程无处投递），message 为可直接展示的中文原因：
+
+| 信号 | 含义 | 文案导向 |
+|---|---|---|
+| 终端 pi-command 心跳在线 | 终端进程活着就持有自己的 leafId，即使它此刻空闲 | 引导切 🖥 接管模式 |
+| live-feed 60s 内有事件 | 终端在跑但未装 pi-command，无法接管 | 说明等 ~1 分钟或装扩展 |
+| 会话文件 mtime 在 60s 静默窗内 | 外部 CLI 在写（无任何扩展信号） | 说明稍后重试 |
+
+**防自锁（实现约束，改动时勿破）**：本进程持有 live 实例时直接放行（自己的写入不算外部）；
+mtime 判据用 claude 同口径的 `mtime <= own.at` 比较（own 登记更晚 = 本次写盘是自己造成的），
+并额外记录 `SessionManager.open` 可能触发的迁移重写时刻——否则**手机新建会话后发第一条消息**
+会被自己的闸门拦死（createSession 写盘刷新 mtime）。
 
 ## 13. 应用锁（app lock，F1 新增）
 
