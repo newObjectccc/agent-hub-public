@@ -20,6 +20,33 @@ const WS_EVENTS_PATH = "/ws/events";
 /** 连接建立期 pending 队列上限（P2-5）：findSession 解析完成前的消息堆积防护，超出丢弃最旧 */
 export const WS_PENDING_MAX = 100;
 
+/**
+ * 单连接发送缓冲上限（字节）：超过则丢弃 delta 帧。
+ *
+ * 为何必需：弱网/切后台的手机上 `bufferedAmount` 只涨不落，而发送处此前只查
+ * `readyState === OPEN`——快模型 + 慢客户端会让 server 的发送缓冲无上界增长（每个慢客户端一份）。
+ *
+ * 为何只丢 delta 是安全的：`message_end` 携带完整文本，前端按 id upsert 会用权威内容
+ * 替换流式占位，缺的字自动补齐（另有 GET /api/sessions/:id 全量对账兼底）。
+ * 生命周期事件（message_end / status / tool_* / agent_settled / error）**一律不丢**：
+ * 丢了会让 UI 永久停在「思考中」或中止按钮残留。
+ */
+export const WS_BACKPRESSURE_BYTES = 512 * 1024;
+
+/** 背压时可安全丢弃的帧（能由 message_end / 对账重建） */
+export function isDroppableEvent(event: ServerEvent): boolean {
+  return event.type === "text_delta" || event.type === "thinking_delta";
+}
+
+/** 背压判定（纯函数，可单测）：缓冲超阈且是可丢帧 → 丢 */
+export function shouldDropUnderBackpressure(
+  event: ServerEvent,
+  bufferedAmount: number,
+  limit: number = WS_BACKPRESSURE_BYTES,
+): boolean {
+  return bufferedAmount > limit && isDroppableEvent(event);
+}
+
 /** WS upgrade 鉴权配置（与 routes.ts HTTP Bearer 鉴权同口径） */
 export interface WsAuthConfig {
   enabled: boolean;
@@ -153,6 +180,8 @@ interface ClientMessage {
 export class WsHub {
   private readonly clients = new Map<string, Set<WebSocket>>();
   private readonly globalClients = new Set<WebSocket>();
+  /** 背压丢弃的 delta 帧计数（诊断/自检用：持续上涨说明有客户端长期跟不上） */
+  droppedDeltaFrames = 0;
   private wss: WebSocketServer | null = null;
   private tails: SessionTailManager | null = null;
   /** 子代理会话增量发现间隔（默认 10s；测试可注入短值） */
@@ -170,11 +199,17 @@ export class WsHub {
   broadcast(sessionId: string, event: ServerEvent): void {
     const set = this.clients.get(sessionId);
     if (!set) return;
-    const payload = JSON.stringify(event);
+    const droppable = isDroppableEvent(event);
+    let payload: string | null = null;
     for (const socket of set) {
-      if (socket.readyState === WebSocket.OPEN) {
-        socket.send(payload);
+      if (socket.readyState !== WebSocket.OPEN) continue;
+      // 背压保护：慢客户端只丢可重建的 delta 帧，绝不让发送缓冲无上界增长
+      if (droppable && shouldDropUnderBackpressure(event, socket.bufferedAmount)) {
+        this.droppedDeltaFrames += 1;
+        continue;
       }
+      payload ??= JSON.stringify(event);
+      socket.send(payload);
     }
   }
 

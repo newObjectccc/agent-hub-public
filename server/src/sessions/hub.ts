@@ -16,7 +16,8 @@ import {
   type AgentSessionEvent,
 } from "@earendil-works/pi-coding-agent";
 import { ErrorCodes, HubError } from "../errors.js";
-import type { HubActivity, MessageDto, MessageRole, PromptImageAttachment, SearchResultDto, ServerEvent, SessionListItem, SessionStatus, SessionTreeDto, ToolCallStatus } from "../types.js";
+import { EventThrottle } from "../live.js";
+import type { HubActivity, MessageDto, MessageErrorDto, MessageRole, PromptImageAttachment, SearchResultDto, ServerEvent, SessionListItem, SessionStatus, SessionTreeDto, ToolCallStatus } from "../types.js";
 import { decidePromptAction, parsePromptMode, type PromptMode } from "./prompt-policy.js";
 import { SearchService, SEARCH_DEFAULT_LIMIT } from "./search.js";
 import { inferExternalStatus, registerTailStatusSink } from "./tail.js";
@@ -27,6 +28,7 @@ import {
   contentToText,
   contentToThinking,
   encodeCwdDirName,
+  extractMessageError,
   isSubAgentName,
   RESULT_PREVIEW_LIMIT,
   scanSessions,
@@ -53,6 +55,12 @@ interface LiveSession {
   seq: number;
   /** 本轮 run 是否已收尾（SDK agent_settled / abort / run 兑底三选一，保证必达且不重复） */
   runSettled: boolean;
+  /**
+   * 本轮 run 遇到的模型错误（stopReason==="error"）：SDK 不抛异常，只把错误放在
+   * assistant 消息上，agent_settled 时据此把状态置 error 并补发一条 error 事件
+   * （否则前端会把失败的一轮当正常结束，只剩一个「（无内容）」气泡）。
+   */
+  runError: MessageErrorDto | null;
 }
 
 export interface PromptResult {
@@ -81,23 +89,93 @@ export function dtoRole(role: unknown): MessageRole | null {
 export interface SessionHubOptions {
   /** 测试注入：缺省用 pi SDK 的 createAgentSession */
   createAgentSession?: typeof createAgentSession;
+  /**
+   * 终端 pi 是否在线持有该会话（index.ts 注入 AgentCommandHub.isOnline，即 pi-command 扩展心跳）。
+   * 平行发送的外部活跃闸门用：终端进程活着就意味着它持有自己的 leafId，server 内 SDK 实例
+   * 同时 append 会让 JSONL 分叉（详见 errors.ts 的 EXTERNAL_ACTIVE 注释）。
+   */
+  externalActive?: (id: string) => boolean;
+  /** 出站 delta 节流窗口（毫秒，缺省 100）；测试注入小值免等定时器 */
+  throttleMs?: number;
+}
+
+/**
+ * 外部活跃判定窗口（live-feed 信号）：与 tail 的 mtime 静默窗同口径 60s——
+ * 覆盖工具间思考的写盘间隙，又不至于在终端早已退出后长期锁死手机发送。
+ */
+export const EXTERNAL_FEED_WINDOW_MS = 60_000;
+
+/**
+ * 「本进程实例最后活动 → 文件写入」的容差：SDK 事件与写盘的先后顺序不保证，
+ * 给 5s 容差避免把自己 run 的尾巴误判成外部写入。外部单次写入若 <5s 完成会被放过，
+ * 但 60s 静默窗本来就是启发式，这个取舍与之一致。
+ */
+export const OWN_WRITE_SLACK_MS = 5_000;
+
+/**
+ * 把 SDK/FS 的裸错误翻译成用户可行动的中文。
+ *
+ * 为何必需：`SessionManager.open` 招 "Session file is not a valid pi session"、
+ * cwd 被删招 ENOENT/chdir、SDK 初始化失败招裸 Error——这些此前一路冒到
+ * `toErrorEnvelope` 变成英文 `internal error`（5xx 一律隐藏真实 message），
+ * 手机端只闪 6s 就消失、零出路。这里统一转成 4xx 中文，并**保留原始错误尾巴**
+ * （用户提 issue 需要真实原因，不能只剩“失败了”）。
+ */
+export function describeSessionOpenError(
+  err: unknown,
+  found: { sessionFile: string; cwd: string },
+): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  const code = (err as { code?: unknown } | null)?.code;
+  if (code === "ENOENT" || /ENOENT/.test(raw)) {
+    // 两种可能：会话文件被删，或 cwd 已不存在（SDK 建实例时 chdir 失败）
+    if (/chdir|cwd/i.test(raw)) {
+      return `工作目录已不存在或无法进入：${found.cwd || "(未记录)"}——目录被删除/改名后无法继续这个会话（原始错误：${raw}）`;
+    }
+    return `会话文件已不存在（可能已被清理）：${found.sessionFile}（原始错误：${raw}）`;
+  }
+  if (code === "EACCES" || /EACCES|permission denied/i.test(raw)) {
+    return `没有权限读取会话文件：${found.sessionFile}（原始错误：${raw}）`;
+  }
+  if (/not a valid .*session|invalid session|unexpected token|JSON/i.test(raw)) {
+    return `会话文件已损坏或不是有效的 pi 会话格式，无法继续：${found.sessionFile}（原始错误：${raw}）`;
+  }
+  return `无法唤醒这个会话（原始错误：${raw}）`;
 }
 
 export class SessionHub {
   private readonly sessionDir: string;
   private readonly emit: EmitFn;
+  /** 出站事件节流合并器（与 attach 路径 LiveIngest 共用 EventThrottle 实现） */
+  private readonly throttle: EventThrottle;
   private readonly live = new Map<string, LiveSession>();
-  private readonly statuses = new Map<string, { status: SessionStatus; at: number }>();
+  private readonly statuses = new Map<string, { status: SessionStatus; at: number; source?: "own" | "tail" }>();
   /** 会话清单 TTL 缓存（listSessions/findSession 共享一次扫描） */
   private listCache: SessionListItem[] | null = null;
   private listCacheAt = 0;
   private listCacheInflight: Promise<SessionListItem[]> | null = null;
   private readonly searchService: SearchService;
   private readonly createSessionFn: typeof createAgentSession;
+  /** 终端 pi 在线探测（构造注入；缺省恒不在线 = 只靠 feed/mtime 两路信号） */
+  private readonly externalActive: ((id: string) => boolean) | null;
   /** ensureLive 并发去重：per-id inflight（参照 listCacheInflight，防并发 prompt 双开 AgentSession） */
   private readonly ensureLiveInflight = new Map<string, Promise<AgentSession>>();
   /** 扩展 live-feed 推送过的会话：id → 最后事件时间（10 分钟内视为 live，防文件 tail 双推送） */
   private readonly feedSessions = new Map<string, number>();
+  /**
+   * 本进程造成的会话文件写入时刻（id → 写后 mtime）：外部活跃闸门据此识别「这次写盘
+   * 是自己干的」。必需：`SessionManager.open` 在版本不一致时会走 migrateToCurrentVersion
+   * → `_rewriteFile()`（openSync(f,"w") 截断重写），把 mtime 刷成 now；不记下来就会把
+   * 自己建实例的写入当成「终端正在跑」，下一条消息被自锁 60s（实测踩到）。
+   */
+  private readonly ownWrites = new Map<string, number>();
+  /**
+   * 已受理但尚未收尾的 run（id 集）：ensureLive 挪到 run 内部后，prompt 返回时实例可能还没建成，
+   * 此时用户点「停止」会撞上 `live.get(id) === undefined`——靠这个集合识别“确实有一轮在飞”。
+   */
+  private readonly pendingRuns = new Set<string>();
+  /** 实例建成前收到的中止请求：run 拿到实例后立即跳过执行（绝不让停止变空操作） */
+  private readonly abortRequested = new Set<string>();
   private disposed = false;
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
   /** tail 状态回写注销（disposeAll 时解除） */
@@ -122,13 +200,27 @@ export class SessionHub {
 
   constructor(sessionDir: string, emit: EmitFn, options: SessionHubOptions = {}) {
     this.sessionDir = sessionDir;
-    this.emit = emit;
+    // 所有出站事件统一经节流合并器：token 级 delta 在 100ms 窗口内合并成一帧，
+    // 生命周期事件（message_end/status/agent_settled…）即时冲刷保序。
+    // 与 attach 路径的 LiveIngest 共用同一实现（防两套节流口径漂移）。
+    // 此前 parallel 路径每个 SDK chunk 直接 emit、一帧不合并，而 parallel 恰恰是
+    // 「手机继续不活跃会话」走的路：弱网下帧数放大数十倍，慢客户端发送缓冲无上界。
+    this.throttle = new EventThrottle((sid, event) => emit(sid, event), options.throttleMs);
+    this.emit = (id, event) => this.throttle.push(id, event);
     this.searchService = new SearchService(sessionDir);
     this.createSessionFn = options.createAgentSession ?? createAgentSession;
+    this.externalActive = options.externalActive ?? null;
     // tail 的 status 事件只走 WS 广播，不回写 statuses 会让 API 返回陈旧状态（双状态源分叉）：
     // 这里回写内存状态源，getStatus/findSession 与 WS 显示同源
     this.unregisterTailStatus = registerTailStatusSink((id, status) => {
-      this.statuses.set(id, { status, at: Date.now() });
+      // source="tail"：这是文件活动的**启发式推断**（供列表/详情展示），不是权威运行态。
+      // 两个约束：① 外部活跃闸门只信 source==="own"——否则 tail 对「只有 user 消息、尚无
+      // assistant 回复」的文件启发式置 idle 并回写后，闸门会把 idle 当成本进程登记而放行
+      // （浏览器实测：WS 握手启动 tail → 116ms 后同窗口内 409 变 202）；
+      // ② 不覆盖本进程权威登记——run 进行中若被 tail 回写盖掉 running，闸门与状态显示都会错乱。
+      const current = this.statuses.get(id);
+      if (current?.source === "own") return;
+      this.statuses.set(id, { status, at: Date.now(), source: "tail" });
     });
   }
 
@@ -184,7 +276,7 @@ export class SessionHub {
 
   private setStatus(id: string, status: SessionStatus): void {
     if (this.getStatus(id) === status) return;
-    this.statuses.set(id, { status, at: Date.now() });
+    this.statuses.set(id, { status, at: Date.now(), source: "own" });
     this.emit(id, { type: "status", status });
   }
 
@@ -216,6 +308,11 @@ export class SessionHub {
       // 很快又落回时间推断而误判 running，丢失本进程的权威 idle 记录
       if (now - entry.at > SessionHub.STATE_TTL_MS) this.statuses.delete(id);
     }
+    for (const [id, at] of [...this.ownWrites]) {
+      // 存的是写后 mtime（≈写入时刻）；它只在 60s 静默窗内有意义，随 STATE_TTL 淘汰防无界增长
+      // （丢了也只是退回时间推断，而那时 mtime 早已陈旧 → 不会误拦）
+      if (now - at > SessionHub.STATE_TTL_MS) this.ownWrites.delete(id);
+    }
   }
 
   /** 启动周期清扫（30s，unref）；测试可直接调 sweep */
@@ -234,6 +331,8 @@ export class SessionHub {
   private disposeLive(id: string, live: LiveSession): void {
     if (this.live.get(id) !== live) return;
     this.live.delete(id);
+    // 逐出前冲刷节流缓冲：否则尾巴上的 delta 会随实例一起丢掉（前端文字缺最后一截）
+    this.throttle.flushSession(id);
     try {
       live.unsubscribe();
     } catch {
@@ -345,7 +444,7 @@ export class SessionHub {
     await writeFile(file, `${lines.join("\n")}\n`, { flag: "wx" });
     // 显式登记 idle：空会话文件 mtime=now，不登记会被时间推断误判 running 60s
     // （实测 bug：新建会话进 chat 页即显示「思考中」+ 停止按钮）
-    this.statuses.set(sessionId, { status: "idle", at: Date.now() });
+    this.statuses.set(sessionId, { status: "idle", at: Date.now(), source: "own" });
     // 失效清单缓存：新建会话立即可见（否则 TTL 窗口内 findSession 查不到，chat 页加载落空）
     this.invalidateList();
 
@@ -419,7 +518,7 @@ export class SessionHub {
     }
     // 显式登记 idle：fork 新文件 mtime=now（历史新鲜时 updatedAt 也新鲜），不登记会被
     // 时间推断误判 running 60s（与 createSession 同根因：fork 后进 chat 页即显示「思考中」）
-    this.statuses.set(manager.getSessionId(), { status: "idle", at: Date.now() });
+    this.statuses.set(manager.getSessionId(), { status: "idle", at: Date.now(), source: "own" });
     const created = await this.findSession(manager.getSessionId());
     if (!created) {
       throw new HubError(ErrorCodes.INTERNAL, "会话复制后未能读回新会话", 500);
@@ -456,7 +555,7 @@ export class SessionHub {
     const manager = SessionManager.open(found.sessionFile);
     manager.appendSessionInfo(typeof name === "string" ? name : "");
     if (hadOwn || snapshot !== "running") {
-      this.statuses.set(id, { status: snapshot, at: Date.now() });
+      this.statuses.set(id, { status: snapshot, at: Date.now(), source: "own" });
     }
     // 失效清单缓存：改名立即可见（否则 TTL 窗口内列表/详情还是旧名）
     this.invalidateList();
@@ -494,11 +593,30 @@ export class SessionHub {
       throw new HubError(ErrorCodes.SESSION_NOT_FOUND, `会话不存在: ${id}`, 404);
     }
 
-    const manager = SessionManager.open(found.sessionFile);
-    const { session } = await this.createSessionFn({
-      sessionManager: manager,
-      cwd: found.cwd !== "" ? found.cwd : undefined,
-    });
+    // SDK/FS 的裸错误统一翻译成可行动中文 4xx（HTTP 与 WS 两条路径同时受益）
+    let manager: SessionManager;
+    try {
+      manager = SessionManager.open(found.sessionFile);
+    } catch (err) {
+      throw new HubError(ErrorCodes.SESSION_CORRUPT, describeSessionOpenError(err, found), 409);
+    }
+    // open 可能已触发迁移重写（mtime=now）：记下实际 mtime，让闸门认得出这是本进程的写入
+    try {
+      const afterOpen = await stat(found.sessionFile);
+      this.ownWrites.set(id, Math.ceil(afterOpen.mtimeMs));
+    } catch {
+      // 记不上也不致命：最多退化到时间推断（可能多拦 60s）
+    }
+    let session: AgentSession;
+    try {
+      const created = await this.createSessionFn({
+        sessionManager: manager,
+        cwd: found.cwd !== "" ? found.cwd : undefined,
+      });
+      session = created.session;
+    } catch (err) {
+      throw new HubError(ErrorCodes.SESSION_CORRUPT, describeSessionOpenError(err, found), 409);
+    }
 
     const liveSession: LiveSession = {
       session,
@@ -508,6 +626,7 @@ export class SessionHub {
       toolResults: new Map(),
       seq: 0,
       runSettled: true,
+      runError: null,
       lastUsedMs: Date.now(),
       unsubscribe: () => undefined,
     };
@@ -517,6 +636,67 @@ export class SessionHub {
     this.sweep();
     this.onLive?.(id);
     return session;
+  }
+
+  /**
+   * 外部（电脑终端）是否正在持有/写这个会话——平行发送的双写闸门。
+   *
+   * 三路信号（任一命中即视为外部活跃），并且**先看本进程实例**：
+   * `live.has(id)` 为真说明写盘的是 server 自己的 SDK 实例，此时必须放行，
+   * 否则平行模式会被自己的写入永久锁死（这是本判定最容易踩的自锁坑）。
+   *
+   * a) 终端 pi-command 扩展心跳在线：终端 pi 进程活着就持有自己的 leafId，
+   *    即便它此刻空闲，平行 append 也会让 JSONL 出现同 parent 分叉 → 拒绝并引导切接管。
+   * b) live-feed 扩展 60s 内推过事件：终端确实在跑，但没装 pi-command 无法接管 → 拒绝并说明等待。
+   * c) 会话文件 mtime 在 60s 静默窗内：外部 CLI 在写（未装任何扩展，server 无信号）→ 拒绝。
+   *
+   * 返回 null = 不忙；否则返回可直接展示给用户的中文原因（给出路，不只说"不行"）。
+   */
+  async externalBusyReason(id: string, nowMs = Date.now()): Promise<string | null> {
+    // a) 终端 pi 在线（可接管）：引导用户切 🖥 接管模式，而不是干等
+    if (this.externalActive?.(id) === true) {
+      return "电脑终端正持有这个会话（终端 pi 在线）。手机平行发送会与终端双写同一会话文件、导致历史分叉，请切 🖥 接管终端模式发送，或先在电脑上退出该会话。";
+    }
+    // b) live-feed 近期有事件：终端在跑但无法接管（未装 pi-command）
+    const lastFeed = this.feedSessions.get(id);
+    if (lastFeed !== undefined && nowMs - lastFeed <= EXTERNAL_FEED_WINDOW_MS) {
+      return "电脑终端正在运行这个会话（实时事件仍在推送）。为防止双写已暂停手机发送；终端停下约 1 分钟后自动恢复，或给终端 pi 装上 pi-command 扩展以启用 🖥 接管模式。";
+    }
+    // c) 仅有写盘痕迹：外部 CLI 在跑（无任何扩展信号）
+    const found = await this.findSession(id);
+    if (!found) return null;
+    try {
+      const st = await stat(found.sessionFile);
+      // 自写识别①：建实例时 open/迁移重写过的文件，mtime 就是本进程刷的
+      const ownWriteAt = this.ownWrites.get(id);
+      if (ownWriteAt !== undefined && st.mtimeMs <= ownWriteAt) return null;
+      // 自锁防护（精确版）：本进程实例的**最后活动时刻**不早于文件写入 = 这次写盘是自己造成的。
+      // 不能用 `live.has(id)` 无条件放行：abort 后实例仍驻留（10min 才逐出）但已空闲，
+      // 那时外部终端开始写就必须能拦住（浏览器实测：驻留实例让闸门形同虚设）。
+      // 也不能在 run 进行中拦截：SDK 边跑边 append，mtime 一直新鲜，拦了 steer/followUp 就自锁。
+      const live = this.live.get(id);
+      if (live !== undefined && st.mtimeMs <= live.lastUsedMs + OWN_WRITE_SLACK_MS) return null;
+      // 口径对齐 claude 侧 isEffectivelyBusy：不能裸用 inferExternalStatus，也不能无条件 own 优先。
+      // - 裸用时间推断：createSession/forkSession/renameSession 写盘会把 mtime 刷成 now，
+      //   结果「手机新建会话后发第一条消息」被自己的闸门拦死（实测踩到：hub-settled 4 红）。
+      // - 无条件 own 优先（pi 列表展示用的 statusWithInference 口径）：新建时登记的 idle 会永久
+      //   压制后来终端 resume 的真实写入 → 闸门失效。
+      // 正解：比时间。mtime <= own.at 说明这次写入是本进程造成的（用 own）；
+      // mtime > own.at 说明登记之后文件又被写过 = 外部在写（走时间推断）。
+      const own = this.statuses.get(id);
+      // 只信本进程权威登记（source==="own"）：tail 的启发式回写（source="tail"）不得作为
+      // 放行依据——它会对「尚无 assistant 回复」的文件置 idle，正是闸门要防的外部写入场景
+      const inferred =
+        own !== undefined && own.source === "own" && Math.floor(st.mtimeMs) <= own.at
+          ? own.status
+          : inferExternalStatus(st.mtimeMs, nowMs);
+      if (inferred === "running") {
+        return "电脑上似乎仍在运行这个会话（会话文件刚被写入）。为防止双写已暂停手机发送；若已停止，约 1 分钟后可重试。";
+      }
+    } catch {
+      // stat 失败（文件被删/不可读）：不拦，交给后续 findSession/SDK 报准确错误
+    }
+    return null;
   }
 
   /** 发送消息；决策见 prompt-policy（正忙且 mode 缺省 → busy）；images 为上传图片附件（pi 直接附图，通道 b） */
@@ -529,18 +709,30 @@ export class SessionHub {
       throw new HubError(ErrorCodes.INVALID_REQUEST, `mode 必须是 prompt|steer|followUp 之一`);
     }
 
-    const session = await this.ensureLive(id);
-    const live = this.live.get(id);
-    if (live === undefined) {
-      throw new HubError(ErrorCodes.INVALID_REQUEST, "会话未初始化");
+    // 外部活跃闸门（防双写）：必须在 ensureLive 之前——白建实例要数百毫秒，
+    // 且 createLive 的 onLive 会停掉文件 tail，把终端侧输出推送一起搞丢。
+    // 外部正在跑时三种 mode 一律 409（steer/followUp 也无处投递：队列只对 attach 生效），
+    // 与 claude 平行路径的口径一致（docs/API_CONTRACT.md §12 冲突保护）。
+    const externalReason = await this.externalBusyReason(id);
+    if (externalReason !== null) {
+      throw new HubError(ErrorCodes.EXTERNAL_ACTIVE, externalReason, 409);
     }
-    this.touch(live);
-    const decision = decidePromptAction(!session.isIdle, mode);
+
+    // busy 判定**不**为它 await ensureLive：createAgentSession 实测会同步阻塞事件循环
+    // ~600ms（24.9MB 会话），卡在 HTTP 响应路径上 = 手机等半秒才收到 202，且期间所有
+    // 客户端的 WS/HTTP 一起卡。无 live 实例 ⇒ 必然空闲：sweep 的 isEvictable 只逐出
+    // 「已收尾且 isIdle」的实例，运行中的绍不打断，所以实例不在就等于没有正在跑的 run。
+    const existing = this.live.get(id);
+    const decision = decidePromptAction(existing !== undefined ? !existing.session.isIdle : false, mode);
     if (decision.kind === "busy") {
       return { accepted: false, mode: mode ?? "prompt", busy: true };
     }
+    if (existing !== undefined) this.touch(existing);
 
     this.setStatus(id, "running");
+    // 登记「已受理但未收尾」+ 作废旧的中止请求（上一轮残留的 abortRequested 不得误杀本轮）
+    this.pendingRuns.add(id);
+    this.abortRequested.delete(id);
     if (decision.kind === "steer" || decision.kind === "followUp") {
       // 插话/排队：通知聚合（kind=steering；摘要由 dashboard 统一清洗/截断）
       this.onActivity?.(id, {
@@ -551,9 +743,27 @@ export class SessionHub {
     // steer 是并发插话（不独立收尾，由主 run 或 SDK agent_settled 收尾）；
     // prompt/followUp 是一轮独立 run，必须自己兑底收尾（agent_settled 必达）
     const trackRun = decision.kind === "prompt" || decision.kind === "followUp";
-    if (trackRun) live.runSettled = false;
+    if (existing !== undefined && trackRun) existing.runSettled = false;
     const run = (async () => {
+      // live 要等 ensureLive 之后才有：建实例阶段就失败时它是 undefined，收尾得自己兜
+      let live = existing;
       try {
+        // 建实例挠到受理之后（202 已返回）：会话历史越大这步越慢，不该让用户干等
+        const session = await this.ensureLive(id);
+        live = this.live.get(id);
+        if (live === undefined) {
+          throw new HubError(ErrorCodes.INTERNAL, "会话实例创建后丢失（可能刚被逐出）", 500);
+        }
+        this.touch(live);
+        if (trackRun) live.runSettled = false;
+        // 建实例期间用户已点停止：跳过这一轮。否则「停止」是空操作——
+        // 实例一建好就照样把整轮跑完（大会话建实例可达数百毫秒，窗口真实存在）。
+        if (this.abortRequested.has(id)) {
+          this.abortRequested.delete(id);
+          // abort 已自行收尾（idle + agent_settled + done），finally 不得再补一次
+          live.runSettled = true;
+          return;
+        }
         // pi 多模态通道 b：PromptOptions.images（message-types.md UserMessage 的 ImageContent 块）
         const piImages =
           images && images.length > 0
@@ -567,20 +777,32 @@ export class SessionHub {
           await session.prompt(text, piImages ? { images: piImages } : undefined);
         }
       } catch (err) {
-        // abort / SDK 已收尾：不报 error（不把“手动中止”变成红色错误）
-        if (!live.runSettled) {
-          live.runSettled = true;
-          const message = err instanceof Error ? err.message : String(err);
+        const message = err instanceof Error ? err.message : String(err);
+        // HubError 自带可行动中文与新错误码（SESSION_CORRUPT / CONTEXT_OVERFLOW），原样透出
+        const code = err instanceof HubError ? err.code : ErrorCodes.PROMPT_FAILED;
+        if (live === undefined) {
+          // 建实例就失败（会话文件损坏/被删、cwd 失效）：没有 SDK 事件流，必须自己报
           this.setStatus(id, "error");
-          this.emit(id, { type: "error", code: ErrorCodes.PROMPT_FAILED, message });
+          this.emit(id, { type: "error", code, message });
+        } else if (!live.runSettled) {
+          // abort / SDK 已收尾：不报 error（不把“手动中止”变成红色错误）
+          live.runSettled = true;
+          this.setStatus(id, "error");
+          this.emit(id, { type: "error", code, message });
         }
       } finally {
-        // agent_settled 必达兑底：SDK 正常会发 agent_settled（置 runSettled）；
-        // 异常路径（事件丢失/进程异常）由这里恢复 UI，避免“中止按钮残留”
-        if (trackRun && !live.runSettled) {
-          live.runSettled = true;
-          this.emit(id, { type: "agent_settled" });
-          this.setStatus(id, "idle");
+        this.pendingRuns.delete(id);
+        // agent_settled 必达兜底：SDK 正常会发 agent_settled（置 runSettled）；
+        // 异常路径（建实例失败/事件丢失/进程异常）由这里恢复 UI，避免“中止按钮残留”/永久转圈
+        if (trackRun) {
+          if (live === undefined) {
+            // 实例从未建成：SDK 的 agent_settled 永不会来。状态保留 catch 里的 error，不覆盖成 idle
+            this.emit(id, { type: "agent_settled" });
+          } else if (!live.runSettled) {
+            live.runSettled = true;
+            this.emit(id, { type: "agent_settled" });
+            this.setStatus(id, "idle");
+          }
         }
       }
     })();
@@ -593,7 +815,19 @@ export class SessionHub {
   /** 中止当前运行（幂等） */
   async abort(id: string): Promise<void> {
     const live = this.live.get(id);
-    if (!live) return;
+    if (!live) {
+      // 实例还在建（prompt 已受理、ensureLive 在飞）：登记中止请求并立即恢复 UI。
+      // 此前这里直接 return——用户点「停止」是空操作，run 建成实例后照样跑完整轮。
+      if (this.pendingRuns.has(id)) {
+        this.abortRequested.add(id);
+        this.setStatus(id, "idle");
+        // 没有 SDK 实例就没有人会发 agent_settled，这里自己补（防中止按钮残留）
+        this.emit(id, { type: "agent_settled" });
+        this.onActivity?.(id, { kind: "done", text: "已手动中止本轮运行" });
+      }
+      return;
+    }
+    this.abortRequested.delete(id);
     this.touch(live);
     // abort 自己已收尾（status idle + done 活动）：抑制 run finally 的 agent_settled 兑底，
     // 避免中止后又冒出一条“干完了”通知
@@ -605,6 +839,12 @@ export class SessionHub {
 
   /** 手动压缩上下文（可带自定义保留指令，透传 SDK session.compact()） */
   async compact(id: string, instructions?: string): Promise<void> {
+    // 与 prompt 同一道双写闸门：compact 会往会话文件追加 compaction entry，
+    // 外部终端正在写时同样会分叉（attach 接管期间另由 routes 的 rejectIfAttached 拦）
+    const externalReason = await this.externalBusyReason(id);
+    if (externalReason !== null) {
+      throw new HubError(ErrorCodes.EXTERNAL_ACTIVE, externalReason, 409);
+    }
     const session = await this.ensureLive(id);
     await session.compact(instructions === undefined || instructions === "" ? undefined : instructions);
   }
@@ -613,6 +853,8 @@ export class SessionHub {
   disposeAll(): void {
     this.disposed = true;
     this.unregisterTailStatus();
+    // 进程退出前把节流缓冲里的尾巴 delta 全部冲刷出去
+    this.throttle.flushAll();
     if (this.sweepTimer !== null) {
       clearInterval(this.sweepTimer);
       this.sweepTimer = null;
@@ -638,6 +880,8 @@ export class SessionHub {
     this.touch(live);
     switch (event.type) {
       case "agent_start": {
+        // 新一轮开始：清掉上一轮错误，避免陈旧错误把本轮 settled 误判成 error
+        live.runError = null;
         this.setStatus(id, "running");
         break;
       }
@@ -710,13 +954,27 @@ export class SessionHub {
         if (role === "assistant") {
           live.currentMessageId = null;
           live.currentMessageStartTs = null;
+          // 记下本轮错误（aborted 不算：用户主动中止，已有 done 活动与 idle 收尾）
+          if (dto.error && dto.error.kind !== "aborted") live.runError = dto.error;
         }
         break;
       }
       case "agent_settled": {
         live.runSettled = true;
         this.emit(id, { type: "agent_settled" });
-        this.setStatus(id, "idle");
+        // 模型错误收尾：状态置 error + 补发一条 error 事件（前端 notice 常驻，不只靠气泡）
+        const runError = live.runError;
+        live.runError = null;
+        if (runError !== null) {
+          this.emit(id, {
+            type: "error",
+            code: runError.kind === "contextOverflow" ? ErrorCodes.CONTEXT_OVERFLOW : ErrorCodes.PROMPT_FAILED,
+            message: runError.message,
+          });
+          this.setStatus(id, "error");
+        } else {
+          this.setStatus(id, "idle");
+        }
         break;
       }
       case "compaction_end": {
@@ -762,7 +1020,19 @@ export class SessionHub {
         ref.dto.resultPreview = result.text === "" ? null : result.text;
       }
     }
-    return { id: fallbackId, role, timestamp, text, thinking, toolCalls, ...(images ? { images } : {}) };
+    // 错误透出（与 scan.ts buildMessages 同口径，否则刷新页面后错误条消失）：
+    // SDK 的流式失败/余额耗尽/上下文溢出落在 stopReason+errorMessage 且不抛异常
+    const error = extractMessageError(message);
+    return {
+      id: fallbackId,
+      role,
+      timestamp,
+      text,
+      thinking,
+      toolCalls,
+      ...(images ? { images } : {}),
+      ...(error ? { error } : {}),
+    };
   }
 
   /** 从已持久化 entries 中按消息对象 identity / 时间戳解析 entry id */

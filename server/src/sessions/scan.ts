@@ -9,7 +9,7 @@
 import { createReadStream } from "node:fs";
 import { open, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
-import type { MessageDto, MessageImage, MessageRole, SessionListItem, ToolCallDto } from "../types.js";
+import type { MessageDto, MessageErrorDto, MessageImage, MessageRole, SessionListItem, ToolCallDto } from "../types.js";
 
 export const LAST_MESSAGE_LIMIT = 120;
 export const RESULT_PREVIEW_LIMIT = 500;
@@ -227,6 +227,31 @@ function toDto(
 }
 
 /**
+ * 从 assistant 消息提取错误（stopReason==="error"|"aborted"）。
+ *
+ * 为何必需：pi SDK 的流式失败（余额耗尽 / Connection error / 上下文溢出）不抛异常，
+ * 而是产生一条 content 可能为空、stopReason="error" + errorMessage 的 assistant 消息
+ * （实测语料："You have no credits remaining…"、"Connection error."、"Operation aborted"）。
+ * DTO 不取这两个字段时前端只能渲染「（无内容）」。
+ *
+ * SDK 内部的 isContextOverflow 不对外导出，这里按 errorMessage 文本特征粗分类
+ * （宁可漏判为 other，不可误判为可压缩）。
+ */
+const CONTEXT_OVERFLOW_RE =
+  /context (length|window|overflow)|maximum context|too many tokens|prompt is too long|exceed[sed]* .*context/i;
+
+export function extractMessageError(message: Record<string, unknown>): MessageErrorDto | null {
+  const stopReason = typeof message.stopReason === "string" ? message.stopReason : null;
+  if (stopReason !== "error" && stopReason !== "aborted") return null;
+  const raw = typeof message.errorMessage === "string" ? message.errorMessage.trim() : "";
+  if (stopReason === "aborted") {
+    return { message: raw !== "" ? raw : "本轮已中止", kind: "aborted" };
+  }
+  const text = raw !== "" ? raw : "模型请求失败（未返回原因）";
+  return { message: text, kind: CONTEXT_OVERFLOW_RE.test(text) ? "contextOverflow" : "other" };
+}
+
+/**
  * active branch entries → chat 消息 DTO 列表。
  * toolResult 折叠进产生它的 assistant 消息的 toolCalls[]；
  * 无主 toolResult（孤儿）保留为 role "toolResult" 消息。
@@ -274,7 +299,11 @@ export function buildMessages(entries: RawEntry[]): MessageDto[] {
       case "assistant": {
         const { toolCalls, byCallId } = assistantToolCalls(message);
         for (const [callId, ref] of byCallId) toolCallOwners.set(callId, ref.dto);
-        messages.push(toDto(entryId, "assistant", timestamp, contentToText(message.content), toolCalls, contentToThinking(message.content), contentToImages(message.content)));
+        const dto = toDto(entryId, "assistant", timestamp, contentToText(message.content), toolCalls, contentToThinking(message.content), contentToImages(message.content));
+        // 错误透出（含部分输出后失败：text 非空也要带错误条，否则用户以为回答正常结束）
+        const err = extractMessageError(message);
+        if (err) dto.error = err;
+        messages.push(dto);
         break;
       }
       case "toolResult": {
@@ -523,7 +552,7 @@ export async function scanSessions(sessionDir: string, options: ScanOptions = {}
       files.slice(i, i + CONCURRENCY).map(async (file) => {
         try {
           // per-file 增量快照：mtime+size 未变的文件零读盘零 parse（AC2）
-          const snap = await loadSessionSnapshot(file);
+          const snap = await loadSessionSnapshot(file, sessionDir);
           if (!snap.summary) return null;
           const summary = snap.summary;
           return { ...summary, status: options.statusOf ? options.statusOf(summary.id, Date.parse(summary.updatedAt)) : "idle" };
@@ -537,7 +566,7 @@ export async function scanSessions(sessionDir: string, options: ScanOptions = {}
       if (item) items.push(item);
     }
   }
-  pruneSessionFileCache(new Set(files));
+  pruneSessionFileCache(new Set(files), sessionDir);
   // 确定性 tiebreaker：updatedAt 相同时按 id 升序（与 web sortSessions 口径一致，刷新绝不重排）
   items.sort((a, b) => {
     const d = Date.parse(b.updatedAt) - Date.parse(a.updatedAt);
@@ -776,7 +805,28 @@ export function textIndexFromMessages(
     }));
 }
 
-const snapshotCache = new Map<string, SessionFileSnapshot>();
+/**
+ * per-file 派生快照缓存：**按根目录分键**。
+ *
+ * 此前是模块级单一 Map + `pruneSessionFileCache(本次 files 集合)` 全局清理，
+ * 于是两个不同根目录交替扇描时会**互相清空对方缓存**（实测：与另一个目录交替时
+ * cacheHits=0、每轮都退化成 1150ms 全量冷扇；连与一个空目录交替也一样）。
+ * 当前生产恰好没爆（SearchService 与 SessionHub 用同一个 sessionDir），但
+ * lineageFileCaches 早已按 sessionDir 分键——同一份代码两种口径，接第二个源就会炸。
+ */
+const snapshotCaches = new Map<string, Map<string, SessionFileSnapshot>>();
+/** 未传 rootDir 时的兼容桶（旧调用方签名不变） */
+const DEFAULT_CACHE_ROOT = "";
+
+function snapshotCacheFor(rootDir: string | undefined): Map<string, SessionFileSnapshot> {
+  const key = rootDir ?? DEFAULT_CACHE_ROOT;
+  let cache = snapshotCaches.get(key);
+  if (!cache) {
+    cache = new Map();
+    snapshotCaches.set(key, cache);
+  }
+  return cache;
+}
 const cacheStats = { fileReads: 0, fileParses: 0, cacheHits: 0 };
 
 export interface SessionCacheStats {
@@ -795,7 +845,7 @@ export function sessionCacheStats(): SessionCacheStats {
 
 /** 清空全部会话扫描缓存与计数（测试基准/自检用） */
 export function resetSessionCaches(): void {
-  snapshotCache.clear();
+  snapshotCaches.clear();
   lineageCache.clear();
   lineageFileCaches.clear();
   cacheStats.fileReads = 0;
@@ -804,9 +854,11 @@ export function resetSessionCaches(): void {
 }
 
 /** 已删除文件的快照清理（防缓存无限增长；调用方给出本次扫描见到的文件集） */
-export function pruneSessionFileCache(seen: ReadonlySet<string>): void {
-  for (const file of [...snapshotCache.keys()]) {
-    if (!seen.has(file)) snapshotCache.delete(file);
+/** 淘汰指定根目录下已消失的文件（不传 rootDir 则只清兼容桶，绝不跳目录误删） */
+export function pruneSessionFileCache(seen: ReadonlySet<string>, rootDir?: string): void {
+  const cache = snapshotCacheFor(rootDir);
+  for (const file of [...cache.keys()]) {
+    if (!seen.has(file)) cache.delete(file);
   }
 }
 
@@ -835,9 +887,10 @@ function deriveSnapshot(
 }
 
 /** per-file 派生快照：mtime+size 未变直接复用（零读盘零 parse），变更才重读重派生 */
-export async function loadSessionSnapshot(file: string): Promise<SessionFileSnapshot> {
+export async function loadSessionSnapshot(file: string, rootDir?: string): Promise<SessionFileSnapshot> {
+  const cache = snapshotCacheFor(rootDir);
   const fileStat = await stat(file);
-  const cached = snapshotCache.get(file);
+  const cached = cache.get(file);
   if (cached && cached.mtimeMs === fileStat.mtimeMs && cached.size === fileStat.size) {
     cacheStats.cacheHits += 1;
     return cached;
@@ -846,7 +899,7 @@ export async function loadSessionSnapshot(file: string): Promise<SessionFileSnap
   const content = await readSessionFile(file);
   cacheStats.fileParses += 1;
   const snap = deriveSnapshot(file, parseSessionJsonl(content), fileStat);
-  snapshotCache.set(file, snap);
+  cache.set(file, snap);
   return snap;
 }
 
@@ -863,7 +916,7 @@ export async function scanSessionInsights(sessionDir: string, options: ScanOptio
     const parsedBatch = await Promise.all(
       batch.map(async (file) => {
         try {
-          const snap = await loadSessionSnapshot(file);
+          const snap = await loadSessionSnapshot(file, sessionDir);
           if (!snap.summary) return null;
           const status = options.statusOf ? options.statusOf(snap.summary.id, Date.parse(snap.summary.updatedAt)) : "idle";
           const summary: SessionListItem = { ...snap.summary, status };
@@ -884,7 +937,7 @@ export async function scanSessionInsights(sessionDir: string, options: ScanOptio
       if (item) items.push(item);
     }
   }
-  pruneSessionFileCache(new Set(files));
+  pruneSessionFileCache(new Set(files), sessionDir);
   items.sort((a, b) => {
     const d = Date.parse(b.summary.updatedAt) - Date.parse(a.summary.updatedAt);
     return d !== 0 ? d : a.summary.id < b.summary.id ? -1 : a.summary.id > b.summary.id ? 1 : 0;

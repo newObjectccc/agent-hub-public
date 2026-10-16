@@ -104,12 +104,12 @@ export class SearchService {
     for (const file of files) {
       try {
         // 复用 scan 的 per-file 解析缓存（mtime+size 未变零读盘），避免重复读盘 parse（AC5）
-        index.push(...(await loadSessionSnapshot(file)).textIndex);
+        index.push(...(await loadSessionSnapshot(file, this.sessionDir)).textIndex);
       } catch {
         // 单个文件损坏不影响其它会话
       }
     }
-    pruneSessionFileCache(new Set(files));
+    pruneSessionFileCache(new Set(files), this.sessionDir);
     this.index = index;
     this.builtAt = now;
     return index;

@@ -435,8 +435,19 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
         : undefined;
     const idemKey = clientMessageId === undefined ? null : `${req.params.id}:${clientMessageId}`;
     if (idemKey !== null && promptIdem.begin(idemKey)) {
-      // 弱网重发：直接重放首次受理结果，不再次驱动 agent（防双执行）
-      return reply.status(202).send({ accepted: true, mode: promptIdem.modeOf(idemKey) ?? "prompt", deduplicated: true });
+      const replayed = promptIdem.modeOf(idemKey);
+      if (replayed !== null) {
+        // 首发已受理完成：重放同语义结果，不再次驱动 agent（幂等的正确形态，防双执行）
+        return reply.status(202).send({ accepted: true, mode: replayed, deduplicated: true });
+      }
+      // 首发仍在 flight：**绝不能伪报 accepted**——此前这里回 `mode: "prompt"` + accepted:true，
+      // 弱网重发方于是清掉输入框、气泡显示已发送，而首发可能随后 409/500（外部活跃/会话损坏），
+      // 消息就静默消失了。回 409 让前端把它留在队列里重试（同 clientMessageId 仍幂等）。
+      throw new HubError(
+        ErrorCodes.PROMPT_IN_FLIGHT,
+        "这条消息的上一次提交还在处理中（结果未出）：已保留在发送队列里会自动重试，不会重复执行。",
+        409,
+      );
     }
     try {
       rejectIfAttached(req.params.id);

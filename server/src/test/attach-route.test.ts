@@ -258,7 +258,13 @@ describe("attach 路由：生命周期 / 冲突保护 / terminal 状态注入", 
     const list = await app.inject({ method: "GET", url: "/api/sessions" });
     const sessions = (list.json() as { sessions: SessionListItem[] }).sessions;
     // terminal 带 defaultPolicy（config.claudeDriver.defaultPolicy 下发，缺省 active-only）
-    assert.deepEqual(sessions[0].terminal, { online: true, attached: false, defaultPolicy: "active-only" });
+    // responsive=true：心跳在、且从未 poll 过时按“宽容”判活（防扩展刚启动就被误拒接管）
+    assert.deepEqual(sessions[0].terminal, {
+      online: true,
+      attached: false,
+      defaultPolicy: "active-only",
+      responsive: true,
+    });
 
     await app.inject({ method: "POST", url: "/api/sessions/sess-1/attach", payload: {} });
     const detail = await app.inject({ method: "GET", url: "/api/sessions/sess-1" });
@@ -266,6 +272,7 @@ describe("attach 路由：生命周期 / 冲突保护 / terminal 状态注入", 
       online: true,
       attached: true,
       defaultPolicy: "active-only",
+      responsive: true,
     });
     await app.inject({ method: "POST", url: "/api/sessions/sess-1/detach", payload: {} });
   });

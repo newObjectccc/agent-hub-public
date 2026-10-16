@@ -187,53 +187,32 @@ export function coalesceDeltas(events: ServerEvent[]): ServerEvent[] {
   );
 }
 
-export interface LiveIngestDeps {
-  emit: (sessionId: string, event: ServerEvent) => void;
-  /**
-   * 会话收到 live 事件（每批调用，可作心跳）。
-   * index.ts 接到 hub.markLiveFeed：首个事件触发 hub.onLive 停文件 tail（防双推送）。
-   */
-  onLive?: (sessionId: string) => void;
-  /** 该会话已由本进程 SDK 接管时丢弃 live 事件（SDK 流是权威源，防双推送） */
-  isSdkLive?: (sessionId: string) => boolean;
-  /** delta 广播节流窗口（毫秒，默认 100） */
-  throttleMs?: number;
-}
+/** delta 广播的默认节流窗口（毫秒） */
+export const DEFAULT_THROTTLE_MS = 100;
 
-interface PendingBucket {
-  events: ServerEvent[];
-  timer: ReturnType<typeof setTimeout> | null;
-}
-
-/** live 事件接入器：delta 节流合并 + 生命周期事件即时广播（保序） */
-export class LiveIngest implements LiveIngestLike {
-  private readonly deps: LiveIngestDeps;
-  private readonly throttleMs: number;
+/**
+ * delta 节流合并器：token 级 delta 在窗口内合并成一帧再广播，
+ * 生命周期事件（message_end / tool_start / status / agent_settled …）即时冲刷以保序。
+ *
+ * 两条推送路径共用这一个实现（防口径漂移）：
+ * - LiveIngest（attach 路径：终端扩展推来的 live 事件）
+ * - SessionHub（parallel 路径：server 内 SDK 实例的事件）——此前每个 SDK chunk 直接 emit、
+ *   一帧不合并，而 parallel 恰恰是「手机继续不活跃会话」走的路：弱网下帧数放大数十倍。
+ */
+export class EventThrottle {
   private readonly pending = new Map<string, PendingBucket>();
-  private closed = false;
+  private readonly emitFn: (sessionId: string, event: ServerEvent) => void;
+  private readonly throttleMs: number;
 
-  constructor(deps: LiveIngestDeps) {
-    this.deps = deps;
-    this.throttleMs = deps.throttleMs ?? 100;
+  constructor(emit: (sessionId: string, event: ServerEvent) => void, throttleMs: number = DEFAULT_THROTTLE_MS) {
+    this.emitFn = emit;
+    this.throttleMs = throttleMs;
   }
 
-  ingest(sessionId: string, raw: unknown): { accepted: number } {
-    if (this.closed) return { accepted: 0 };
-    if (this.deps.isSdkLive?.(sessionId)) return { accepted: 0 };
-    const events = normalizeLiveEvents(raw);
-    if (events.length === 0) return { accepted: 0 };
-    this.deps.onLive?.(sessionId);
-
-    for (const event of events) {
-      if (isDeltaEvent(event)) {
-        this.enqueue(sessionId, event);
-      } else {
-        // 生命周期事件即时冲刷 + 广播，保证 delta 不越过 message_end 等边界
-        this.enqueue(sessionId, event);
-        this.flushSession(sessionId);
-      }
-    }
-    return { accepted: events.length };
+  /** 推一个事件：delta 进节流窗，其它事件入队后立即冲刷（保证 delta 不越过 message_end 等边界） */
+  push(sessionId: string, event: ServerEvent): void {
+    this.enqueue(sessionId, event);
+    if (!isDeltaEvent(event)) this.flushSession(sessionId);
   }
 
   private enqueue(sessionId: string, event: ServerEvent): void {
@@ -259,14 +238,74 @@ export class LiveIngest implements LiveIngestLike {
     this.pending.delete(sessionId);
     if (bucket.timer !== null) clearTimeout(bucket.timer);
     for (const event of coalesceDeltas(bucket.events)) {
-      this.deps.emit(sessionId, event);
+      this.emitFn(sessionId, event);
     }
+  }
+
+  /** 冲刷全部会话（实例逐出/进程退出前调用，否则尾巴 delta 会丢） */
+  flushAll(): void {
+    for (const sessionId of [...this.pending.keys()]) this.flushSession(sessionId);
+  }
+
+  /** 某会话是否还有未冲刷的缓冲（逐出前判定用） */
+  hasPending(sessionId: string): boolean {
+    return this.pending.has(sessionId);
+  }
+}
+
+export interface LiveIngestDeps {
+  emit: (sessionId: string, event: ServerEvent) => void;
+  /**
+   * 会话收到 live 事件（每批调用，可作心跳）。
+   * index.ts 接到 hub.markLiveFeed：首个事件触发 hub.onLive 停文件 tail（防双推送）。
+   */
+  onLive?: (sessionId: string) => void;
+  /** 该会话已由本进程 SDK 接管时丢弃 live 事件（SDK 流是权威源，防双推送） */
+  isSdkLive?: (sessionId: string) => boolean;
+  /** delta 广播节流窗口（毫秒，默认 100） */
+  throttleMs?: number;
+}
+
+interface PendingBucket {
+  events: ServerEvent[];
+  timer: ReturnType<typeof setTimeout> | null;
+}
+
+/** live 事件接入器：delta 节流合并 + 生命周期事件即时广播（保序） */
+export class LiveIngest implements LiveIngestLike {
+  private readonly deps: LiveIngestDeps;
+  private readonly throttle: EventThrottle;
+  private closed = false;
+
+  constructor(deps: LiveIngestDeps) {
+    this.deps = deps;
+    this.throttle = new EventThrottle(
+      (sessionId, event) => deps.emit(sessionId, event),
+      deps.throttleMs ?? DEFAULT_THROTTLE_MS,
+    );
+  }
+
+  ingest(sessionId: string, raw: unknown): { accepted: number } {
+    if (this.closed) return { accepted: 0 };
+    if (this.deps.isSdkLive?.(sessionId)) return { accepted: 0 };
+    const events = normalizeLiveEvents(raw);
+    if (events.length === 0) return { accepted: 0 };
+    this.deps.onLive?.(sessionId);
+
+    for (const event of events) {
+      this.throttle.push(sessionId, event);
+    }
+    return { accepted: events.length };
+  }
+
+  /** 冲刷某会话的节流缓冲（测试/关闭前可显式调用） */
+  flushSession(sessionId: string): void {
+    this.throttle.flushSession(sessionId);
   }
 
   /** 停止接入并清空节流定时器（进程退出前调用） */
   close(): void {
     this.closed = true;
-    for (const [sessionId] of this.pending) this.flushSession(sessionId);
-    this.pending.clear();
+    this.throttle.flushAll();
   }
 }

@@ -20,6 +20,16 @@ export const COMMAND_MODES: readonly CommandMode[] = ["prompt", "steer", "follow
 
 /** 心跳有效期：超过此时长无心跳 → 终端离线（任务硬性要求 90s） */
 export const HEARTBEAT_TTL_MS = 90_000;
+/**
+ * 扩展轮询活性窗口：超过此时长没来 poll 过 → 认为扩展已不再取指令。
+ *
+ * 为何需要它（而不是只靠心跳）：心跳 TTL 是 90s，终端关掉后的整整 90s 里
+ * `isOnline` 仍为 true → attach 会「成功」、前端自动接管并提示“终端在线，已默认接管终端”，
+ * 但消息入队后根本没人取：用户要等 60s 才看到一条提示、再等 detach 把指令取消，
+ * 而那条消息既不入离线队列也不回落平行模式——输入框已清空，文本彻底消失（实测踩坑）。
+ * 长轮询上限是 30s（MAX_POLL_WAIT_MS），扩展活着就必然每 ≤30s 来一次，45s = 30s + 容差。
+ */
+export const POLL_TTL_MS = 45_000;
 /** 心跳上报间隔（扩展侧 30s，server 只作日志/诊断参考） */
 export const HEARTBEAT_INTERVAL_MS = 30_000;
 /** 队列指令 TTL：入队 10 分钟未投递/未完成 → 过期丢弃 */
@@ -125,6 +135,8 @@ export const CLIENT_IDEMPOTENT_TTL_MS = 10 * 60_000;
 
 export class AgentCommandHub implements AgentLinkLike {
   private readonly agents = new Map<string, AgentInfo>();
+  /** 扩展最后一次长轮询的时刻（活性打点，比心跳 TTL 硬：见 POLL_TTL_MS 注释） */
+  private readonly lastPollAt = new Map<string, number>();
   private readonly attached = new Map<string, AttachedState>();
   /** clientMessageId → commandId 全局幂等缓存（TTL 清理；不随 attach state 生灭——防重复注入） */
   private readonly clientSeen = new Map<string, { commandId: string; at: number }>();
@@ -182,6 +194,19 @@ export class AgentCommandHub implements AgentLinkLike {
     return info !== undefined && now - info.lastSeen <= HEARTBEAT_TTL_MS;
   }
 
+  /**
+   * 扩展是否仍在轮询取指令（比心跳更硬的活性信号）。
+   *
+   * 宽容原则：**从未 poll 过**（undefined）时返回 true——可能是扩展刚启动还没发第一次
+   * 长轮询，也可能是老版本扩展；这两种情况不该被误判为死终端而拒接管。
+   * 只有「poll 过、但已超过 POLL_TTL_MS 没再来」才判 false（终端进程大概率已退出）。
+   */
+  isResponsive(sessionId: string, now = Date.now()): boolean {
+    const lastPoll = this.lastPollAt.get(sessionId);
+    if (lastPoll === undefined) return true;
+    return now - lastPoll <= POLL_TTL_MS;
+  }
+
   listAgents(): AgentInfo[] {
     return [...this.agents.values()];
   }
@@ -194,6 +219,16 @@ export class AgentCommandHub implements AgentLinkLike {
       throw new HubError(
         ErrorCodes.ATTACH_UNAVAILABLE,
         "终端 pi 不在线：请在电脑终端打开带 pi-command 扩展的 pi 会话（心跳 90s 内）",
+        409,
+      );
+    }
+    // 心跳还在但扩展已停止轮询（典型：刚关掉终端，心跳要 90s 才过期）——
+    // 这时接管必然变成「假接管」：消息入队无人取，用户等一分钟才知道、文本还会丢。
+    // 立即拒并给出两条明确出路，比让用户干等强得多。
+    if (!this.isResponsive(sessionId, now)) {
+      throw new HubError(
+        ErrorCodes.ATTACH_UNAVAILABLE,
+        "终端心跳还在但扩展已停止取指令（通常是电脑终端刚关闭）。请在电脑上重新打开该会话，或改用 📱 平行继续由 server 直接执行。",
         409,
       );
     }
@@ -240,11 +275,14 @@ export class AgentCommandHub implements AgentLinkLike {
     return true;
   }
 
-  /** 会话列表徽章数据（终端在线 / 已接管） */
+  /** 会话列表徽章数据（终端在线 / 已接管 / 扩展是否在取指令） */
   statusFor(sessionId: string, now = Date.now()): TerminalAttachInfo {
     return {
       online: this.isOnline(sessionId, now),
       attached: this.isAttached(sessionId, now),
+      // 下发轮询活性：前端据此决定要不要「自动接管」（心跳还在但扩展已停轮询时
+      // 自动接管 = 假接管，消息入队无人取）；用户手动选接管仍允许，不剥夺选择权
+      responsive: this.isResponsive(sessionId, now),
     };
   }
 
@@ -258,6 +296,17 @@ export class AgentCommandHub implements AgentLinkLike {
     const text = typeof input.text === "string" ? input.text.trim() : "";
     if (text === "") {
       throw new HubError(ErrorCodes.INVALID_REQUEST, "text 必须是非空字符串");
+    }
+    // 扩展已停止轮询（典型：attach 之后用户才关掉终端）：立即失败，不入队。
+    // 否则这条消息会在队列里等 30s×3 次重投 + 10min TTL，而前端要 60s 才给一条
+    // 「消息已入终端队列」的小字提示——用户以为发出去了，实际永远不会执行。
+    // 文案必须明说「没有发出去」，前端据此把文本退回离线队列（绝不静默丢消息）。
+    if (!this.isResponsive(sessionId, now)) {
+      throw new HubError(
+        ErrorCodes.ATTACH_UNAVAILABLE,
+        "终端扩展已停止取指令（电脑终端可能刚关闭）：这条消息没有发出去。已切回 📱 平行继续，重发即可。",
+        409,
+      );
     }
     const mode = parseMode(input.mode ?? "prompt");
     const clientMessageId =
@@ -309,6 +358,8 @@ export class AgentCommandHub implements AgentLinkLike {
    * 否则挂起至 enqueue/detach/超时。waitMs=0 时为短轮询（立即返回）。
    */
   async poll(sessionId: string, waitMs: number, now = Date.now()): Promise<AttachCommand[]> {
+    // 活性打点（无条件，包括未 attach 的空转轮询）：attach/enqueue 据此识别“终端真的还在吗”
+    this.lastPollAt.set(sessionId, now);
     const state = this.attached.get(sessionId);
     if (!state) {
       // 未 attach（终端在线未接管稳态）：挂起到轮询上限再空返——防客户端热空转（实测 6000 req/s 的根因）
@@ -377,6 +428,10 @@ export class AgentCommandHub implements AgentLinkLike {
     }
     for (const [staleId, info] of [...this.agents]) {
       if (now - info.lastSeen > HEARTBEAT_TTL_MS * 4) this.agents.delete(staleId);
+    }
+    // 轮询打点同步淘汰（防无界增长）：比心跳存得更久没意义，心跳条目清了就没谁再读它
+    for (const [staleId, at] of [...this.lastPollAt]) {
+      if (now - at > HEARTBEAT_TTL_MS * 4) this.lastPollAt.delete(staleId);
     }
     // clientMessageId 幂等缓存过期清理（OOM 审计 AC5）：TTL 内保留防重复注入，过期即删
     for (const [clientKey, seen] of [...this.clientSeen]) {

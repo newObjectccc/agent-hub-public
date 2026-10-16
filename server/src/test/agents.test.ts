@@ -43,7 +43,7 @@ describe("AgentCommandHub: 心跳与在线判定", () => {
     hub.heartbeat({ sessionId: "s1", pid: 123, cwd: "/tmp/demo", capabilities: ["message"] }, t0);
     assert.equal(hub.isOnline("s1", t0 + HEARTBEAT_TTL_MS), true);
     assert.equal(hub.isOnline("s1", t0 + HEARTBEAT_TTL_MS + 1), false);
-    assert.deepEqual(hub.statusFor("s1", t0 + 1000), { online: true, attached: false });
+    assert.deepEqual(hub.statusFor("s1", t0 + 1000), { online: true, attached: false, responsive: true });
   });
 
   it("非法心跳（缺 sessionId）拒绝；续期刷新 lastSeen", () => {

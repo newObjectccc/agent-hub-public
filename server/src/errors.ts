@@ -9,6 +9,16 @@ export const ErrorCodes = {
   INVALID_CWD: "INVALID_CWD",
   INTERNAL: "INTERNAL",
   PROMPT_FAILED: "PROMPT_FAILED",
+  /** 上下文溢出（可自救：前端据此给「压缩上下文」一键动作，而非只报失败） */
+  CONTEXT_OVERFLOW: "CONTEXT_OVERFLOW",
+  /** 会话文件损坏/丢失/工作目录失效——无法继续这个会话（带可行动中文原因） */
+  SESSION_CORRUPT: "SESSION_CORRUPT",
+  /**
+   * 同 clientMessageId 的上一次提交还在处理中（尚未得出受理结果）。
+   * 此前这种情况会伪报 `accepted:true`：若首发最终 409/500，重发方已经以为成功了，
+   * 消息就静默消失。现在明确回 409，前端保留在离线队列里重试（同键仍幂等，不双执行）。
+   */
+  PROMPT_IN_FLIGHT: "PROMPT_IN_FLIGHT",
   INVALID_MESSAGE: "INVALID_MESSAGE",
   // git/文件只读 API（契约 §6）
   NOT_REPO: "NOT_REPO",
@@ -22,6 +32,13 @@ export const ErrorCodes = {
   ATTACH_REQUIRED: "ATTACH_REQUIRED",
   ATTACH_ACTIVE: "ATTACH_ACTIVE",
   ATTACH_QUEUE_FULL: "ATTACH_QUEUE_FULL",
+  /**
+   * 外部（电脑终端）正持有/正在写该会话：平行发送会与终端双写同一 JSONL。
+   * pi 的会话文件是 append-only + leafId 树，两个进程各自维护 leafId 会产生同 parent 分叉
+   * （一侧消息在 selectActiveBranch 回溯下静默不可见）；版本迁移触发 SessionManager._rewriteFile()
+   * 时更会用自己内存的 entries 截断重写、永久抹掉对方已追加的行。
+   */
+  EXTERNAL_ACTIVE: "EXTERNAL_ACTIVE",
   // hub 驱动接管（claude，docs/CLAUDE_DRIVER.md）
   /** 驱动进程并发上限 */
   DRIVER_LIMIT: "DRIVER_LIMIT",

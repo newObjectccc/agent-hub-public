@@ -492,10 +492,14 @@ async function readFileText(file: string): Promise<string> {
   return Buffer.concat(chunks).toString("utf8");
 }
 
+/** 文件名 → 兜底 sessionId（行内无 sessionId 字段时用 UUID 文件名） */
+function fallbackSessionIdOf(file: string): string | undefined {
+  return file.split("/").pop()?.replace(/\.jsonl$/i, "") ?? undefined;
+}
+
 /** transcript 文件 → 消息 DTO 列表（tail / 详情共用） */
 export async function loadClaudeSessionMessages(file: string): Promise<MessageDto[]> {
-  const fallbackSessionId = file.split("/").pop()?.replace(/\.jsonl$/i, "") ?? undefined;
-  const parsed = parseClaudeTranscript(await readFileText(file), { sessionId: fallbackSessionId });
+  const parsed = parseClaudeTranscript(await readFileText(file), { sessionId: fallbackSessionIdOf(file) });
   return parsed.messages;
 }
 
@@ -556,6 +560,221 @@ export async function loadClaudeHistoryIndex(historyFile: string): Promise<Map<s
   }
 }
 
+// ---------- per-file 派生快照缓存（清单扫描性能修复）----------
+//
+// 背景（实测本机 ~/.claude/projects：49 个会话文件 / 75MB）：旧 scanClaudeSessions
+// 每遍都 stat + 全量读 + 全量 parse（346-450ms/遍，rss 峰值 ~300MB），且完全无缓存；
+// 会话活跃时 presence watcher（500ms debounce）持续失效 ClaudeAdapter 的 5s listCache
+// → 反复整表重扫（持续 ~7% CPU + ~29MB/s 磁盘读）。
+//
+// 现按 pi 侧 sessions/scan.ts 的 loadSessionSnapshot 口径做 per-file 增量快照：
+// mtime+size 未变的文件零读盘零 parse，直接复用已构建的 summary。
+//
+// 与 pi 侧的两点刻意差异（pi 侧的已知缺陷，勿回抄）：
+// 1. 缓存**按 projectsDir 分键**。pi 侧是模块级全局 Map + 「本次调用扫到的文件集」prune，
+//    两个不同目录交替扫描会互相清空缓存（实测 cacheHits=0、每轮退化成全量冷扫）。
+//    这里 prune 只清理本目录内消失的文件，别的目录条目不受影响。
+// 2. 带 LRU 上限（条目数 / 覆盖源字节 / 目录数）。~/.claude/projects 随使用一直涨，
+//    只靠 prune 不足以界定内存。
+//
+// 缓存里**只放文件派生的静态部分**：status（statusOf 注入的运行态）与 history.jsonl
+// 的 cwd 兜底都是「每次调用可能不同」的输入，一律在返回时现算，绝不进缓存。
+
+/** 单个 transcript 文件的派生快照（不含任何运行态字段） */
+export interface ClaudeFileSnapshot {
+  mtimeMs: number;
+  /** 源文件字节数：变更判定 + LRU 体量计量 */
+  size: number;
+  /**
+   * 文件派生的静态摘要（cwd 为行内原值，未做 history 兜底）。
+   * null = 该文件派生不出会话（防御口径：扫描路径下 sessionId 总能用文件名 UUID 兜底，
+   * 只有直接调用本函数且文件名兜不出 id 时出现）—— null 同样缓存，避免反复重读。
+   */
+  summary: Omit<SessionListItem, "status"> | null;
+}
+
+/** 缓存 IO 计数（基准固化 + 自检用；口径对齐 pi 侧 SessionCacheStats） */
+export interface ClaudeCacheStats {
+  /** 读盘（读文件全文）次数 */
+  fileReads: number;
+  /** transcript parse 次数 */
+  fileParses: number;
+  /** per-file 快照命中次数 */
+  cacheHits: number;
+  /** LRU 淘汰条目数（非 0 说明上限偏小，热扫会退化为部分重读） */
+  evictions: number;
+  /** prune 清掉的条目数（文件被删/改名） */
+  pruned: number;
+}
+
+/** 缓存上限（可注入：测试用小上限验证淘汰；生产按语料规模放宽） */
+export interface ClaudeCacheLimits {
+  /** 单目录快照条目上限 */
+  maxEntriesPerDir: number;
+  /** 单目录快照覆盖的源文件总字节上限（快照自身很轻，这里按源语料体量做代理约束） */
+  maxBytesPerDir: number;
+  /** 同时保留的 projectsDir 上限（生产恒为 1，测试会建多个临时目录） */
+  maxDirs: number;
+}
+
+const DEFAULT_CACHE_LIMITS: ClaudeCacheLimits = {
+  maxEntriesPerDir: 512,
+  maxBytesPerDir: 192 * 1024 * 1024,
+  maxDirs: 64,
+};
+
+let cacheLimits: ClaudeCacheLimits = { ...DEFAULT_CACHE_LIMITS };
+const stats = { fileReads: 0, fileParses: 0, cacheHits: 0, evictions: 0, pruned: 0 };
+
+/**
+ * 单目录的快照 LRU：Map 迭代序 = 最久未用在前（命中时重插到末尾即 touch）。
+ * 超限从最久未用端淘汰，防 ~/.claude/projects 无界增长导致缓存无界。
+ */
+class DirSnapshotCache {
+  private readonly files = new Map<string, ClaudeFileSnapshot>();
+  private bytes = 0;
+
+  get size(): number {
+    return this.files.size;
+  }
+
+  get(file: string): ClaudeFileSnapshot | undefined {
+    const hit = this.files.get(file);
+    if (hit === undefined) return undefined;
+    this.files.delete(file);
+    this.files.set(file, hit); // LRU touch
+    return hit;
+  }
+
+  set(file: string, snap: ClaudeFileSnapshot): void {
+    const prev = this.files.get(file);
+    if (prev !== undefined) {
+      this.files.delete(file);
+      this.bytes -= prev.size;
+    }
+    this.files.set(file, snap);
+    this.bytes += snap.size;
+    while (this.files.size > cacheLimits.maxEntriesPerDir || this.bytes > cacheLimits.maxBytesPerDir) {
+      const oldest = this.files.keys().next();
+      if (oldest.done === true) break;
+      this.delete(oldest.value);
+      stats.evictions += 1;
+    }
+  }
+
+  delete(file: string): boolean {
+    const prev = this.files.get(file);
+    if (prev === undefined) return false;
+    this.files.delete(file);
+    this.bytes -= prev.size;
+    return true;
+  }
+
+  /** 清理本次扫描未见到的文件（被删/改名）；返回清理条数 */
+  prune(seen: ReadonlySet<string>): number {
+    let removed = 0;
+    for (const file of [...this.files.keys()]) {
+      if (!seen.has(file) && this.delete(file)) removed += 1;
+    }
+    return removed;
+  }
+}
+
+/** projectsDir → 该目录的快照 LRU（目录级同样按 LRU 序，超上限整目录淘汰） */
+const dirCaches = new Map<string, DirSnapshotCache>();
+
+function dirCacheFor(projectsDir: string): DirSnapshotCache {
+  const key = resolve(projectsDir);
+  const hit = dirCaches.get(key);
+  if (hit !== undefined) {
+    dirCaches.delete(key);
+    dirCaches.set(key, hit); // 目录级 LRU touch
+    return hit;
+  }
+  const created = new DirSnapshotCache();
+  dirCaches.set(key, created);
+  while (dirCaches.size > cacheLimits.maxDirs) {
+    const oldest = dirCaches.keys().next();
+    if (oldest.done === true) break;
+    const evicted = dirCaches.get(oldest.value);
+    dirCaches.delete(oldest.value);
+    stats.evictions += evicted ? evicted.size : 0;
+  }
+  return created;
+}
+
+export function claudeCacheStats(): ClaudeCacheStats {
+  return { ...stats };
+}
+
+/** 当前缓存上限（自检用） */
+export function claudeCacheLimits(): ClaudeCacheLimits {
+  return { ...cacheLimits };
+}
+
+/**
+ * 调整缓存上限（测试用小上限验证淘汰；缺省值见 DEFAULT_CACHE_LIMITS）。
+ * 只影响后续写入的淘汰判定，不立即裁剪已有条目。
+ */
+export function setClaudeCacheLimits(patch: Partial<ClaudeCacheLimits>): ClaudeCacheLimits {
+  cacheLimits = { ...cacheLimits, ...patch };
+  return { ...cacheLimits };
+}
+
+/** 清空全部 claude 会话快照缓存与计数（并复位上限；测试基准/自检用） */
+export function resetClaudeSessionCaches(): void {
+  dirCaches.clear();
+  cacheLimits = { ...DEFAULT_CACHE_LIMITS };
+  stats.fileReads = 0;
+  stats.fileParses = 0;
+  stats.cacheHits = 0;
+  stats.evictions = 0;
+  stats.pruned = 0;
+}
+
+/**
+ * 已删除文件的快照清理（**只清本 projectsDir**：不同目录交替扫描互不清空）。
+ * 返回清理条数（自检/测试断言用）。
+ */
+export function pruneClaudeSessionCache(projectsDir: string, seen: ReadonlySet<string>): number {
+  const key = resolve(projectsDir);
+  const cache = dirCaches.get(key);
+  if (cache === undefined) return 0;
+  const removed = cache.prune(seen);
+  stats.pruned += removed;
+  if (cache.size === 0) dirCaches.delete(key); // 整目录空了：连目录条目一起清账
+  return removed;
+}
+
+/**
+ * per-file 派生快照：mtime+size 未变直接复用（零读盘零 parse），变更才重读重派生。
+ * 返回的 summary 是缓存内的共享对象，调用方**必须**浅拷贝后再注入运行态字段（status/cwd 兜底）。
+ */
+export async function loadClaudeSessionSnapshot(projectsDir: string, file: string): Promise<ClaudeFileSnapshot> {
+  const cache = dirCacheFor(projectsDir);
+  const fileStat = await stat(file);
+  const cached = cache.get(file);
+  if (cached !== undefined && cached.mtimeMs === fileStat.mtimeMs && cached.size === fileStat.size) {
+    stats.cacheHits += 1;
+    return cached;
+  }
+  stats.fileReads += 1;
+  const content = await readFileText(file);
+  stats.fileParses += 1;
+  const snap: ClaudeFileSnapshot = {
+    mtimeMs: fileStat.mtimeMs,
+    size: fileStat.size,
+    summary: buildClaudeSessionSummary(file, content, fileStat.mtimeMs, {
+      sessionId: fallbackSessionIdOf(file),
+    }),
+  };
+  cache.set(file, snap);
+  return snap;
+}
+
+/** 扫描并发度：与 pi 侧 scanSessions 同策略（冷扫不串行独占事件循环） */
+const SCAN_CONCURRENCY = 4;
+
 /** 扫描全部 claude 会话（cwd 兜底来自 history.jsonl） */
 export async function scanClaudeSessions(
   projectsDir: string,
@@ -564,26 +783,36 @@ export async function scanClaudeSessions(
 ): Promise<SessionListItem[]> {
   const files = await findClaudeSessionFiles(projectsDir);
   const items: SessionListItem[] = [];
-  for (const file of files) {
-    try {
-      const fileStat = await stat(file);
-      const content = await readFileText(file);
-      const fallbackSessionId = file.split("/").pop()?.replace(/\.jsonl$/i, "") ?? undefined;
-      const summary = buildClaudeSessionSummary(file, content, fileStat.mtimeMs, {
-        sessionId: fallbackSessionId,
-      });
-      if (!summary) continue;
-      // cwd 兜底：行内缺失时用 history.jsonl 的 sessionId → project 映射
-      const cwd = summary.cwd !== "" ? summary.cwd : historyIndex.get(summary.id) ?? "";
-      items.push({
-        ...summary,
-        cwd,
-        status: options.statusOf ? options.statusOf(summary.id, Date.parse(summary.updatedAt)) : "idle",
-      });
-    } catch {
-      // 单个文件损坏不影响其它会话
+  const yieldLoop = (): Promise<void> => new Promise((r) => setImmediate(r));
+  // 并发分批 + 批间让出：单个大 transcript（实测最大 ~10MB）的读盘/parse 不再阻塞其余会话，
+  // 也不独占事件循环（HTTP/WS 保持可响应）
+  for (let i = 0; i < files.length; i += SCAN_CONCURRENCY) {
+    await yieldLoop();
+    const batch = await Promise.all(
+      files.slice(i, i + SCAN_CONCURRENCY).map(async (file) => {
+        try {
+          const snap = await loadClaudeSessionSnapshot(projectsDir, file);
+          const summary = snap.summary;
+          if (!summary) return null;
+          // cwd 兜底：行内缺失时用 history.jsonl 的 sessionId → project 映射（运行态输入，现算）
+          const cwd = summary.cwd !== "" ? summary.cwd : historyIndex.get(summary.id) ?? "";
+          return {
+            ...summary,
+            cwd,
+            status: options.statusOf ? options.statusOf(summary.id, Date.parse(summary.updatedAt)) : "idle",
+          };
+        } catch {
+          // 单个文件损坏不影响其它会话
+          return null;
+        }
+      }),
+    );
+    for (const item of batch) {
+      if (item) items.push(item);
     }
   }
+  // 清账只针对本目录（计账在 pruneClaudeSessionCache 内完成，直接调用同样计账）
+  pruneClaudeSessionCache(projectsDir, new Set(files));
   items.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
   return items;
 }

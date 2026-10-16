@@ -421,9 +421,14 @@ export async function startHub(): Promise<StartedHub> {
     broadcastGlobal: (event) => wshub.broadcastGlobal(event),
     route: (sessionId, event) => subAgentRouter.route(sessionId, event),
   });
-  const piHub = new SessionHub(config.sessionDir, emit);
   // 终端 pi 反向指令通道（E3 双模式）：心跳 / 指令队列 / 回执（attach_state、command_ack 走同一 emit）
+  // 必须先于 piHub 构造：piHub 的外部活跃闸门（防双写）要注入 agents.isOnline
   const agents = new AgentCommandHub(emit);
+  const piHub = new SessionHub(config.sessionDir, emit, {
+    // 平行发送双写闸门：终端 pi-command 扩展心跳在线 = 终端进程持有该会话的 leafId，
+    // 此时 server 内 SDK 实例再 append 会让 JSONL 分叉（EXTERNAL_ACTIVE，契约 §12）
+    externalActive: (id) => agents.isOnline(id),
+  });
   // claude hub 驱动接管（docs/CLAUDE_DRIVER.md）：attach 期间持有长驻 claude -p 进程，
   // stdin 注入真用户 turn；权限经 MCP bridge 回连手机批/拒。
   // config.claudeDriver.enabled=false（总开关，修复死旋钮）：不构造 driver → claude 接管路由回 400，
