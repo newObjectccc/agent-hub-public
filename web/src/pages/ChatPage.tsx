@@ -165,6 +165,12 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
   const queueItems = useSyncExternalStore(queueStore.subscribe, queueStore.list, queueStore.list);
   const sessionQueue = useMemo(() => queueItems.filter((i) => i.sessionId === sessionId), [queueItems, sessionId]);
   const queuedById = useMemo(() => new Map(sessionQueue.map((i) => [i.localId, i])), [sessionQueue]);
+  /**
+   * sessionQueue 的 ref 镜像：loadSession 的对账需要它，但不能进 useCallback 依赖
+   * （队列每次入队/出队都变，会让 loadSession 重建 → 首屏 effect 重跑 → 对账风暴）。
+   */
+  const sessionQueueRef = useRef(sessionQueue);
+  sessionQueueRef.current = sessionQueue;
   /** 待发送队列浮层（📶 徽章点击展开，逐条重试/删除） */
   const [queueOpen, setQueueOpen] = useState(false);
   /** 会话最后驱动来源（心理预期管理）：面板驱动过 → panel */
@@ -249,6 +255,12 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
   const [echo, setEcho] = useState<ChannelEchoState | null>(null);
   /** 指令回执先于发送响应到达时的时序保护：commandId → 回执结果 */
   const ackedRef = useRef(new Map<string, { ok: boolean; error: string | null }>());
+  /**
+   * 在途 attach 指令：commandId → 原始消息。
+   * 回执失败时必须能把文本原样退回离线队列——command_ack 事件里只有 commandId，
+   * 不记这份映射就只能显示一行小字，而输入框已清空，用户得重打（实测踩坑）。
+   */
+  const attachInflightRef = useRef(new Map<string, { localId: string; text: string; atts: Attachment[] }>());
   const [attachBusy, setAttachBusy] = useState(false);
   // 首次进入可双模式会话的轻量说明 sheet（一次性，用完即走）
   const [introOpen, setIntroOpen] = useState(false);
@@ -283,6 +295,21 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
   const [fileOpen, setFileOpen] = useState(false);
   // 引用回复条（长按消息 → 引用）
   const [quote, setQuote] = useState<{ text: string } | null>(null);  const [notice, setNotice] = useState<string | null>(null);
+  /**
+   * 错误类提示常驻（不 6s 自动消失）。
+   * 失败原因一闪而过后用户就再也无从知晓“为何没反应”（与「（无内容）」同一类困境），
+   * 所以发送失败 / 接管失败 / 压缩失败 / 终端未执行这类提示一律常驻，由用户自己关。
+   */
+  const [stickyNotice, setStickyNotice] = useState(false);
+  /** 报错提示：常驻 + 可手动关闭（普通轻提示仍走 setNotice，6s 自消） */
+  const notifyError = useCallback((message: string) => {
+    setStickyNotice(true);
+    setNotice(message);
+  }, []);
+  const dismissNotice = useCallback(() => {
+    setStickyNotice(false);
+    setNotice(null);
+  }, []);
   const [gitOpen, setGitOpen] = useState(false);
   const [gitFile, setGitFile] = useState<string | null>(null);
   const [fileRef, setFileRef] = useState<FileRef | null>(null);
@@ -358,7 +385,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
           );
         }
       } catch (e) {
-        setNotice(`接管终端失败：${e instanceof Error ? e.message : "未知错误"}（消息暂走 📱 平行线）`);
+        notifyError(`接管终端失败：${e instanceof Error ? e.message : "未知错误"}（消息暂走 📱 平行线）`);
       }
     },
     [sessionId, applyAttachMode],
@@ -374,7 +401,18 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
       setSession(detail.session);
       // 对账保留在途流式标志（重连时占位不被误判为“（无内容）”）
       initialFillRef.current = true; // i1：首屏/对账填充不触发新消息浮标
-      setMessages(reconcileMessages(messagesRef.current, detail.messages ?? []));
+      const reconciled = reconcileMessages(messagesRef.current, detail.messages ?? []);
+      // 对账只保留「流式中 / 带图」的本地消息；但**仍在离线队列里**的 local-* 占位代表
+      // 未成功发送的用户消息（发送失败 / 被双写闸门拦截 / 终端未执行），抹掉它 = 消息在界面上
+      // 凭空消失，用户看不到失败气泡与「重试」按钮，文本只躺在队列里（浏览器实测踩到）。
+      // 发送成功的占位不在此列：server 落盘后 fresh 里已有同文 user 消息，占位本就该被替换。
+      const queuedIds = new Set(sessionQueueRef.current.map((i) => i.localId));
+      const lost = messagesRef.current.filter(
+        (m) => m.id.startsWith("local-") && queuedIds.has(m.id) && !reconciled.some((r) => r.id === m.id),
+      );
+      const nextMessages = lost.length > 0 ? [...reconciled, ...lost] : reconciled;
+      messagesRef.current = nextMessages;
+      setMessages(nextMessages);
       setHasMore(Boolean(detail.hasMore));
       setStatus(detail.session.status);
       setTerminal(detail.session.terminal ?? null);
@@ -420,10 +458,12 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
       // 首次进入可双模式会话：一次性说明 sheet（记住选择，用完即走，不常驻）
       if (!introCheckedRef.current) {
         introCheckedRef.current = true;
-        if (detail.session.terminal?.online === true && !loadIntroSeen(safeStorage())) {
+        // 不再要求 terminal.online：终端离线恰恰是平行模式的主场景（手机继续一个没开在
+        // 终端里的历史会话），绑 online 会让最需要知情的人永远看不到这个说明——
+        // 而平行模式下 pi 的 bash/edit/write 会在电脑上真实执行且无人批准。
+        if (!loadIntroSeen(safeStorage())) {
           setIntroOpen(true);
-        }
-      }
+        }      }
       setLoadError(null);
       // host 权限请求兜底拉取（断线/刷新防 WS 丢事件卡死：未决卡片必须回来）
       if (detail.session.terminal?.driver === "hub") {
@@ -458,10 +498,25 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
   }, [loadSession]);
 
   useEffect(() => {
-    if (!notice) return;
+    // 错误类提示常驻：不挂自动消失定时器（用户必须看得到失败原因与出路）
+    if (!notice || stickyNotice) return;
     const timer = setTimeout(() => setNotice(null), 6000);
     return () => clearTimeout(timer);
-  }, [notice]);
+  }, [notice, stickyNotice]);
+
+  /**
+   * 切后台/锁屏回来立即对账（P2：手机浏览器会挂起 WS，漏掉的 delta 与状态变化
+   * 此前要等重连或用户手动下拉才补上——回来看到停在旧画面，很自然会以为卡死了）。
+   * 对账是幂等的 GET + reconcileMessages，多调一次无副作用。
+   */
+  useEffect(() => {
+    const onVisibility = (): void => {
+      if (document.visibilityState !== "visible") return;
+      void loadSession();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, [loadSession]);
 
   const source = session?.source ?? "pi";
 
@@ -1130,7 +1185,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
             setHostRequests([]); // 驱动已停：挂起请求一律已被服务端 deny 收尾
             if (attachModeRef.current === "attach") {
               applyAttachMode("parallel");
-              setNotice("终端已退出接管（心跳超时或主动断开），已切回 📱 平行模式");
+              notifyError("终端已退出接管（心跳超时或主动断开），已切回 📱 平行模式");
             }
           }
           break;
@@ -1167,6 +1222,28 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
             if (attachWaitGuardRef.current !== null) clearTimeout(attachWaitGuardRef.current);
             if (ok) beginWait("thinking");
             else endWait();
+          }
+          // 终端明确没执行这条消息（指令取消 / 终端退出 / 执行失败）：修复前只更新 echo 小字，
+          // 消息既不在离线队列也无法重发，而输入框已清空 → 文本实质丢失，用户得重打。
+          // 现在退回离线队列（**手动**重试：不自动重发，防“终端其实执行了只是回执丢了”造成重复执行），
+          // 并自动切回 📱 平行模式——终端已证明不可靠，别让用户再撞一次。
+          if (!ok) {
+            const inflight = attachInflightRef.current.get(commandId);
+            if (inflight) {
+              attachInflightRef.current.delete(commandId);
+              applyAttachMode("parallel");
+              enqueueFailedSend(
+                inflight.localId,
+                inflight.text,
+                inflight.atts,
+                "parallel",
+                false,
+                error ?? "终端未执行这条消息",
+              );
+              notifyError(
+                `🖥 终端没有执行这条消息${error ? `（${error}）` : ""}。已切回 📱 平行继续：消息保留在气泡上，点「重试」即可发出，不用重打。`,
+              );
+            }
           }
           break;
         }
@@ -1216,6 +1293,34 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
     };
     const result = getOfflineQueue().add(item);
     if (!result.ok) showToast(result.reason);
+    // 占位可能已被对账清掉（对账发生在入队**之前**的竞态：浏览器实测 409 返回前 10ms
+    // 就有一次 GET 对账，那时消息还没入队，保留逻辑救不了它）。补回失败气泡，
+    // 否则队列里的消息在界面上没有「重试」入口——文本虽在队列但用户找不到，等于丢。
+    setMessages((prev) =>
+      prev.some((m) => m.id === localId)
+        ? prev
+        : [
+            ...prev,
+            {
+              id: localId,
+              role: "user" as const,
+              timestamp: item.queuedAt,
+              text,
+              toolCalls: [],
+              ...(item.images.length > 0
+                ? {
+                    images: item.images
+                      .filter((img) => img.isImage)
+                      .map((img) => ({
+                        // 已上传存引用路径，未上传存 base64：两者都能直接当 <img src>
+                        url: img.data !== null ? `data:${img.mimeType};base64,${img.data}` : (img.path ?? ""),
+                        alt: img.name,
+                      })),
+                  }
+                : {}),
+            },
+          ],
+    );
   };
 
   /** 发送主链路（首发）：成功 → 思考中阶段 + 触觉反馈；失败 → 入离线队列（持久，可重试） */
@@ -1251,16 +1356,28 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
       if (channel === "attach") {
         // attach（E3 双模式）：消息入终端指令队列（终端 pi 实时显示并执行；回执经 WS command_ack 回流）
         const queued = await api.sendAttachMessage(sessionId, hintedText, mapAttachSendMode(sendMode), localId);
+        // 记下在途指令 → 回执失败时能原样退回离线队列（不丢文本）
+        attachInflightRef.current.set(queued.commandId, { localId, text, atts });
         // 时序保护：回执可能先于发送响应到达（长轮询秒级投递），已回执则直接展示终态
         const ack = ackedRef.current.get(queued.commandId);
         const driver = terminal?.driver;
         if (ack) {
           ackedRef.current.delete(queued.commandId);
+          attachInflightRef.current.delete(queued.commandId);
           setEcho(
             ack.ok
               ? { channel: "attach", phase: "acked", commandId: queued.commandId, driver }
               : { channel: "attach", phase: "failed", detail: ack.error, commandId: queued.commandId, driver },
           );
+          // 回执早于发送响应到达且失败：command_ack 处理时还没记上在途映射，退队在这里补
+          // （同样不自动重发，理由同上：无法排除终端已执行而回执丢失）
+          if (!ack.ok) {
+            applyAttachMode("parallel");
+            enqueueFailedSend(localId, text, atts, "parallel", false, ack.error ?? "终端未执行这条消息");
+            notifyError(
+              `🖥 终端没有执行这条消息${ack.error ? `（${ack.error}）` : ""}。已切回 📱 平行继续：消息保留在气泡上，点「重试」即可发出，不用重打。`,
+            );
+          }
         } else {
           setEcho({ channel: "attach", phase: "sent", commandId: queued.commandId, driver });
         }
@@ -1297,7 +1414,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
       if (!outcome.result.accepted) {
         enqueueFailedSend(localId, text, atts, channel, false, "消息未被接受，请稍后重试");
         endWait();
-        setNotice("消息未被接受，请稍后重试");
+        notifyError("消息未被接受，请稍后重试");
       } else {
         setStatus("running");
         beginWait("thinking");
@@ -1309,9 +1426,11 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
       // duck-type 读错误码（测试 mock 的 client 模块未必导出 ApiError 类）
       const rawCode = (e as { code?: unknown } | null)?.code;
       const code = typeof rawCode === "string" ? rawCode : null;
-      if (code === "ATTACH_ACTIVE" || code === "ATTACH_REQUIRED") {
+      if (code === "ATTACH_ACTIVE" || code === "ATTACH_REQUIRED" || code === "ATTACH_UNAVAILABLE") {
         // 双模式跨设备死锁自愈（server 是事实源）：通道与 server 接管态对齐后自动补发
         // （同 localId 幂等），不再入手动重试死信；提示告知现状与出路
+        // ATTACH_UNAVAILABLE = 终端心跳在但扩展已停止取指令（server 在**入队前**就拒了，
+        // 消息明确未投递）→ 同样自愈切平行并自动重发，不让用户手动重试
         const healChannel: "parallel" | "attach" = code === "ATTACH_ACTIVE" ? "attach" : "parallel";
         applyAttachMode(healChannel);
         enqueueFailedSend(
@@ -1320,12 +1439,18 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
           atts,
           healChannel,
           true,
-          code === "ATTACH_ACTIVE" ? "终端接管中，消息已改发往电脑终端" : "终端未接管，消息已改由 server 处理",
+          code === "ATTACH_ACTIVE"
+            ? "终端接管中，消息已改发往电脑终端"
+            : code === "ATTACH_REQUIRED"
+              ? "终端未接管，消息已改由 server 处理"
+              : "终端未响应，消息已改由 server 处理",
         );
-        setNotice(
+        notifyError(
           code === "ATTACH_ACTIVE"
             ? "🖥 终端接管中：已自动切到 🖥 接管模式，消息改由电脑终端 pi 执行（如需手机平行发送，请在电脑终端退出接管）"
-            : "终端已退出接管：已自动切回 📱 平行模式，消息由 server 的 pi 继续处理",
+            : code === "ATTACH_REQUIRED"
+              ? "终端已退出接管：已自动切回 📱 平行模式，消息由 server 的 pi 继续处理"
+              : "🖥 终端没有响应（可能刚关闭）：已自动切回 📱 平行继续，消息改由 server 的 pi 执行",
         );
         endWait();
         void flushOfflineQueue({ notify: true });
@@ -1335,7 +1460,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
       const message = e instanceof Error ? e.message : "发送失败";
       enqueueFailedSend(localId, text, atts, channel, classifySendError(e) === "network", message);
       endWait();
-      setNotice(message);
+      notifyError(message);
     }
   };
 
@@ -1572,6 +1697,24 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
   }, []);
 
   /**
+   * 上下文溢出的一键自救（错误条上的「压缩上下文」按钮）。
+   * 手机继续老的大会话最容易撞上溢出，而此前只能看到一个「（无内容）」空气泡：
+   * 既不知道原因，也没有任何出路。仅 pi 源支持（claude/codex 的压缩由其自身 autocompact 管理，
+   * server 对它们回 400），所以按 source 决定要不要给这个按钮。
+   */
+  const handleCompact = useCallback(async () => {
+    setNotice("正在压缩上下文…");
+    try {
+      await api.compactSession(sessionId);
+      setNotice("上下文已压缩，可以重新发送刚才那条消息了");
+      // 对账拿回压缩后的历史（compaction entry 会以 role=custom 的摘要消息出现）
+      void loadSession();
+    } catch (e) {
+      notifyError(`压缩失败：${e instanceof Error ? e.message : "未知错误"}`);
+    }
+  }, [sessionId, loadSession]);
+
+  /**
    * 对话导航条跳转：目标已挂载 → 平滑滚到中线；未挂载（窗口化裁掉）→
    * 按行高缓存先估算滚动到大致位置（窗口渐进展开），再有界重试微调到中线。
    */
@@ -1698,7 +1841,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
       {notice && (
         <div className="chat-notice">
           <span className="chat-notice-text">{notice}</span>
-          <button type="button" className="chat-notice-close" onClick={() => setNotice(null)} aria-label="关闭提示">
+          <button type="button" className="chat-notice-close" onClick={dismissNotice} aria-label="关闭提示">
             ✕
           </button>
         </div>
@@ -1775,6 +1918,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
                   sendFailed={queuedById.has(item.message.id)}
                   sendQueued={queuedById.get(item.message.id)?.autoRetry === true}
                   onRetry={() => void retrySend(item.message.id)}
+                  onCompact={session?.source === "pi" ? () => void handleCompact() : undefined}
                 />
               ),
             )}
@@ -2083,6 +2227,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
       {introOpen && (
         <AttachIntroSheet
           driver={terminal?.driver}
+          source={session?.source}
           onClose={() => {
             markIntroSeen(safeStorage());
             setIntroOpen(false);

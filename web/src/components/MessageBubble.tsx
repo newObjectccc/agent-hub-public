@@ -1,6 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { probeRender } from "../utils/renderProbe";
-import type { SessionMessage } from "../api/types";
+import type { MessageError, SessionMessage } from "../api/types";
 import { copyText } from "../utils/clipboard";
 import type { FileRef } from "../utils/fileRefs";
 import { LongPressDetector } from "../utils/longPress";
@@ -94,6 +94,31 @@ function StreamingPlaceholder() {
  * 渲染性能：React.memo（message 引用未变的历史消息不随相邻消息更新重渲）；
  * measureRef 供长会话窗口化测量行高（传入方须保持引用稳定，否则 memo 失效）。
  */
+/**
+ * 错误条文案（纯函数，可单测）：把 server 透出的 stopReason/errorMessage 变成可行动的中文。
+ *
+ * 修复前：pi 的余额耗尽 / Connection error / 上下文溢出都不抛异常，只落在 assistant 消息的
+ * stopReason+errorMessage 上，而 DTO 不取这两个字段 → 手机只看到一个灰色「（无内容）」气泡，
+ * 零原因零出路（实测语料里就有 "You have no credits remaining…"）。
+ */
+export function describeMessageError(
+  error: MessageError | undefined,
+): { text: string; tone: "error" | "muted"; canCompact: boolean } | null {
+  if (!error) return null;
+  if (error.kind === "aborted") {
+    return { text: error.message || "本轮已中止", tone: "muted", canCompact: false };
+  }
+  if (error.kind === "contextOverflow") {
+    // 可自救：给出具体动作而不是只报失败（手机继续老的大会话最容易撞上这个）
+    return {
+      text: `上下文已满，这轮没能发出去。压缩上下文后可继续（历史会被摘要，会话不丢）。原始错误：${error.message}`,
+      tone: "error",
+      canCompact: true,
+    };
+  }
+  return { text: `模型/网络错误：${error.message}`, tone: "error", canCompact: false };
+}
+
 export const MessageBubble = memo(function MessageBubble({
   message,
   highlight,
@@ -104,6 +129,7 @@ export const MessageBubble = memo(function MessageBubble({
   sendFailed,
   sendQueued,
   onRetry,
+  onCompact,
   measureRef,
 }: {
   message: SessionMessage;
@@ -120,6 +146,8 @@ export const MessageBubble = memo(function MessageBubble({
   sendQueued?: boolean;
   /** 点击"重试"：重发同样内容 */
   onRetry?: () => void;
+  /** 上下文溢出时的一键自救：压缩上下文（仅 kind=contextOverflow 的错误条出现） */
+  onCompact?: () => void;
   /** 行高测量 ref（长会话窗口化；引用须稳定） */
   measureRef?: (el: HTMLDivElement | null) => void;
 }) {
@@ -131,6 +159,8 @@ export const MessageBubble = memo(function MessageBubble({
   const images = message.images ?? [];
   const streaming = message.streaming === true;
   const empty = message.text === "" && message.toolCalls.length === 0 && !thinking && images.length === 0;
+  // 错误条（仅 assistant：server 只对 assistant 消息提取 stopReason）
+  const errorInfo = message.role === "assistant" ? describeMessageError(message.error) : null;
   /** 引用消息以 Markdown 引用块开头（`> `），用 markdown 渲染让两端 agent 口径一致 */
   const isQuoted = /^>\s?/.test(message.text);
 
@@ -240,7 +270,24 @@ export const MessageBubble = memo(function MessageBubble({
                 <ToolCallCard key={`${message.id}-tool-${i}`} toolCall={tc} onOpenFile={onOpenFile} />
               ))}
               {empty && streaming && <StreamingPlaceholder />}
-              {empty && !streaming && <span className="hint-text">（无内容）</span>}
+              {/* 有错误时绝不再显示「（无内容）」：那正是用户最不知所措的空气泡 */}
+              {empty && !streaming && errorInfo === null && <span className="hint-text">（无内容）</span>}
+              {errorInfo !== null && (
+                <div
+                  className={errorInfo.tone === "muted" ? "msg-error muted" : "msg-error"}
+                  role={errorInfo.tone === "error" ? "alert" : undefined}
+                >
+                  <span className="msg-error-text">
+                    {errorInfo.tone === "error" ? "⚠️ " : "⏹ "}
+                    {errorInfo.text}
+                  </span>
+                  {errorInfo.canCompact && onCompact && (
+                    <button type="button" className="msg-error-action" onClick={onCompact}>
+                      压缩上下文
+                    </button>
+                  )}
+                </div>
+              )}
             </>
           ) : (
             <>

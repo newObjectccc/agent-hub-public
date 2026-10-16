@@ -63,6 +63,12 @@ export interface TerminalAttachInfo {
    * 容错，与历史智能默认行为一致。
    */
   defaultPolicy?: "active-only" | "always" | "never";
+  /**
+   * 终端扩展是否仍在长轮询取指令（server 下发，可缺省）。
+   * 心跳 TTL 是 90s，终端关掉后这 90s 里 online 仍为 true；靠这个字段区分
+   * 「终端真的活着」与「心跳还没过期的死终端」，后者绝不自动接管。
+   */
+  responsive?: boolean;
 }
 
 /** host 权限请求（hub 驱动 claude 会话的手机批权限，契约 §12） */
@@ -147,11 +153,26 @@ export interface SessionMessage {
   /** 内嵌图片（无图缺省）；按序渲染为 <img>（max-width 100%，不拦截长按） */
   images?: MessageImage[];
   /**
+   * 模型/流式错误（assistant 的 stopReason==="error"|"aborted"）；无错缺省。
+   * 没有这个字段时，余额耗尽/网络中断/上下文溢出都只会渲染成灰色「（无内容）」，
+   * 用户根本不知道发生了什么、更不知道该怎么救。
+   */
+  error?: MessageError;
+  /**
    * 流式进行中（message_start → message_end 之间为 true）：
    * 空内容时渲染"回复中"活占位（绝不显示"（无内容）"），气泡带进行中视觉。
    * 历史/权威消息缺省视为已 settle。
    */
   streaming?: boolean;
+}
+
+/** 错误分类：决定文案与自救动作（上下文溢出可一键压缩，其余只能看原因） */
+export type MessageErrorKind = "contextOverflow" | "aborted" | "other";
+
+export interface MessageError {
+  /** 原始错误文本（server 从 SDK 的 errorMessage 透出，不美化也不隐藏） */
+  message: string;
+  kind: MessageErrorKind;
 }
 
 /**

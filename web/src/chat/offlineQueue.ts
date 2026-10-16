@@ -166,7 +166,18 @@ export function persistProblem(items: readonly QueuedSend[]): string | null {
 }
 
 /** 发送错误分类：网络/5xx → 自动重试；4xx 业务错误 → 手动重试 */
+/**
+ * 语义上是“稍后重试就会好”且重发幂等安全的业务码 → 归入自动重试。
+ *
+ * PROMPT_IN_FLIGHT：同 clientMessageId 的上一次提交还在处理中（server 不再伪报 accepted）。
+ * 归为 business 会变成手动重试死信，而它本来就只需要等一等；幂等键（localId）保证
+ * 重试不会双执行。
+ */
+const RETRYABLE_BUSINESS_CODES: ReadonlySet<string> = new Set(["PROMPT_IN_FLIGHT"]);
+
 export function classifySendError(e: unknown): "network" | "business" {
+  const code = (e as { code?: unknown } | null)?.code;
+  if (typeof code === "string" && RETRYABLE_BUSINESS_CODES.has(code)) return "network";
   const status = (e as { status?: unknown } | null)?.status;
   if (typeof status === "number") return status >= 500 ? "network" : "business";
   return "network";

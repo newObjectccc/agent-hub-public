@@ -202,6 +202,10 @@ export function attachDefaultWorthy(
   const hub = terminal.driver === "hub";
   // 默认策略的前端门槛：hub 可尝试；实际启动检查由 server 执行。pi 还要求扩展在线。
   if (!hub && terminal.online !== true) return false;
+  // pi 还要求扩展**真的在取指令**：心跳 TTL 是 90s，用户关掉终端后的这 90s 里 online 仍为 true，
+  // 此时自动接管就是「假接管」——消息入了队列却没人取，用户要等一分钟才知道，文本还会丢。
+  // responsive 缺省（老 server 不下发）按 true 容错，保持历史行为。
+  if (!hub && terminal.responsive === false) return false;
   if (policy === "always") return true;
   // active-only：电脑上正活跃才接管（pi 在线已由上面可行性闸门保证）
   return hub ? session?.status === "running" || session?.lastDrivenBy === "terminal" : true;

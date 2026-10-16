@@ -30,6 +30,9 @@ function normalizeMessage(m: Partial<SessionMessage> & { id: string }): SessionM
     thinking: typeof m.thinking === "string" ? m.thinking : null,
     toolCalls: m.toolCalls ?? [],
     streaming: m.streaming === true,
+    // 错误随消息保留（白名单式 normalize：不加这一行 server 透出的 error 会被静默丢弃，
+    // 前端就只剩一个空气泡渲染成「（无内容）」）
+    ...(m.error ? { error: m.error } : {}),
     // 图片随消息保留（WS 权威回填丢图 bug：手机发图后 message_end 不带 images 时气泡图片消失）
     ...(m.images ? { images: m.images } : {}),
   };
@@ -43,7 +46,14 @@ function normalizeMessage(m: Partial<SessionMessage> & { id: string }): SessionM
 function withLocalFallbacks(authoritative: SessionMessage, previous: SessionMessage): SessionMessage {
   const thinking = authoritative.thinking && authoritative.thinking !== "" ? authoritative.thinking : (previous.thinking ?? null);
   const images = authoritative.images !== undefined ? authoritative.images : previous.images;
-  return { ...authoritative, thinking, ...(images !== undefined ? { images } : {}) };
+  // 错误以权威为准，权威未带时保留已展示的（对账/tail 路径不一定重带 error，不能把错误条闪没）
+  const error = authoritative.error !== undefined ? authoritative.error : previous.error;
+  return {
+    ...authoritative,
+    thinking,
+    ...(images !== undefined ? { images } : {}),
+    ...(error !== undefined ? { error } : {}),
+  };
 }
 
 /**

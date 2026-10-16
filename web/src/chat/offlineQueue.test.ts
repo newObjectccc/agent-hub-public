@@ -119,6 +119,16 @@ describe("offlineQueue: 持久化与解析", () => {
     expect(classifySendError(new Error("网络错误"))).toBe("network");
   });
 
+  it("classifySendError：PROMPT_IN_FLIGHT 归自动重试（等一等就好，且幂等键保证不双执行）", () => {
+    // server 不再对「上一次提交还在处理中」伪报 accepted，而是回 409 PROMPT_IN_FLIGHT；
+    // 归为 business 会变成手动重试死信，而它本来就只需要稍后重试
+    expect(classifySendError(new ApiError(409, "PROMPT_IN_FLIGHT", "x"))).toBe("network");
+    // 其余 409 仍是业务错误（手动重试），不能被连带放宽
+    expect(classifySendError(new ApiError(409, "SESSION_BUSY", "x"))).toBe("business");
+    expect(classifySendError(new ApiError(409, "EXTERNAL_ACTIVE", "x"))).toBe("business");
+    expect(classifySendError(new ApiError(409, "ATTACH_UNAVAILABLE", "x"))).toBe("business");
+  });
+
   it("attachmentsOf/queuedImagesOf 互转：图片 base64 恢复预览", () => {
     const att: Attachment = {
       id: "a1",
