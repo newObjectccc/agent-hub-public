@@ -61,6 +61,7 @@ const TOOL_ITEM_NAMES: Record<string, string> = {
 export class CodexStreamTranslator {
   private seq = 0;
   private current: LiveMessage | null = null;
+  private lastAssistantText: string | null = null;
   /** item.id → 已开启的工具调用（tool_end 配对 + 防重复 tool_start） */
   private readonly toolOwners = new Map<string, { messageId: string; dto: ToolCallDto }>();
   private sawTurnEnd = false;
@@ -83,6 +84,7 @@ export class CodexStreamTranslator {
       return []; // 非 JSON 行跳过
     }
     if (!isRecord(row) || typeof row.type !== "string") return [];
+    if (this.sawTurnEnd) return [];
 
     switch (row.type) {
       case "thread.started":
@@ -110,7 +112,18 @@ export class CodexStreamTranslator {
       }
       case "task_complete":
       case "turn.completed": {
-        return this.settle("idle");
+        const events: ServerEvent[] = [];
+        const finalText = typeof row.last_agent_message === "string" ? row.last_agent_message : "";
+        if (finalText.trim() !== "" && finalText !== (this.current?.text ?? this.lastAssistantText)) {
+          // 部分 EventMsg 版本仅在 task_complete 携带最终回复。
+          // 保留已有工具所属消息，不用最终回复覆盖工具前的说明。
+          if (this.current?.toolCalls.length) {
+            const ended = this.endMessage();
+            if (ended) events.push(ended);
+          }
+          events.push(...this.upsertMessage(finalText));
+        }
+        return [...events, ...this.settle("idle")];
       }
       case "turn_aborted": {
         return this.settle("idle"); // 用户中止：进程可能还活着，UI 先恢复可输入
@@ -147,6 +160,7 @@ export class CodexStreamTranslator {
   private upsertMessage(text: string, isDelta = false): ServerEvent[] {
     const events: ServerEvent[] = [];
     if (!this.current) {
+      if (text.trim() === "") return events;
       this.seq += 1;
       const id = `live-${this.seq}-${Date.now()}`;
       this.current = { id, timestamp: Date.now(), text: "", toolCalls: [] };
@@ -167,11 +181,13 @@ export class CodexStreamTranslator {
     const itemId = typeof item.id === "string" ? item.id : "";
     if (itemType === "agent_message") {
       if (eventType === "item.started") {
-        // 新消息条目：先收尾可能未关的上一条，再开新消息（不发空 delta）
+        // CLI 可能发空 analysis/plan 占位；等正文或真实工具到达才建立可见消息，
+        // 仍保留消息边界。
         const events: ServerEvent[] = [];
         const ended = this.endMessage();
         if (ended) events.push(ended);
-        events.push(...this.upsertMessage(""));
+        const text = itemText(item);
+        if (text !== "") events.push(...this.upsertMessage(text, true));
         return events;
       }
       if (eventType === "item.updated") {
@@ -184,7 +200,9 @@ export class CodexStreamTranslator {
       if (ended) events.push(ended);
       return events;
     }
-    const toolName = TOOL_ITEM_NAMES[itemType];
+    const toolName = itemType === "mcp_tool_call" && typeof item.tool === "string" && item.tool !== ""
+      ? item.tool
+      : TOOL_ITEM_NAMES[itemType];
     if (toolName === undefined) return []; // user_message/reasoning/error 等条目：跳过
     if (eventType === "item.updated") return [];
     const existing = itemId !== "" ? this.toolOwners.get(itemId) : undefined;
@@ -238,7 +256,8 @@ export class CodexStreamTranslator {
   /** item.updated 的 agent_message 文本增长 → text_delta（无 content_delta 事件的版本兜底） */
   private applyItemText(item: Record<string, unknown>): ServerEvent[] {
     const text = itemText(item);
-    if (text === "" || !this.current) return [];
+    if (text === "") return [];
+    if (!this.current) return this.upsertMessage(text, true);
     if (text === this.current.text) return [];
     const delta = text.startsWith(this.current.text) ? text.slice(this.current.text.length) : text;
     this.current.text = text;
@@ -268,6 +287,8 @@ export class CodexStreamTranslator {
     const current = this.current;
     if (!current) return null;
     this.current = null;
+    if (current.text.trim() === "" && current.toolCalls.length === 0) return null;
+    this.lastAssistantText = current.text;
     const dto: MessageDto = {
       id: current.id,
       role: "assistant",

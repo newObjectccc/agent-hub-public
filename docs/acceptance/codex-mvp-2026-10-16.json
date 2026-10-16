@@ -1,0 +1,16 @@
+{
+  "date": "2026-10-16T10:33:57.251Z",
+  "realModel": true,
+  "createdOwnThread": true,
+  "bootstrapCompleted": true,
+  "attached": true,
+  "acknowledged": true,
+  "completed": true,
+  "exactReply": true,
+  "detached": true,
+  "released": true,
+  "hostRequestCount": 0,
+  "errorCodes": [],
+  "binaryVersion": "0.162.0-alpha.17.2",
+  "scope": "本机 macOS；自建临时线程；只读 sandbox；非桌面原线程控制"
+}

@@ -97,7 +97,9 @@ describe("parseCodexRollout：消息解析", () => {
     assert.equal(parsed.messages.length, 2);
     assert.equal(parsed.messages[0].role, "user");
     assert.equal(parsed.messages[0].text, "帮我看看这个 bug");
+    assert.equal(parsed.messages[0].turnId, "t1");
     assert.equal(parsed.messages[1].role, "assistant");
+    assert.equal(parsed.messages[1].turnId, "t1");
     assert.equal(parsed.messages[1].text, "好的，我先复现");
     assert.equal(parsed.updatedAtMs, Date.parse("2026-05-27T05:33:28.260Z"));
     // name 兜底 = 首条真实 user 文本
@@ -164,7 +166,77 @@ describe("parseCodexRollout：消息解析", () => {
   });
 });
 
+describe("parseCodexRollout：真实轮次标识", () => {
+  it("task_started/turn_context 标记后续消息，完成边界不把下一轮无标识输入归到旧轮", () => {
+    const content = rollout([
+      meta(),
+      row({ type: "event_msg", payload: { type: "task_started", turn_id: "turn-a" } }),
+      userMsg("第一轮"), assistantMsg("执行工具"), funcCall("tool-a", "exec_command", { cmd: "pwd" }), funcOutput("tool-a", "/workspace"),
+      row({ type: "event_msg", payload: { type: "task_complete", turn_id: "turn-a" } }),
+      row({ type: "turn_context", payload: { turn_id: "turn-b", cwd: CWD } }),
+      userMsg("第二轮"), assistantMsg("完成"),
+      row({ type: "event_msg", payload: { type: "turn_aborted", turn_id: "turn-b" } }),
+      userMsg("缺少轮次的旧格式输入"),
+    ]);
+    const parsed = parseCodexRollout(content);
+    assert.deepEqual(parsed.messages.map((message) => message.turnId), ["turn-a", "turn-a", "turn-b", "turn-b", undefined]);
+    assert.equal(parsed.messages[1].toolCalls[0].status, "done");
+  });
+
+  it("ResponseItem schema 的 metadata.turn_id 优先于上下文，工具-only owner保留相同轮次", () => {
+    const metadata = { internal_chat_message_metadata_passthrough: { turn_id: "native-turn" } };
+    const parsed = parseCodexRollout(rollout([
+      meta(), row({ type: "turn_context", payload: { turn_id: "context-turn" } }),
+      userMsg("原生消息标识", undefined, metadata),
+      row({ type: "response_item", payload: { type: "function_call", name: "exec_command", arguments: '{"cmd":"pwd"}', call_id: "native-call", ...metadata } }),
+      row({ type: "response_item", payload: { type: "function_call_output", call_id: "native-call", output: "/work", ...metadata } }),
+    ]));
+    assert.deepEqual(parsed.messages.map((message) => message.turnId), ["native-turn", "native-turn"]);
+    assert.equal(parsed.messages[1].text, "");
+    assert.equal(parsed.messages[1].toolCalls[0].resultPreview, "/work");
+  });
+
+  it("缺失、空白及未知字段都不猜 turnId，新的无标识task不会继承旧轮", () => {
+    const parsed = parseCodexRollout(rollout([
+      meta(), row({ type: "turn_context", payload: { turn_id: "known" } }), userMsg("已知"),
+      row({ type: "event_msg", payload: { type: "task_started", turnId: "unsupported-alias" } }),
+      userMsg("没有明确标识", undefined, { turn_id: "not-a-ResponseItem-field" }),
+      row({ type: "turn_context", payload: { turn_id: "   " } }), assistantMsg("旧版回复"),
+    ]));
+    assert.deepEqual(parsed.messages.map((message) => message.turnId), ["known", undefined, undefined]);
+  });
+});
+
 describe("parseCodexRollout：工具调用折叠", () => {
+  it("保留 schema 的 namespace + name，不把独立命名空间的同名工具压成 unknown", () => {
+    const parsed = parseCodexRollout(rollout([
+      meta(), userMsg("查一下任务"),
+      row({ type: "response_item", payload: { type: "function_call", name: "list_issues", namespace: "mcp__linear", call_id: "namespaced", arguments: '{"query":"example"}' } }),
+      funcOutput("namespaced", "one issue"),
+      row({ type: "response_item", payload: { type: "custom_tool_call", name: "functions.apply_patch", namespace: "functions", call_id: "patch", input: "*** Begin Patch" } }),
+    ]));
+    assert.equal(parsed.messages[1].toolCalls[0].name, "mcp__linear.list_issues");
+    assert.equal(parsed.messages[1].toolCalls[0].status, "done");
+    assert.equal(parsed.messages[1].toolCalls[1].name, "functions.apply_patch");
+  });
+
+  it("纯 reasoning/plan 的空 assistant 占位不成气泡，真实工具 owner 与最终文本保留", () => {
+    const parsed = parseCodexRollout(rollout([
+      meta(), userMsg("执行一下"),
+      assistantMsg(""),
+      row({ type: "response_item", payload: { type: "reasoning", summary: [], content: [] } }),
+      row({ type: "event_msg", payload: { type: "plan_update", plan: [] } }),
+      assistantMsg("   "),
+      funcCall("actual-tool", "exec_command", { cmd: "pwd" }),
+      funcOutput("actual-tool", "/workspace"),
+      assistantMsg("完成"),
+      assistantMsg(""),
+    ]));
+    assert.deepEqual(parsed.messages.map((message) => [message.role, message.text, message.toolCalls.length]), [
+      ["user", "执行一下", 0], ["assistant", "", 1], ["assistant", "完成", 0],
+    ]);
+  });
+
   it("function_call 折进其前的 assistant 消息，output 回填状态与预览（arguments 是 JSON 字符串）", () => {
     const content = rollout([
       meta(),

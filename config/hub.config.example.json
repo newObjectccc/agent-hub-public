@@ -8,6 +8,16 @@
     "enabled": false,
     "token": ""
   },
+  "codexBin": "codex",
+  "codexDriver": {
+    "enabled": true,
+    "defaultPolicy": "never",
+    "idleDetachMs": 1800000,
+    "maxConcurrent": 3,
+    "externalQuietMs": 3000,
+    "approvalPolicy": "inherit",
+    "sandbox": "inherit"
+  },
   "claudeDriver": {
     "enabled": true,
     "defaultPolicy": "active-only",

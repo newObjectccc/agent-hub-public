@@ -38,7 +38,31 @@ export interface HubConfig {
   /** 显式 opt-in 局域网暴露（允许 host 绑定通配地址）；默认 false = 绝不通配绑定 */
   allowLan: boolean;
   claudeDriver: ClaudeDriverConfig;
+  /** Codex CLI 命令名或二进制路径；parallel 与接管共用，绝不经 shell 执行。 */
+  codexBin: string;
+  codexDriver: CodexDriverConfig;
 }
+
+export interface CodexDriverConfig {
+  enabled: boolean;
+  defaultPolicy: "active-only" | "always" | "never";
+  idleDetachMs: number;
+  maxConcurrent: number;
+  externalQuietMs: number;
+  /** inherit 不覆盖 Codex 自身配置；手机仅批准当前请求。 */
+  approvalPolicy: "inherit" | "untrusted" | "on-request" | "never";
+  sandbox: "inherit" | "read-only" | "workspace-write" | "danger-full-access";
+}
+
+export const DEFAULT_CODEX_DRIVER_CONFIG: CodexDriverConfig = {
+  enabled: true,
+  defaultPolicy: "never",
+  idleDetachMs: 30 * 60_000,
+  maxConcurrent: 3,
+  externalQuietMs: 3_000,
+  approvalPolicy: "inherit",
+  sandbox: "inherit",
+};
 
 export const DEFAULT_CLAUDE_DRIVER_CONFIG: ClaudeDriverConfig = {
   enabled: true,
@@ -59,6 +83,8 @@ export const DEFAULT_CONFIG: HubConfig = {
   allowOrigins: [],
   allowLan: false,
   claudeDriver: { ...DEFAULT_CLAUDE_DRIVER_CONFIG },
+  codexBin: "codex",
+  codexDriver: { ...DEFAULT_CODEX_DRIVER_CONFIG },
 };
 
 /** 展开 `~` 前缀为用户主目录；相对路径按 baseDir 解析。 */
@@ -162,6 +188,8 @@ interface RawConfig {
   allowOrigins?: unknown;
   allowLan?: unknown;
   claudeDriver?: unknown;
+  codexBin?: unknown;
+  codexDriver?: unknown;
 }
 
 export interface LoadedConfig {
@@ -182,7 +210,10 @@ export function loadHubConfig(configDir: string, home = homedir()): LoadedConfig
     }
   }
 
-  const config: HubConfig = { ...DEFAULT_CONFIG, auth: { ...DEFAULT_CONFIG.auth } };
+  const config: HubConfig = {
+    ...DEFAULT_CONFIG, auth: { ...DEFAULT_CONFIG.auth },
+    claudeDriver: { ...DEFAULT_CLAUDE_DRIVER_CONFIG }, codexDriver: { ...DEFAULT_CODEX_DRIVER_CONFIG },
+  };
 
   if (typeof raw.port === "number" && Number.isInteger(raw.port) && raw.port > 0 && raw.port <= 65535) {
     config.port = raw.port;
@@ -270,6 +301,41 @@ export function loadHubConfig(configDir: string, home = homedir()): LoadedConfig
     } else {
       warnings.push("hub.config.json 的 claudeDriver 必须是对象，已使用默认配置");
     }
+  }
+
+  if (raw.codexBin !== undefined) {
+    if (typeof raw.codexBin === "string" && raw.codexBin.trim() !== "" && !/[\0\r\n]/.test(raw.codexBin)) {
+      const bin = raw.codexBin.trim();
+      config.codexBin = /[\\/]/.test(bin) || bin === "~" ? expandPath(bin, configDir, home) : bin;
+    } else warnings.push("hub.config.json 的 codexBin 必须是命令名或路径，已使用 codex");
+  }
+  if (raw.codexDriver !== undefined) {
+    if (raw.codexDriver && typeof raw.codexDriver === "object" && !Array.isArray(raw.codexDriver)) {
+      const d = raw.codexDriver as Record<string, unknown>;
+      const defaults = DEFAULT_CODEX_DRIVER_CONFIG;
+      const enumValue = <T extends string>(key: string, values: readonly T[], fallback: T): T => {
+        if (d[key] === undefined) return fallback;
+        if (values.includes(d[key] as T)) return d[key] as T;
+        warnings.push(`hub.config.json 的 codexDriver.${key} 非法，使用 ${fallback}`);
+        return fallback;
+      };
+      const numberValue = (key: string, min: number, fallback: number): number => {
+        if (d[key] === undefined) return fallback;
+        if (typeof d[key] === "number" && Number.isSafeInteger(d[key]) && d[key] >= min && d[key] <= 2_147_483_647) return d[key];
+        warnings.push(`hub.config.json 的 codexDriver.${key} 非法，使用 ${fallback}`);
+        return fallback;
+      };
+      if (d.enabled !== undefined && typeof d.enabled !== "boolean") warnings.push("codexDriver.enabled 非法，使用 true");
+      config.codexDriver = {
+        enabled: d.enabled !== false,
+        defaultPolicy: enumValue("defaultPolicy", ["never", "active-only", "always"], defaults.defaultPolicy),
+        idleDetachMs: numberValue("idleDetachMs", 0, defaults.idleDetachMs),
+        maxConcurrent: numberValue("maxConcurrent", 1, defaults.maxConcurrent),
+        externalQuietMs: numberValue("externalQuietMs", 0, defaults.externalQuietMs),
+        approvalPolicy: enumValue("approvalPolicy", ["inherit", "untrusted", "on-request", "never"], defaults.approvalPolicy),
+        sandbox: enumValue("sandbox", ["inherit", "read-only", "workspace-write", "danger-full-access"], defaults.sandbox),
+      };
+    } else warnings.push("hub.config.json 的 codexDriver 必须是对象，已使用默认配置");
   }
 
   // sessionDir / workspaceRoot 统一展开 `~`（默认值同样处理）

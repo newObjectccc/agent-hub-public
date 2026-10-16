@@ -166,7 +166,7 @@ describe("claude 接管路由：attach/detach/message 分流", () => {
     assert.deepEqual(calls.attach, ["sess-c1"]);
     const x = await app.inject({ method: "POST", url: "/api/sessions/sess-x1/attach" });
     assert.equal(x.statusCode, 400);
-    assert.match(x.json().error.message, /仅 pi \/ claude/);
+    assert.match(x.json().error.message, /Codex 会话接管未启用/);
   });
 
   it("GET /api/sessions stampTerminal：claude 带 terminal（driver=hub）", async () => {

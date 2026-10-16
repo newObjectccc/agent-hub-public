@@ -69,6 +69,58 @@ function makeDeps(overrides: Partial<FlushQueueDeps> = {}) {
   return { deps, calls };
 }
 
+describe("Codex 重试边界", () => {
+  it("同通道重试保留原图引用和幂等键，不从parallel切attach", async () => {
+    const store = new OfflineQueueStore(fakeStorage());
+    const pending = item({ source: "codex", channel: "attach", images: [{ name: "a.png", mimeType: "image/png", isImage: true, path: ".agent-hub-uploads/a.png", data: null }] });
+    store.add(pending);
+    const sendAttachMessage = vi.fn(async (..._args: unknown[]) => ({ accepted: true, commandId: "codex-command" }));
+    const { deps } = makeDeps({ sendAttachMessage });
+    await flushQueue(store, deps);
+    expect(sendAttachMessage.mock.calls[0][3]).toBe(pending.localId);
+    expect(sendAttachMessage.mock.calls[0][5]).toEqual([".agent-hub-uploads/a.png"]);
+    expect(store.get(pending.localId)?.commandId).toBe("codex-command");
+    store.recordAttachAck("s1", "codex-command", true, null);
+    expect(store.list()).toHaveLength(0);
+  });
+  it("HTTP 202 后原文持久保留，早到/迟到失败回执均可恢复手动重试", async () => {
+    for (const early of [true, false]) {
+      const store = new OfflineQueueStore(fakeStorage());
+      const pending = item({ source: "codex", channel: "attach" });
+      store.add(pending);
+      const { deps } = makeDeps({ sendAttachMessage: async () => {
+        if (early) store.recordAttachAck("s1", "cmd-fail", false, "busy");
+        return { accepted: true, commandId: "cmd-fail" };
+      } });
+      await flushQueue(store, deps);
+      if (!early) store.recordAttachAck("s1", "cmd-fail", false, "busy");
+      expect(store.get(pending.localId)).toMatchObject({ text: pending.text, autoRetry: false, lastError: "busy" });
+      expect(store.get(pending.localId)?.commandId).toBeUndefined();
+    }
+  });
+  it("普通重连不重发 Codex 手动条目；旧 v1 条目先补全来源", async () => {
+    const store = new OfflineQueueStore(fakeStorage());
+    store.add(item({ source: "codex", autoRetry: false }));
+    store.add(item({ source: undefined, autoRetry: true }));
+    const { deps } = makeDeps({ resolveSessionSource: async () => "codex" });
+    await flushQueue(store, deps);
+    expect(deps.sendPromptWithMode).not.toHaveBeenCalled();
+    expect(deps.sendAttachMessage).not.toHaveBeenCalled();
+    expect(store.list().every((pending) => pending.source === "codex")).toBe(true);
+  });
+  it("写者冲突和网络结果不明均保留原通道，暂停自动重试", async () => {
+    for (const error of [new ApiError(409, "ATTACH_ACTIVE", "接管中"), new Error("network")]) {
+      const store = new OfflineQueueStore(fakeStorage());
+      store.add(item({ source: "codex", channel: "parallel" }));
+      const sendPromptWithMode = vi.fn(async () => { throw error; });
+      const { deps } = makeDeps({ sendPromptWithMode });
+      await flushQueue(store, deps);
+      expect(deps.sendAttachMessage).not.toHaveBeenCalled();
+      expect(store.list()[0]).toMatchObject({ channel: "parallel", source: "codex", autoRetry: false });
+    }
+  });
+});
+
 describe("offlineQueue: 持久化与解析", () => {
   it("入队后新 store 从同一 storage 重载不丢（刷新/杀 App 不丢）", () => {
     const storage = fakeStorage();

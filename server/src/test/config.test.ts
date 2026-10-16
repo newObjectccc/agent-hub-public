@@ -13,11 +13,44 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 import {
   DEFAULT_CLAUDE_DRIVER_CONFIG,
+  DEFAULT_CODEX_DRIVER_CONFIG,
   isAllowedCrossOrigin,
   isSafeBindHost,
   isSameOrigin,
   loadHubConfig,
 } from "../config.js";
+
+describe("Codex 运行时配置", () => {
+  const load = (raw: Record<string, unknown>) => {
+    const dir = mkdtempSync(join(tmpdir(), "hub-codex-config-"));
+    writeFileSync(join(dir, "hub.config.json"), JSON.stringify(raw));
+    return { ...loadHubConfig(dir, "/example/home"), dir };
+  };
+  it("默认仅手动接管；配置对象互不共享", () => {
+    const first = load({});
+    assert.equal(first.config.codexBin, "codex");
+    assert.deepEqual(first.config.codexDriver, DEFAULT_CODEX_DRIVER_CONFIG);
+    first.config.codexDriver.enabled = false;
+    assert.equal(load({}).config.codexDriver.enabled, true);
+  });
+  it("命令名保留 PATH，路径按配置目录展开，支持空格", () => {
+    assert.equal(load({ codexBin: "custom-codex" }).config.codexBin, "custom-codex");
+    assert.equal(load({ codexBin: "~/Applications/Codex App/codex" }).config.codexBin, "/example/home/Applications/Codex App/codex");
+    const { config, dir } = load({ codexBin: "./tools/my codex" });
+    assert.equal(config.codexBin, join(dir, "tools/my codex"));
+  });
+  it("非法值回默认并告警，不接受空字符串/换行或无界定时配置", () => {
+    const { config, warnings } = load({ codexBin: "codex\ncommand", codexDriver: { maxConcurrent: 0.5, idleDetachMs: 3e9, approvalPolicy: "accept-all", sandbox: "anything", defaultPolicy: "active" } });
+    assert.equal(config.codexBin, "codex");
+    assert.deepEqual(config.codexDriver, DEFAULT_CODEX_DRIVER_CONFIG);
+    assert.equal(warnings.length, 6);
+  });
+  it("关闭开关和显式策略逐项生效", () => {
+    const { config, warnings } = load({ codexDriver: { enabled: false, defaultPolicy: "always", maxConcurrent: 1, idleDetachMs: 0, externalQuietMs: 0, approvalPolicy: "on-request", sandbox: "workspace-write" } });
+    assert.deepEqual(config.codexDriver, { enabled: false, defaultPolicy: "always", maxConcurrent: 1, idleDetachMs: 0, externalQuietMs: 0, approvalPolicy: "on-request", sandbox: "workspace-write" });
+    assert.deepEqual(warnings, []);
+  });
+});
 
 describe("config: isSafeBindHost 归一化判定（防通配绑定绕过）", () => {
   it("拒绝全部通配/未指定地址写法（含 IPv6 简写与 IPv4-mapped）", () => {

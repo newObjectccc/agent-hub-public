@@ -160,7 +160,7 @@ function modeLabel(el: HTMLElement): string {
 async function pickMode(el: HTMLElement, label: "平行继续" | "接管终端"): Promise<void> {
   click(el.querySelector(".attach-trigger"));
   const item = Array.from(el.querySelectorAll(".attach-menu-item")).find((b) =>
-    b.textContent?.includes(label),
+    b.querySelector(".attach-menu-label")?.textContent?.includes(label),
   );
   click(item ?? null);
   await act(async () => {
@@ -265,6 +265,48 @@ describe("打开会话智能默认：终端在线自动接管", () => {
 });
 
 describe("用户手动选择最高优先（pin）", () => {
+  it("Codex pin=attach 且驱动未启动：重新握手恢复接管，不把消息发往平行通道", async () => {
+    window.localStorage.setItem(PINNED_KEY, "attach");
+    mockDetail({ online: false, attached: false, driver: "hub", defaultPolicy: "never" }, "codex");
+    mocks.attachSession.mockResolvedValue({ attached: true, agent: { online: true, driver: "hub", mirror: false } });
+    const el = await render();
+    expect(mocks.attachSession).toHaveBeenCalledTimes(1);
+    typeInput(el, "恢复之前的接管选择");
+    click(el.querySelector(".composer-send"));
+    await act(async () => { await Promise.resolve(); });
+    expect(mocks.sendAttachMessage).toHaveBeenCalledTimes(1);
+    expect(mocks.sendPromptWithMode).not.toHaveBeenCalled();
+  });
+
+  it("Codex 恢复握手失败：发送保留接管通道，重新点选接管会再尝试握手", async () => {
+    window.localStorage.setItem(PINNED_KEY, "attach");
+    mockDetail({ online: false, attached: false, driver: "hub", defaultPolicy: "never" }, "codex");
+    mocks.attachSession.mockRejectedValue(new Error("写者正在释放"));
+    mocks.sendAttachMessage.mockRejectedValue(Object.assign(new Error("请先恢复接管"), { code: "ATTACH_REQUIRED" }));
+    const el = await render();
+    expect(mocks.attachSession).toHaveBeenCalledTimes(1);
+    typeInput(el, "不要悄悄执行两遍");
+    click(el.querySelector(".composer-send"));
+    await act(async () => { await Promise.resolve(); });
+    expect(mocks.sendAttachMessage).toHaveBeenCalledTimes(1);
+    expect(mocks.sendPromptWithMode).not.toHaveBeenCalled();
+    expect(getOfflineQueue().pending("s1")[0]).toMatchObject({ source: "codex", channel: "attach", autoRetry: false, text: "不要悄悄执行两遍" });
+    await pickMode(el, "接管终端");
+    expect(mocks.attachSession).toHaveBeenCalledTimes(2);
+  });
+
+  it("Codex 驱动断开通知保持用户接管选择，后续消息不自动改用 exec", async () => {
+    mockDetail({ online: true, attached: true, driver: "hub" }, "codex");
+    const el = await render();
+    await act(async () => { wsEvent?.({ type: "attach_state", attached: false, terminalOnline: false }); });
+    expect(modeLabel(el)).toContain("接管终端");
+    typeInput(el, "驱动断开后的原文");
+    click(el.querySelector(".composer-send"));
+    await act(async () => { await Promise.resolve(); });
+    expect(mocks.sendAttachMessage).toHaveBeenCalledTimes(1);
+    expect(mocks.sendPromptWithMode).not.toHaveBeenCalled();
+  });
+
   it("自动接管后手动切平行 → 重进不被改回（server attached=true 也不改），pin=parallel", async () => {
     mockDetail({ online: true, attached: false });
     let el = await render();

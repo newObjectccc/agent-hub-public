@@ -35,6 +35,7 @@ function normalizeMessage(m: Partial<SessionMessage> & { id: string }): SessionM
     ...(m.error ? { error: m.error } : {}),
     // 图片随消息保留（WS 权威回填丢图 bug：手机发图后 message_end 不带 images 时气泡图片消失）
     ...(m.images ? { images: m.images } : {}),
+    ...(m.turnId ? { turnId: m.turnId } : {}),
   };
 }
 
@@ -274,10 +275,10 @@ const KNOWN_NON_MESSAGE_EVENTS = new Set([
  *  在途流式消息（prev.streaming）按 id 保留已累积内容与标志：
  *  - GET 快照落后于已到达的 delta 时取更长文本（不丢字/不重影），等 message_end 权威替换
  *  - 快照里还没有的在途消息留在尾部（进行中的回复不消失） */
-export function reconcileMessages(prev: SessionMessage[], fresh: SessionMessage[]): SessionMessage[] {
+export function reconcileMessages(prev: SessionMessage[], fresh: SessionMessage[], recentIds: ReadonlySet<string> = new Set()): SessionMessage[] {
   const inFlight = new Map(prev.filter((m) => m.streaming === true).map((m) => [m.id, m] as const));
   const withImages = prev.filter((m) => m.images !== undefined);
-  if (inFlight.size === 0 && withImages.length === 0) return fresh;
+  if (inFlight.size === 0 && withImages.length === 0) return preserveRecentMessages(prev, fresh, recentIds);
   const previousById = new Map(withImages.map((m) => [m.id, m] as const));
   const freshIds = new Set(fresh.map((m) => m.id));
   const imageFallbacks = new Map<string, SessionMessage>();
@@ -314,5 +315,14 @@ export function reconcileMessages(prev: SessionMessage[], fresh: SessionMessage[
     return { ...next, text, thinking, streaming: true };
   });
   const tail = prev.filter((m) => m.streaming === true && !freshIds.has(m.id));
-  return tail.length === 0 ? (changed ? merged : fresh) : [...merged, ...tail];
+  return preserveRecentMessages(prev, tail.length === 0 ? (changed ? merged : fresh) : [...merged, ...tail], recentIds);
+}
+
+/** GET 在途期间到达的 WS 消息更新比旧快照新；完成消息也不能被旧响应抹掉。 */
+function preserveRecentMessages(prev: SessionMessage[], merged: SessionMessage[], recentIds: ReadonlySet<string>): SessionMessage[] {
+  if (recentIds.size === 0) return merged;
+  const recent = new Map(prev.filter((message) => recentIds.has(message.id)).map((message) => [message.id, message]));
+  const ids = new Set(merged.map((message) => message.id));
+  const result = merged.map((message) => recent.get(message.id) ?? message);
+  return [...result, ...prev.filter((message) => recent.has(message.id) && !ids.has(message.id))];
 }

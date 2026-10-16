@@ -184,6 +184,7 @@ export function parseCodexRollout(
   const toolCallOwners = new Map<string, ToolCallDto>();
   // 当前 assistant 消息（最近一条 user 之后）：工具调用/活动折叠进它；无则新建空消息承接
   let currentAssistant: MessageDto | null = null;
+  let activeTurnId: string | null = null;
   let autoId = 0;
 
   const nextId = (prefix: string): string => {
@@ -194,9 +195,9 @@ export function parseCodexRollout(
   };
 
   /** 当前 assistant（无则建空消息承接工具/活动，与 pi/claude 同口径） */
-  const ensureAssistant = (ts: number): MessageDto => {
-    if (currentAssistant === null) {
-      currentAssistant = { id: nextId("asst"), role: "assistant", timestamp: ts, text: "", toolCalls: [] };
+  const ensureAssistant = (ts: number, turnId = activeTurnId): MessageDto => {
+    if (currentAssistant === null || (turnId && currentAssistant.turnId && currentAssistant.turnId !== turnId)) {
+      currentAssistant = { id: nextId("asst"), role: "assistant", timestamp: ts, text: "", toolCalls: [], ...(turnId ? { turnId } : {}) };
       messages.push(currentAssistant);
     }
     return currentAssistant;
@@ -226,10 +227,28 @@ export function parseCodexRollout(
       if (typeof payload.cwd === "string" && payload.cwd !== "" && cwd === null) cwd = payload.cwd;
       continue;
     }
+    if (row.type === "turn_context") {
+      const turnId = isRecord(row.payload) ? nonemptyTurnId(row.payload.turn_id) : null;
+      if (turnId !== null) {
+        if (activeTurnId !== turnId) currentAssistant = null;
+        activeTurnId = turnId;
+      }
+      continue;
+    }
     // event_msg.item_completed：app/CLI 活动流（正在运行命令/已读取文件…）→ 活动 toolCalls
     if (row.type === "event_msg") {
+      const payload = isRecord(row.payload) ? row.payload : {};
+      if (payload.type === "task_started") {
+        activeTurnId = nonemptyTurnId(payload.turn_id);
+        currentAssistant = null;
+      }
       const activity = activityFromEventPayload(row.payload);
-      if (activity !== null) ensureAssistant(timestamp).toolCalls.push(activity);
+      if (activity !== null) ensureAssistant(timestamp, nonemptyTurnId(payload.turn_id) ?? activeTurnId).toolCalls.push(activity);
+      if ((payload.type === "task_complete" || payload.type === "turn_aborted")
+        && (!nonemptyTurnId(payload.turn_id) || payload.turn_id === activeTurnId)) {
+        activeTurnId = null;
+        currentAssistant = null;
+      }
       continue;
     }
     // token_usage_record：每次 API 调用的 token 用量采样（usage 体系逐条求和）
@@ -247,11 +266,14 @@ export function parseCodexRollout(
       messages.push({ id: nextId("compacted"), role: "custom", timestamp, text: "[context compacted]", toolCalls: [] });
       continue;
     }
-    // turn_context / world_state 等：上下文快照，不进 chat 渲染
+    // world_state 等上下文快照不进 chat 渲染。
     if (row.type !== "response_item") continue;
 
     const payload = row.payload;
     if (!isRecord(payload)) continue;
+    // 对应导出 schema 的 ResponseItem.InternalChatMessageMetadataPassthrough。
+    const metadata = isRecord(payload.internal_chat_message_metadata_passthrough) ? payload.internal_chat_message_metadata_passthrough : {};
+    const messageTurnId = nonemptyTurnId(metadata.turn_id) ?? activeTurnId;
 
     switch (payload.type) {
       case "message": {
@@ -268,6 +290,7 @@ export function parseCodexRollout(
             timestamp,
             text: text === "" ? IMAGE_PLACEHOLDER : text,
             toolCalls: [],
+            ...(messageTurnId ? { turnId: messageTurnId } : {}),
             ...(images ? { images } : {}),
           });
           currentAssistant = null;
@@ -277,12 +300,19 @@ export function parseCodexRollout(
         }
         if (role === "assistant") {
           const text = joinTextBlocks(contentBlocks).trim();
+          // 不展示空 analysis/plan 占位；后续真实工具会按需创建自己的承接消息，
+          // 保留仅有工具调用的轮次。
+          if (text === "") {
+            currentAssistant = null;
+            break;
+          }
           const dto: MessageDto = {
             id: nextId("asst"),
             role: "assistant",
             timestamp,
             text,
             toolCalls: [],
+            ...(messageTurnId ? { turnId: messageTurnId } : {}),
           };
           messages.push(dto);
           currentAssistant = dto;
@@ -291,7 +321,7 @@ export function parseCodexRollout(
       }
       case "function_call":
       case "custom_tool_call": {
-        const name2 = typeof payload.name === "string" && payload.name !== "" ? payload.name : "unknown";
+        const name2 = codexToolName(payload);
         // function_call.arguments 是 JSON 字符串；custom_tool_call.input 是自由文本（patch 等）
         const raw = typeof payload.arguments === "string" ? payload.arguments : typeof payload.input === "string" ? payload.input : "";
         const args = raw === "" ? {} : tryParseJson(raw);
@@ -301,12 +331,7 @@ export function parseCodexRollout(
           status: "pending",
           resultPreview: null,
         };
-        if (currentAssistant === null) {
-          // assistant 直接开工具（无 commentary 文本）：建空 assistant 消息承接（与 pi/claude 同口径）
-          currentAssistant = { id: nextId("asst"), role: "assistant", timestamp, text: "", toolCalls: [] };
-          messages.push(currentAssistant);
-        }
-        currentAssistant.toolCalls.push(call);
+        ensureAssistant(timestamp, messageTurnId).toolCalls.push(call);
         const callId = typeof payload.call_id === "string" ? payload.call_id : "";
         if (callId !== "") toolCallOwners.set(callId, call);
         break;
@@ -328,6 +353,7 @@ export function parseCodexRollout(
             timestamp,
             text: preview,
             toolCalls: [],
+            ...(messageTurnId ? { turnId: messageTurnId } : {}),
           });
         }
         break;
@@ -339,6 +365,10 @@ export function parseCodexRollout(
   }
 
   return { messages, usageSamples, sessionId, cwd, name, updatedAtMs };
+}
+
+function nonemptyTurnId(value: unknown): string | null {
+  return typeof value === "string" && value.trim() !== "" ? value : null;
 }
 
 // ---------- event_msg 活动映射（实测结构见文件头 2.1） ----------
@@ -538,6 +568,13 @@ function tryParseJson(text: string): unknown {
   } catch {
     return text; // arguments 非法 JSON：原样作文本摘要
   }
+}
+
+/** ResponseItem 的 namespace 与 name 分开保存；仅保留真实字段，不猜别名。 */
+export function codexToolName(payload: Record<string, unknown>): string {
+  const name = typeof payload.name === "string" && payload.name !== "" ? payload.name : "unknown";
+  const namespace = typeof payload.namespace === "string" ? payload.namespace : "";
+  return namespace !== "" && !name.startsWith(`${namespace}.`) ? `${namespace}.${name}` : name;
 }
 
 /**

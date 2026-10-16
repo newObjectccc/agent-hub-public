@@ -180,6 +180,8 @@ interface ClientMessage {
 export class WsHub {
   private readonly clients = new Map<string, Set<WebSocket>>();
   private readonly globalClients = new Set<WebSocket>();
+  /** 每条连接独立调整 tail 引用，接管退出后继续观察原会话，无需重新连接。 */
+  private readonly tailObservers = new Map<string, Set<(attached: boolean) => void>>();
   /** 背压丢弃的 delta 帧计数（诊断/自检用：持续上涨说明有客户端长期跟不上） */
   droppedDeltaFrames = 0;
   private wss: WebSocketServer | null = null;
@@ -197,6 +199,9 @@ export class WsHub {
 
   /** hub 广播出口（构造 SessionHub 时注入） */
   broadcast(sessionId: string, event: ServerEvent): void {
+    if (event.type === "attach_state") {
+      for (const observer of this.tailObservers.get(sessionId) ?? []) observer(event.attached);
+    }
     const set = this.clients.get(sessionId);
     if (!set) return;
     const droppable = isDroppableEvent(event);
@@ -428,6 +433,23 @@ export class WsHub {
       if (closed) return;
 
       this.add(sessionId, socket);
+      const observeAttach = (attached: boolean): void => {
+        if (closed || !this.tails || socket.readyState !== WebSocket.OPEN) return;
+        if (attached && acquired) {
+          this.tails.release(sessionId);
+          acquired = false;
+        } else if (!attached && !acquired) {
+          this.tails.acquire(sessionId, session.sessionFile, tailLoaderFor(session.source));
+          acquired = true;
+        }
+      };
+      const observers = this.tailObservers.get(sessionId) ?? new Set<(attached: boolean) => void>();
+      observers.add(observeAttach);
+      this.tailObservers.set(sessionId, observers);
+      cleanupFns.push(() => {
+        observers.delete(observeAttach);
+        if (observers.size === 0) this.tailObservers.delete(sessionId);
+      });
       // 契约：连接后首条握手确认
       this.send(socket, { type: "session", id: session.id, cwd: session.cwd });
 

@@ -137,10 +137,10 @@ describe("attach: 徽章文案与接管可用性", () => {
     expect(attachAvailability(null).attachEnabled).toBe(false);
   });
 
-  it("灰显原因按 source 区分：codex 明示暂不支持（不误报终端 pi 不在线）", () => {
+  it("灰显原因按 source 区分：Codex 缺少驱动时说明配置原因", () => {
     const codex = attachAvailability(null, "codex");
     expect(codex.attachEnabled).toBe(false);
-    expect(codex.attachDisabledReason).toMatch(/codex 会话暂不支持接管终端/);
+    expect(codex.attachDisabledReason).toMatch(/Codex 接管.*codexDriver.enabled/);
     expect(codex.attachDisabledReason).not.toMatch(/pi/);
     const claudeOld = attachAvailability(null, "claude");
     expect(claudeOld.attachDisabledReason).toMatch(/v0\.3/);

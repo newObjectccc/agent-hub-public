@@ -34,7 +34,9 @@ function parallelDesc(source: SessionSource | undefined): string {
 
 export function AttachIntroSheet({ onPick, onClose, driver, source }: AttachIntroSheetProps) {
   const attachDesc =
-    driver === "hub"
+    source === "codex"
+      ? "由电脑上的 Codex 驱动继续同一会话，回复与待审批操作同步到手机。电脑正在占用会话时请先退出原会话；退出接管后可在电脑继续。审批方式与沙箱沿用 Codex 配置。"
+      : driver === "hub"
       ? "手机消息由 hub 直接驱动 claude 执行并写回同一会话，电脑终端投屏实时显示；退出接管后可 claude --resume 无缝接回。"
       : "手机消息发往电脑终端 pi 进程，终端实时显示并执行——人在电脑前，手机当遥控器。";
   return (

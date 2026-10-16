@@ -1,14 +1,16 @@
 #!/usr/bin/env node
 // agent-hub check — 只读环境检测报告（不写任何文件、不注册任何任务）。
 import fs from 'node:fs';
+import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { isDirectRun as isDirectRunCheck } from './lib/entry.js';
 import { createColors } from './lib/color.js';
 import { detectAll, installAdvice } from './lib/detect.js';
 import { parseNetcheck, latencyAdvice } from './lib/net.js';
 import { parseCliArgs, checkHelpText } from './lib/args.js';
-import { defaultConfigPath, repoRoot } from './lib/paths.js';
+import { defaultConfigPath, repoRoot, expandHome } from './lib/paths.js';
 import { isWindows, runCapture, findCommand } from './lib/process.js';
+import { inspectCodexRuntime, formatCodexRuntimeDiagnostics } from './lib/codex-runtime.js';
 
 /**
  * 打印检测结果（setup / check 共用）。
@@ -58,19 +60,35 @@ export function printReport(report, colors, { platform = process.platform, log =
 }
 
 /** 只读检查 config 状态。 */
-function reportConfig(configPath, colors, log) {
+export function reportConfig(configPath, colors, log) {
   log('');
   log(colors.bold('-- 配置 / Config --'));
   if (!fs.existsSync(configPath)) {
     log(`${colors.warn} ${configPath} 不存在，运行 \`npm run setup\`（或 node cli/setup.js）生成`);
-    return;
+    return 'codex';
   }
   try {
-    const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    const { codexBin } = JSON.parse(fs.readFileSync(configPath, 'utf8'));
     log(`${colors.ok} ${configPath}`);
-    log(`     port=${cfg.port} host=${cfg.host} sessionDir=${cfg.sessionDir ?? '-'} workspaceRoot=${cfg.workspaceRoot ?? '-'}`);
-  } catch (e) {
-    log(`${colors.fail} ${configPath} 解析失败: ${e.message}`);
+    if (typeof codexBin !== 'string' || !codexBin.trim() || /[\0\r\n]/.test(codexBin)) return 'codex';
+    const bin = codexBin.trim();
+    return /[\\/]/.test(bin) || bin === '~' ? path.resolve(path.dirname(configPath), expandHome(bin)) : bin;
+  } catch {
+    // JSON 解析异常可能带出配置里的 token，错误只给通用提示。
+    log(`${colors.fail} ${configPath} 解析失败`);
+    return 'codex';
+  }
+}
+
+/** 可选只读诊断，失败不改变核心依赖的退出状态。 */
+export async function reportCodexRuntime(colors, log, options = {}, inspect = inspectCodexRuntime) {
+  log('');
+  log(colors.bold('-- Codex 运行时 / Runtime (read-only) --'));
+  try {
+    const report = await inspect(options);
+    for (const line of formatCodexRuntimeDiagnostics(report)) log(`     ${line}`);
+  } catch {
+    log(`${colors.warn} Codex 运行时诊断未完成，兼容性未知`);
   }
 }
 
@@ -121,7 +139,12 @@ export async function main(argv = [], deps = {}) {
   const root = deps.root ?? repoRoot();
   const report = detectAll({ platform: deps.platform, env: deps.env });
   const coreOk = printReport(report, colors, { platform: deps.platform ?? process.platform });
-  reportConfig(deps.configPath ?? defaultConfigPath(root), colors, console.log);
+  const codexBin = reportConfig(deps.configPath ?? defaultConfigPath(root), colors, console.log);
+  await reportCodexRuntime(colors, console.log, {
+    codexBin,
+    env: deps.env ?? process.env,
+    ...(deps.codexRuntimeOptions ?? {}),
+  }, deps.inspectCodexRuntime ?? inspectCodexRuntime);
   reportLatency(colors, console.log, {
     platform: deps.platform ?? process.platform,
     env: deps.env ?? process.env,

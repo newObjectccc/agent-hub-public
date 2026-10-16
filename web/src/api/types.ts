@@ -54,6 +54,7 @@ export interface TerminalAttachInfo {
   attached: boolean;
   /** 驱动形态：queue=pi 扩展指令队列；hub=server 持有 claude -p 长驻进程 */
   driver?: "queue" | "hub";
+  source?: "claude" | "codex";
   /** 投屏（tmux 镜像）就绪（仅 hub 形态） */
   mirror?: boolean;
   /**
@@ -80,6 +81,10 @@ export interface HostRequestDto {
   detail: string | null;
   toolName?: string;
   allowAlways?: boolean;
+  requestType?: "commandExecution" | "fileChange" | "permissions";
+  turnId?: string;
+  itemId?: string;
+  permissions?: unknown;
   createdAt: number;
   expiresAt: number | null;
 }
@@ -164,6 +169,7 @@ export interface SessionMessage {
    * 历史/权威消息缺省视为已 settle。
    */
   streaming?: boolean;
+  turnId?: string;
 }
 
 /** 错误分类：决定文案与自救动作（上下文溢出可一键压缩，其余只能看原因） */

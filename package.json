@@ -43,7 +43,8 @@
   },
   "scripts": {
     "build": "pnpm -r build",
-    "test": "pnpm -r test",
+    "test": "pnpm --workspace-concurrency=1 -r test && pnpm test:codex-lab",
+    "test:codex-lab": "node --test docs/examples/codex-app-server-lab/*.test.mjs",
     "lint": "pnpm -r lint",
     "dev": "node cli/dev.js",
     "setup": "node cli/setup.js",

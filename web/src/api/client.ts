@@ -274,15 +274,20 @@ export const api = {
     mode: "prompt" | "steer" | "followUp",
     clientMessageId?: string,
     signal?: AbortSignal,
+    images?: string[],
   ): Promise<AttachMessageResult> {
     return request(`/api/sessions/${encodeURIComponent(id)}/message`, {
       method: "POST",
-      body: JSON.stringify(clientMessageId ? { text, mode, clientMessageId } : { text, mode }),
+      body: JSON.stringify({ text, mode, ...(clientMessageId ? { clientMessageId } : {}), ...(images?.length ? { images } : {}) }),
       signal,
     });
   },
 
   /* ===== host 权限请求（hub 驱动 claude 会话的手机批权限，契约 §12） ===== */
+  /** 只读查回执；刷新后绝不靠重发 turn 探测是否已受理。 */
+  getAttachCommandStatus(id: string, commandId: string): Promise<{ state: "pending" | "accepted" | "failed" | "unknown"; error: string | null }> {
+    return request(`/api/sessions/${encodeURIComponent(id)}/commands/${encodeURIComponent(commandId)}`);
+  },
 
   /** GET /api/sessions/:id/host-requests：未决权限请求（断线重连兜底拉取） */
   listHostRequests(id: string): Promise<{ requests: HostRequestDto[] }> {

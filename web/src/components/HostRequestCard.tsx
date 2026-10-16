@@ -40,6 +40,7 @@ export function HostRequestCard({ request, respondingId, onRespond }: HostReques
         </button>
       )}
       {showDetail && <pre className="host-request-detail">{request.detail}</pre>}
+      {request.requestType && <div className="host-request-hint">{request.requestType === "permissions" ? "仅批准本次请求中列出的权限，当前轮结束后失效。" : "仅批准当前操作。"}</div>}
       <div className="host-request-actions">
         <button
           type="button"

@@ -808,7 +808,7 @@ Multiply coordinates …]`）不展示为额外用户消息；stdout 即使丢�
 
 ## 11. 终端驱动状态（SessionListItem.terminal，§1 补充）
 
-`SessionListItem` 可选字段 `terminal`（codex 会话与旧 server **缺省**，向后兼容）：
+`SessionListItem` 可选字段 `terminal`（未启用对应驱动、归档 Codex 会话或旧 server 缺省，向后兼容）：
 
 ```json
 { "online": true, "attached": false, "driver": "queue", "mirror": false, "defaultPolicy": "active-only", "responsive": true }
@@ -818,27 +818,27 @@ Multiply coordinates …]`）不展示为额外用户消息；stdout 即使丢�
   也不保证此次 attach 一定成功。
 - `attached`：会话处于 attach 接管模式（pi=消息走指令队列注入终端 TUI；claude=hub 持有长驻
   `claude -p --resume` 进程，stdin 注入真用户 turn）。
-- `driver`：`"queue"`（pi 扩展指令队列）| `"hub"`（claude 驱动进程）；缺省按 queue 容错。
+- `driver`：`"queue"`（pi 扩展指令队列）| `"hub"`（Claude / Codex 驱动进程）；缺省按 queue 容错。
 - `mirror`：tmux 投屏就绪（仅 hub 形态）。
 - `responsive`（可选，仅 pi/queue 形态有意义）：终端扩展是否仍在长轮询取指令。心跳 TTL 是 90s，
   终端关掉后这 90s 里 `online` 仍为 true；`responsive: false` 表示心跳在但扩展已超 45s 没来取指令
   （死终端），客户端不得据此自动接管（否则消息入队无人取）。缺省（老 server）按 true 容错。
   详见 §12 的 `terminal.responsive` 一节。
 - `defaultPolicy`（v0.3 新增，可选）：智能默认接管策略，取自 `config.claudeDriver.defaultPolicy`
-  并随 terminal 下发（pi/claude 双通道均带；codex terminal 缺省不下发）：
+  并随 terminal 下发（Codex 取 `config.codexDriver.defaultPolicy`，默认 never，只手动）：
   `"active-only"` = pi 扩展在线时默认接管，Claude 在 `status === "running"` 或
   `lastDrivenBy === "terminal"` 时默认尝试接管（后者也可能是空闲历史会话）；`"always"` = 打开即尝试，
   pi 仍须 `online === true`；`"never"` = 只手动切换。Claude 实际 attach 仍受开关、静默窗和并发上限约束。
   **老 server 缺省该字段 → 前端按 `"active-only"` 容错**（行为与历史一致）；用户手动选择（pin）
   永远优先于该策略。
-- `GET /api/sessions` 与 `GET /api/sessions/:id` 均注入（pi/claude）；前端据此渲染会话列表徽章
+- `GET /api/sessions` 与 `GET /api/sessions/:id` 均注入（pi/claude/codex）；前端据此渲染会话列表徽章
   （🖥⚡ 已接管 / 🖥 终端在线|可接管 / 📱 平行线）与模式菜单可用性。
 
 ## 12. 终端接管 / 指令队列（E3 双模式会话驱动）
 
 双模式：**📱 parallel**（消息走 prompt；pi 使用 SDK，Claude/Codex 启动各自 CLI）与
 **🖥 attach**（pi 经 `integrations/pi-command` 注入已有终端进程；Claude 由 hub 新建持续运行的
-CLI 进程续接同一上下文，支持 tmux 投屏）。Claude 不控制原 TUI，Codex 暂不支持 attach。
+CLI 进程续接同一上下文，支持 tmux 投屏；Codex 由独立 app-server 续接同一线程）。Claude / Codex 不控制原桌面窗口；Codex 原线程正被占用时需先退出原会话。
 用户在 chat 顶栏徽章选择；接管期间请避免同时在原 Claude TUI 输入。
 
 ### POST /api/agents/heartbeat（扩展 → server，30s 一续）
@@ -870,12 +870,14 @@ CLI 进程续接同一上下文，支持 tmux 投屏）。Claude 不控制原 TU
 
 ### POST /api/sessions/:id/attach（接管会话）
 
-按 `session.source` 分流（pi → 指令队列；claude → hub 驱动；codex → 400）。
+按 `session.source` 分流（pi → 指令队列；claude → hub 驱动；codex → 原生 app-server）。
 
 pi 响应 202：`{ "attached": true, "agent": { "sessionId", "pid", "cwd", "online", "capabilities", "lastSeen" } }`。
 claude 响应 202：`{ "attached": true, "agent": { "sessionId", "cwd", "online", "driver": "hub", "mirror" } }`。
 终端离线（pi）→ 409 `ATTACH_UNAVAILABLE`；claude 外部写入静默窗内 → 409 `ATTACH_UNAVAILABLE`；
-驱动并发满 → 409 `DRIVER_LIMIT`；会话不存在 → 404；codex → 400 `INVALID_REQUEST`。
+驱动并发满 → 409 `DRIVER_LIMIT`；会话不存在 → 404；驱动禁用或归档 Codex → 400 `INVALID_REQUEST`。
+
+Codex 使用相同的 202 响应（driver=hub、mirror=false）；完整 initialize/initialized 与 idle resume 成功才算 attached。版本要求 0.162+（含对应 alpha），旧版或 writer 占用明确报错。`codexBin` 由配置指定；接管期间和准备/释放过程中 parallel HTTP/WS 均返回 409，防止双写。
 
 **`terminal.responsive`（pi 防「假接管」）**：心跳 TTL 是 90s，用户关掉终端后的这 90s 里
 `online` 仍为 `true`，此时接管必然变成假接管（消息入队无人取，用户等一分钟才知道、文本还会丢）。
@@ -906,7 +908,7 @@ Claude 同会话并发 attach 共享一次启动；准备中的接管计入 `max
 
 ### POST /api/sessions/:id/message（attach 通道发消息）
 
-请求：`{ "text": "…", "mode": "prompt|steer|followUp", "clientMessageId": "可选幂等键" }`
+请求：`{ "text": "…", "mode": "prompt|steer|followUp", "clientMessageId": "可选幂等键", "images": ["可选，Codex 上传图片引用"] }`
 响应 202：`{ "accepted": true, "channel": "attach", "commandId": "cmd-…", "mode": "…" }`。
 未 attach → 409 `ATTACH_REQUIRED`；队列满（pi）→ 409 `ATTACH_QUEUE_FULL`；同 `clientMessageId`
 重复提交返回同一 `commandId`（不重复入队）。
@@ -917,7 +919,13 @@ Claude 同会话并发 attach 共享一次启动；准备中的接管计入 `max
 Claude 忙时的普通 `prompt` 通过 `command_ack{ok:false,error:...}` 报告失败，HTTP 已返回的 202
 只表示受理指令，不表示已写入模型；调用方须消费回执。详情见 [CLAUDE_DRIVER.md](CLAUDE_DRIVER.md)。
 
-### host 权限请求（hub 驱动 claude 会话的手机批权限）
+Codex 的 steer 使用当前 expectedTurnId，followUp 在本地等前轮完成再提交；中止保留 app-server，退出接管关闭独立进程释放 writer。GET 详情包含当前轮流式快照，保留 `streaming`/`turnId` 与图片，避免刷新时输出丢失。客户端对账使用函数式更新；历史请求期间到达的 WS 消息/终态优先于旧响应，重复历史请求仅采纳最新一项。Codex 发送超时或失败回执时保留原文和原通道供手动核对，禁止自动回退 exec 或自动重发结果未知的 turn。幂等记录仅限当前 hub 进程与 TTL，不承诺跨重启 exactly-once。
+
+### GET /api/sessions/:id/commands/:commandId（Codex 只读回执）
+
+响应 `{ "state": "pending|accepted|failed|unknown", "error": null|"失败原因" }`。HTTP `/message` 的 202 只表示入队；`accepted` 表示原生 Codex 已受理该输入，不代表模型任务完成。回执在内存保留 10 分钟，最多 2000 条，并按会话隔离；重启/过期为 unknown。客户端在原生回执前保留正文和图片；刷新/重连只查询状态，unknown 保留为手动核对，禁止自动重发。明确未提交的 busy/本地队列取消允许同幂等键重试；已提交但结果未知的请求仅重放原回执，不再次执行。旧 v1 离线条目补全为 Codex 来源后也先转为人工核对。
+
+### host 权限请求（Claude / Codex 手机批权限）
 
 非 bypass 环境下工具需确认时，驱动进程经 `--permission-prompt-tool` MCP bridge 回连：
 
@@ -931,7 +939,9 @@ Claude 忙时的普通 `prompt` 通过 `command_ack{ok:false,error:...}` 报告�
   → `{ "resolved": true, "outcome" }`；未知 → 404 `HOST_REQUEST_NOT_FOUND`；已决 → 409 `HOST_REQUEST_RESOLVED`
   （已决 id 短期记忆 TTL 约 5 分钟、上限约 200 条，过期/淘汰后回 404）。
 
-`HostRequestDto`：`{ id, sessionId, kind: "permission"|"question", title, detail, toolName?, allowAlways?, createdAt, expiresAt }`。
+`HostRequestDto`：`{ id, sessionId, kind: "permission"|"question", title, detail, toolName?, allowAlways?, createdAt, expiresAt, requestType?, turnId?, itemId?, permissions? }`。
+
+Codex 原生三类 `requestType` 为 commandExecution / fileChange / permissions，复用上述手机列表/应答端点，无 MCP bridge。允许仅限当前操作；permissions 仅返回原请求的子集且 scope=turn。问题/elicitation 未提供选择 UI 时安全拒绝，未知服务请求明确 unsupported；认证刷新不经过手机。超时/中止/退出/崩溃清理审批。serverRequest/resolved 仅表示已清理，不推断为用户允许。
 bypassPermissions 环境不产生请求（全自动放行）；headless 无 AskUserQuestion（模型文字化提问）。
 
 ### 冲突保护
@@ -1187,7 +1197,7 @@ chat 输入区上传文件/图片：base64 JSON 落盘到会话 `cwd/.agent-hub-
   优先；`application/octet-stream`/缺失走扩展名兜底（含常见代码/文本扩展名）；都不命中 →
   415 `UNSUPPORTED_MEDIA_TYPE`。MIME 命中时扩展名以规范值统一（防伪装）。
 - `isImage` = MIME 属 image/*（决定 UI 缩略图预览；prompt `images` 仅收图片，非图片 → 415）。
-  pi 通过 SDK ImageContent 直接附图；Claude/Codex CLI 当前以文本 `@path` 提示 agent 读文件，
+  pi 通过 SDK ImageContent 直接附图；Claude 与 Codex parallel CLI 以文本 `@path` 提示 agent 读文件；Codex attach 通过原生 localImage 发送，
   不应将缩略图已显示理解为 CLI 已直接收到原生图片块。
 - 大小上限：单文件 10MB（超出 413 `UPLOAD_TOO_LARGE`）；`data` 非法 base64 / 空文件 →
   400 `INVALID_REQUEST`。

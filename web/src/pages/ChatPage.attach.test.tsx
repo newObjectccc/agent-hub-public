@@ -28,6 +28,7 @@ const mocks = vi.hoisted(() => ({
   uploadFile: vi.fn(),
   abortSession: vi.fn(),
   getSessionAgents: vi.fn(),
+  listHostRequests: vi.fn(),
 }));
 
 vi.mock("../api/client", () => ({
@@ -38,6 +39,7 @@ vi.mock("../api/client", () => ({
     uploadFile: mocks.uploadFile,
     abortSession: mocks.abortSession,
     getSessionAgents: mocks.getSessionAgents,
+    listHostRequests: mocks.listHostRequests,
   },
 }));
 
@@ -141,6 +143,8 @@ beforeEach(() => {
   mocks.abortSession.mockReset();
   mocks.getSessionAgents.mockReset();
   mocks.getSessionAgents.mockResolvedValue({ agents: [] });
+  mocks.listHostRequests.mockReset();
+  mocks.listHostRequests.mockResolvedValue({ requests: [] });
 });
 
 afterEach(() => {
@@ -310,6 +314,46 @@ describe("409 ATTACH_ACTIVE 死锁自愈（跨设备）", () => {
 });
 
 describe("sendPrompt 幂等键（重发同键）", () => {
+  it("前台恢复的旧 GET 晚于 WS 完成返回，不抹掉新回复或恢复运行中", async () => {
+    mocks.getSession.mockResolvedValue({ session: { ...baseSession, source: "codex", terminal: { online: true, attached: true, source: "codex", driver: "hub", defaultPolicy: "never" } }, messages: [], hasMore: false, nextBefore: null });
+    const el = await render();
+    let finish!: (value: unknown) => void;
+    mocks.getSession.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    act(() => document.dispatchEvent(new Event("visibilitychange")));
+    await act(async () => {
+      wsEvent?.({ type: "message_end", message: { id: "native-user-new", role: "user", timestamp: 100, text: "新消息", toolCalls: [] } });
+      wsEvent?.({ type: "message_end", message: { id: "native-answer-new", role: "assistant", timestamp: 101, text: "已经完成的新回复", toolCalls: [] } });
+      wsEvent?.({ type: "status", status: "idle" });
+      wsEvent?.({ type: "agent_settled" });
+      finish({ session: { ...baseSession, status: "running" }, messages: [], hasMore: false, nextBefore: null });
+      await Promise.resolve();
+    });
+    expect(el.textContent).toContain("已经完成的新回复");
+    expect(el.querySelector('[aria-label="等待反馈：思考中"]')).toBeNull();
+  });
+  it("Codex HTTP202后晚到的失败回执保留原文和接管通道，重连不自动转发", async () => {
+    mocks.getSession.mockResolvedValue({ session: { ...baseSession, source: "codex", terminal: { online: true, attached: true, source: "codex", driver: "hub", defaultPolicy: "never" } }, messages: [], hasMore: false, nextBefore: null });
+    const el = await render();
+    typeInput(el, "未确认的消息");
+    click(el.querySelector(".composer-send"));
+    await act(async () => { await Promise.resolve(); });
+    expect(getOfflineQueue().pending("s1")[0]?.commandId).toBe("cmd-1");
+    act(() => wsEvent?.({ type: "command_ack", commandId: "cmd-1", ok: false, error: "RPC超时，请先核对是否已被接收" }));
+    expect(getOfflineQueue().pending("s1")[0]).toMatchObject({ text: "未确认的消息", source: "codex", channel: "attach", autoRetry: false });
+    expect(mocks.sendPromptWithMode).not.toHaveBeenCalled();
+  });
+  it("Codex 接管失效时保留消息等待手动处理，不切换到 exec 自动补发", async () => {
+    mocks.getSession.mockResolvedValue({ session: { ...baseSession, source: "codex", terminal: { online: true, attached: true, source: "codex", driver: "hub", defaultPolicy: "never" } }, messages: [], hasMore: false, nextBefore: null });
+    mocks.sendAttachMessage.mockRejectedValue(Object.assign(new Error("Codex 写者正在释放"), { code: "ATTACH_REQUIRED", status: 409 }));
+    const el = await render();
+    typeInput(el, "保留这条消息");
+    click(el.querySelector(".composer-send"));
+    await act(async () => { await Promise.resolve(); });
+    expect(mocks.sendPromptWithMode).not.toHaveBeenCalled();
+    const pending = getOfflineQueue().pending("s1");
+    expect(pending).toHaveLength(1);
+    expect(pending[0]).toMatchObject({ text: "保留这条消息", source: "codex", channel: "attach", autoRetry: false });
+  });
   it("正常发送请求带 clientMessageId（= 占位 id）", async () => {
     const el = await render();
     typeInput(el, "幂等键");

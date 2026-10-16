@@ -36,7 +36,7 @@ jobs:
         run: node scripts/pack-smoke.mjs
 
       - run: pnpm -r lint
-      - run: pnpm -r test
+      - run: pnpm test
 
       # 依赖漏洞门禁：--prod 只看运行时依赖；--audit-level=high 只挡 high/critical
       #（宽松级别防传递性 moderate 噪音卡 CI）

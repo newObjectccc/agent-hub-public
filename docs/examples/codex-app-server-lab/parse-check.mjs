@@ -1,22 +1,29 @@
-const ROLLOUT_JS = process.env.CODEX_ROLLOUT_JS ?? "../../../server/dist/adapters/codex-rollout.js";
-const { loadCodexSessionMessages } = await import(new URL(ROLLOUT_JS, `file://${process.cwd()}/`).href);
-import { readdirSync } from "node:fs";
-// 用法: node parse-check.mjs [YYYY/MM/DD]（缺省今天）——体检自研解析器对新版 codex rollout 的兼容性
-const day = process.argv[2] ?? new Date().toISOString().slice(0,10).split("-").join("/");
-const dir = `${process.env.HOME}/.codex/sessions/${day}`;
-const files = readdirSync(dir).filter((f) => f.endsWith(".jsonl")).map((f) => `${dir}/${f}`);
-console.log("rollout 目录:", dir, "文件数:", files.length);
-for (const f of files.slice(-6)) {
-  try {
-    const msgs = await loadCodexSessionMessages(f);
-    const roles = msgs.reduce((a, m) => { a[m.role] = (a[m.role] ?? 0) + 1; return a; }, {});
-    const tools = msgs.flatMap((m) => (m.toolCalls ?? []).map((t) => t.name));
-    console.log(`\n--- ${f.split("/").pop().slice(0, 60)}`);
-    console.log(`  消息数=${msgs.length} roles=${JSON.stringify(roles)} 工具=${tools.join(",") || "(无)"}`);
-    for (const m of msgs.slice(0, 4)) {
-      console.log(`  [${m.role}] ${JSON.stringify(m.text ?? "").slice(0, 130)}`);
-    }
-  } catch (e) {
-    console.log(`\n--- ${f.split("/").pop().slice(0, 60)}\n  PARSE-ERROR: ${e.message}`);
+/** Explicit file only: never scans the user's session history or prints message bodies. */
+import { pathToFileURL } from "node:url";
+import { resolve } from "node:path";
+import { statSync } from "node:fs";
+import { executeRun, parseOptions, reportCliError } from "./run.mjs";
+import { labError } from "./lab.mjs";
+
+try {
+  const options = parseOptions(process.argv.slice(2));
+  if (options.help) console.log("Usage: node parse-check.mjs --rollout /explicit/path/to/lab-rollout.jsonl\nReads only the selected file; requires the server's built rollout parser.");
+  else {
+    if (!options.rollout || Object.keys(options).some((key) => key !== "rollout")) throw labError("EXPLICIT_ROLLOUT_REQUIRED");
+    process.exitCode = await executeRun("parse-check", async (run) => {
+      const file = resolve(options.rollout);
+      run.check("selected rollout is a nonempty file", statSync(file).isFile() && statSync(file).size > 0);
+      const parser = process.env.CODEX_ROLLOUT_JS ? pathToFileURL(resolve(process.env.CODEX_ROLLOUT_JS)) : new URL("../../../server/dist/adapters/codex-rollout.js", import.meta.url);
+      const { loadCodexSessionMessages } = await import(parser.href);
+      const messages = await loadCodexSessionMessages(file);
+      run.check("rollout parser produced messages", Array.isArray(messages) && messages.length > 0);
+      run.artifact.messages = { count: messages.length,
+        user: messages.filter((message) => message.role === "user").length,
+        assistant: messages.filter((message) => message.role === "assistant").length,
+        tools: messages.reduce((count, message) => count + (message.toolCalls?.length ?? 0), 0),
+        unknownTools: messages.flatMap((message) => message.toolCalls ?? []).filter((tool) => tool.name === "unknown").length,
+        emptyAssistant: messages.filter((message) => message.role === "assistant" && !(message.text ?? "").trim() && !message.toolCalls?.length).length,
+      };
+    });
   }
-}
+} catch (error) { process.exitCode = reportCliError(error); }

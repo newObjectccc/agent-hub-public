@@ -63,6 +63,8 @@ export interface TerminalAttachInfo {
   attached: boolean;
   /** 驱动形态：queue=pi 扩展指令队列；hub=server 持有 claude -p 长驻进程（缺省按 queue 容错） */
   driver?: "queue" | "hub";
+  /** hub 驱动来源；缺省兼容旧版 Claude 驱动。 */
+  source?: "claude" | "codex";
   /** 投屏（tmux 镜像）就绪（仅 hub 形态） */
   mirror?: boolean;
   /**
@@ -92,6 +94,11 @@ export interface HostRequestDto {
   detail: string | null;
   toolName?: string;
   allowAlways?: boolean;
+  /** Codex 原生审批类型；权限内容仅用于展示，授权范围由服务端原请求决定。 */
+  requestType?: "commandExecution" | "fileChange" | "permissions";
+  turnId?: string;
+  itemId?: string;
+  permissions?: unknown;
   createdAt: number;
   /** 人工应答超时（超时一律 deny，绝不自动 allow）；null=未知 */
   expiresAt: number | null;
@@ -191,6 +198,10 @@ export interface MessageDto {
   /** 思维链全文（assistant 的 thinking 块）；无思维链为 null；claude 适配层暂缺省 */
   thinking?: string | null;
   toolCalls: ToolCallDto[];
+  /** 驱动快照中的在途消息；重连时用于保留已收到的流式输出。 */
+  streaming?: boolean;
+  /** Codex 原生轮次标识，用于将实时快照与持久化记录精确对账。 */
+  turnId?: string;
   /** 内嵌图片（ImageContent/image block）；无图缺省。前端按序渲染为 <img> */
   images?: MessageImage[];
   /**

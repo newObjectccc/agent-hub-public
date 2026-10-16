@@ -27,6 +27,7 @@ const PARALLEL_HINT_HUB =
 
 /** attach hint 按驱动形态分支（D9）：pi=注入终端 TUI；claude=hub 驱动 + 投屏 */
 function attachHint(terminal: TerminalAttachInfo | null | undefined): string {
+  if (terminal?.source === "codex") return "由电脑上的 Codex 驱动继续同一会话，回复与审批同步到手机。电脑正在占用会话时需先退出原会话；退出接管后可在电脑继续。";
   if (terminal?.driver === "hub") {
     return "手机消息由 hub 直接驱动 claude 执行并写回同一会话，电脑终端投屏实时显示。接管期间请勿在电脑原窗口继续输入；退出接管后可 claude --resume 无缝接回";
   }
@@ -35,6 +36,7 @@ function attachHint(terminal: TerminalAttachInfo | null | undefined): string {
 
 function modeHint(mode: AttachMode, terminal: TerminalAttachInfo | null | undefined): string {
   if (mode === "attach") return attachHint(terminal);
+  if (terminal?.source === "codex") return "通过 Codex 命令行继续同一会话，原电脑窗口不会同步新增消息。两端请避免同时发送。";
   return terminal?.driver === "hub" ? PARALLEL_HINT_HUB : PARALLEL_HINT;
 }
 
@@ -96,7 +98,7 @@ export function AttachModeMenu({ mode, terminal, source, onChange, busy }: Attac
               </span>
               平行继续
             </span>
-            <span className="attach-menu-hint">{PARALLEL_HINT}</span>
+            <span className="attach-menu-hint">{modeHint("parallel", terminal)}</span>
           </button>
           <button
             type="button"

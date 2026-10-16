@@ -10,6 +10,22 @@ import { flushQueue, getOfflineQueue, type FlushOptions, type FlushResult } from
 
 let running: Promise<FlushResult | null> | null = null;
 
+/** 丢失 WS 回执时只读恢复；未知记录保留原文供人工核对。 */
+export async function reconcileAttachReceipts(sessionId: string): Promise<void> {
+  const store = getOfflineQueue();
+  for (const item of store.pending(sessionId)) {
+    if (item.source !== "codex" || !item.commandId) continue;
+    try {
+      const status = await api.getAttachCommandStatus(sessionId, item.commandId);
+      if (status.state === "accepted" || status.state === "failed") {
+        store.recordAttachAck(sessionId, item.commandId, status.state === "accepted", status.error);
+      } else if (status.state === "unknown") {
+        store.patch(item.localId, { commandId: undefined, autoRetry: false, lastError: "原指令回执已失效，请核对会话后手动重试" });
+      }
+    } catch { /* 网络仍未恢复时原样保留，不重发。 */ }
+  }
+}
+
 export interface FlushNowOptions extends FlushOptions {
   /** 成功/失败出 toast（网络恢复自动补发等用户可感知场景） */
   notify?: boolean;
@@ -24,12 +40,13 @@ export function flushOfflineQueue(options: FlushNowOptions = {}): Promise<FlushR
       const result = await flushQueue(
         getOfflineQueue(),
         {
+          resolveSessionSource: async (id) => (await api.getSession(id, { limit: 1 })).session.source ?? null,
           uploadFile: (input, signal) => api.uploadFile(input, signal),
           sendPrompt: (id, text, mode, images, clientMessageId, signal) =>
             api.sendPrompt(id, text, mode, images, clientMessageId, signal),
           sendPromptWithMode,
-          sendAttachMessage: (id, text, mode, clientMessageId, signal) =>
-            api.sendAttachMessage(id, text, mode, clientMessageId, signal),
+          sendAttachMessage: (id, text, mode, clientMessageId, signal, images) =>
+            api.sendAttachMessage(id, text, mode, clientMessageId, signal, images),
         },
         rest,
       );

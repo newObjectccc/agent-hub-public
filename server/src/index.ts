@@ -19,6 +19,8 @@ import { AgentCommandHub } from "./agents.js";
 import { ClaudeAdapter } from "./adapters/claude.js";
 import { ClaudeDriverHub } from "./adapters/claude-driver.js";
 import { CodexAdapter } from "./adapters/codex.js";
+import { CodexDriverHub } from "./adapters/codex-driver.js";
+import { inspectCodexRuntime, formatCodexRuntimeDiagnostics } from "../../cli/lib/codex-runtime.js";
 import { findClaudeSessionFiles } from "./adapters/claude-transcript.js";
 import { PiAdapter } from "./adapters/pi.js";
 import { SessionRegistry } from "./adapters/registry.js";
@@ -285,6 +287,7 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
     usage: options.usage,
     agents: options.agents,
     claudeDriver: options.claudeDriver,
+    codexDriver: options.codexDriver,
     appLock: options.appLock,
     terminal: options.terminal,
     terminalUnlocked: options.terminalUnlocked,  });
@@ -339,6 +342,7 @@ export interface AttachSessionWsOptions {
   agents?: { isAttached(sessionId: string): boolean };
   /** claude hub 驱动 attach 接管检测 + 中止 turn（并集；config.claudeDriver.enabled=false 装配时缺省） */
   claudeDriver?: { isAttached(sessionId: string): boolean; abortTurn(sessionId: string): void } | null;
+  codexDriver?: { isAttached(sessionId: string): boolean; isAttaching(sessionId: string): boolean; isBusy?(sessionId: string): boolean; abortTurn(sessionId: string): void } | null;
 }
 
 /**
@@ -349,7 +353,7 @@ export interface AttachSessionWsOptions {
  * （server/src/test/ws-auth-wiring.test.ts）。
  */
 export function attachSessionWs(server: HttpServer, hub: WsSessionHub, options: AttachSessionWsOptions): void {
-  const { wshub, config, tails, appLock, agents, claudeDriver } = options;
+  const { wshub, config, tails, appLock, agents, claudeDriver, codexDriver } = options;
   // Origin 跨站闸：与 HTTP CORS 闸共用 crossOriginAllowed（同源/白名单/Host 信任派生单一事实源）
   const originGate = { allowOrigins: config.allowOrigins ?? [], hostTrust: hostTrustOptionsFor(config) };
   /** 应用锁门禁（与 promptGuard 锁分支同判据）：已配置锁且令牌无效 = 锁屏 */
@@ -360,7 +364,7 @@ export function attachSessionWs(server: HttpServer, hub: WsSessionHub, options: 
     promptGuard: (id, lockToken) =>
       appLocked(lockToken)
         ? { code: ErrorCodes.APP_LOCKED, message: "应用已锁定：请先解锁" }
-        : agents?.isAttached(id) || claudeDriver?.isAttached(id)
+        : agents?.isAttached(id) || claudeDriver?.isAttached(id) || codexDriver?.isBusy?.(id) || codexDriver?.isAttached(id) || codexDriver?.isAttaching(id)
           ? { code: ErrorCodes.ATTACH_ACTIVE, message: "终端接管中：平行发送已停用（切回 📱 平行模式可恢复）" }
           : null,
     // WS abort 门禁 + 分发（修复：abort 绕过 promptGuard，锁屏/接管期可中止 turn）——镜像 HTTP
@@ -374,6 +378,8 @@ export function attachSessionWs(server: HttpServer, hub: WsSessionHub, options: 
         if (!session) return { code: ErrorCodes.SESSION_NOT_FOUND, message: `会话不存在: ${id}` };
         if (session.source === "claude" && claudeDriver?.isAttached(id)) {
           claudeDriver.abortTurn(id);
+        } else if (session.source === "codex" && (codexDriver?.isAttached(id) || codexDriver?.isAttaching(id))) {
+          codexDriver.abortTurn(id);
         } else {
           await hub.abort(id);
         }
@@ -411,13 +417,16 @@ export async function startHub(): Promise<StartedHub> {
   }
 
   const wshub = new WsHub();
+  let tails: SessionTailManager | undefined;
   // 统一事件出口：通知聚合（settled/error + 最后输出摘要）+ WS 推送 +
   // 全局 status 变更广播（首页运行看板实时刷新）+ 子代理活动路由（反馈轮 3 #4：
   // 子会话事件按 parentSessionId 汇到父会话通道）。各路独立 try/catch（P2 emit 隔离）；
   // 目标对象延迟绑定（事件只可能在 startHub 装配完成后到达）
   const emit = createEventEmitter({
     recordEvent: (sessionId, event) => dashboard.recordEvent(sessionId, event),
-    broadcast: (sessionId, event) => wshub.broadcast(sessionId, event),
+    broadcast: (sessionId, event) => {
+      wshub.broadcast(sessionId, event);
+    },
     broadcastGlobal: (event) => wshub.broadcastGlobal(event),
     route: (sessionId, event) => subAgentRouter.route(sessionId, event),
   });
@@ -458,14 +467,28 @@ export async function startHub(): Promise<StartedHub> {
   });
   // Codex 会话来源：~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl + session_index.jsonl（与桌面 app/CLI 共享）
   // 归档会话：~/.codex/archived_sessions/（平铺，列表标注归档并排尾）
-  const codexSessionsDir = join(homedir(), ".codex", "sessions");
-  const codexArchivedDir = join(homedir(), ".codex", "archived_sessions");
-  const codexSessionIndexFile = join(homedir(), ".codex", "session_index.jsonl");
-  const codexAdapter = new CodexAdapter({
+  const codexHome = process.env.CODEX_HOME || join(homedir(), ".codex");
+  const codexSessionsDir = join(codexHome, "sessions");
+  const codexArchivedDir = join(codexHome, "archived_sessions");
+  const codexSessionIndexFile = join(codexHome, "session_index.jsonl");
+  const codexDriver: CodexDriverHub | null = config.codexDriver.enabled ? new CodexDriverHub({
+    emit,
+    codexBin: config.codexBin,
+    maxConcurrent: config.codexDriver.maxConcurrent,
+    idleDetachMs: config.codexDriver.idleDetachMs,
+    externalQuietMs: config.codexDriver.externalQuietMs,
+    approvalPolicy: config.codexDriver.approvalPolicy === "inherit" ? undefined : config.codexDriver.approvalPolicy,
+    sandbox: config.codexDriver.sandbox === "inherit" ? undefined : config.codexDriver.sandbox,
+    parallelBusy: (id) => codexAdapter.isLive(id),
+  }) : null;
+  const codexAdapter: CodexAdapter = new CodexAdapter({
     sessionsDir: codexSessionsDir,
     archivedSessionsDir: codexArchivedDir,
     sessionIndexFile: codexSessionIndexFile,
     emit,
+    codexBin: config.codexBin,
+    driverBusy: (id) => codexDriver?.isBusy(id) ?? false,
+    driverStatus: (id) => codexDriver?.runStatusFor(id) ?? null,
   });
   const hub = new SessionRegistry(new PiAdapter(piHub), claudeAdapter, config.sessionDir, codexAdapter);
   // 子代理血缘路由器（emit 闭包延迟引用：事件只可能在 startHub 装配完成后到达）
@@ -513,6 +536,7 @@ export async function startHub(): Promise<StartedHub> {
     live: liveIngest,
     agents,
     claudeDriver: claudeDriver ?? undefined,
+    codexDriver: codexDriver ?? undefined,
     webRoot: webDistDir,
     logger: true,
     // ttyd Web 终端（F2）：按需拉起 + 同源反代（POSIX；win32 自动降级为提示）
@@ -528,24 +552,37 @@ export async function startHub(): Promise<StartedHub> {
 
   await app.listen({ port: config.port, host: config.host });
   agents.startSweep();
+  claudeDriver?.startSweep();
+  codexDriver?.startSweep();
+  // 仅检查二进制版本与有限条 rollout 头；不请求模型、不读取登录凭据、不阻塞监听。
+  void inspectCodexRuntime({ codexBin: config.codexBin, codexHome }).then((report) => {
+    for (const line of formatCodexRuntimeDiagnostics(report)) app.log.info(line);
+  }).catch(() => app.log.warn("Codex 版本诊断暂不可用，可运行 agent-hub doctor 重试"));
   // live map LRU/TTL 逐出 + feedSessions/statuses 过期清扫（30s，unref；OOM 审计 AC2/AC3）
   piHub.startSweep();
   // usage 启动预热（fire-and-forget）：预扫全部会话 JSONL，/api/usage 冷启动不再同步等 2.3s（
   // 请求侧另有 ≤300ms 限时兑底，超时先回当前缓存/空窗，UI 走无数据占位降级，最终一致）
   usage.warmup();
-  const tails = new SessionTailManager((sessionId, event) => emit(sessionId, event));
+  tails = new SessionTailManager((sessionId, event) => emit(sessionId, event));
   // 会话一旦由本进程接管（live），停掉文件 tail，避免双推送源产生重复气泡
-  hub.onLive = (sid) => tails.detach(sid);
+  hub.onLive = (sid) => tails?.detach(sid);
   // attach 接管期间拒绝 WS parallel 发送（与 REST /prompt 同一冲突保护，pi 指令队列 / claude hub 驱动并集）；
   // 锁屏时拒绝 WS 发送（与 HTTP 门禁同口径）；upgrade 鉴权从 config.auth 派生（开启后 WS 同样要 Bearer）。
   // 生产唯一挂载路径：attachSessionWs（WS 鉴权接线回归测试走同一函数，见 ws-auth-wiring.test.ts）
-  attachSessionWs(app.server, hub, {
+  attachSessionWs(app.server, {
+    findSession: (id) => hub.findSession(id),
+    listChildren: (id) => hub.listChildren(id),
+    isLive: (id) => hub.isLive(id) || (codexDriver?.isBusy(id) ?? false),
+    prompt: (id, text, mode) => hub.prompt(id, text, mode),
+    abort: (id) => hub.abort(id),
+  }, {
     wshub,
     config,
     tails,
     appLock,
     agents,
     claudeDriver,
+    codexDriver,
   });
   // 全局存在感知：任一会话文件（pi / claude）变化 → 广播 sessions_changed + 搜索索引失效（fs.watch 事件驱动）
   const presence = new PresenceWatcher(
@@ -581,6 +618,7 @@ export async function startHub(): Promise<StartedHub> {
     agents.close();
     // hub 驱动接管：杀掉全部 claude 驱动进程（attach 态不跨重启恢复，web 回落 parallel）
     claudeDriver?.disposeAll();
+    codexDriver?.disposeAll();
     terminalService.dispose();
     hub.disposeAll();
     // 先掐掉全部 WS 连接再关 HTTP，否则在线 WS 客户端会让 app.close() 永不 resolve

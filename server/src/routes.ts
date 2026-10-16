@@ -6,6 +6,8 @@ import { timingSafeEqual } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { AgentLinkLike, CommandMode } from "./agents.js";
 import type { ClaudeDriverLinkLike } from "./adapters/claude-driver.js";
+import type { CodexDriverLinkLike } from "./adapters/codex-driver.js";
+import { mergeCodexSnapshot } from "./adapters/codex-snapshot.js";
 import { parseBridgeHostRequestBody } from "./adapters/claude-host-protocol.js";
 import {
   createAppLockStore,
@@ -95,6 +97,7 @@ export interface RouteDeps {
   agents?: AgentLinkLike;
   /** claude hub 驱动接管（可注入 mock，缺省 claude 接管路由回 400/503） */
   claudeDriver?: ClaudeDriverLinkLike;
+  codexDriver?: CodexDriverLinkLike;
   /** 应用锁（F1；可注入 mock/临时目录，缺省持久化到 data/app-lock.json） */
   appLock?: AppLockStoreLike;
   /** ttyd Web 终端服务（F2；可注入 mock，缺省时 /api/terminal/* 返回 503） */
@@ -121,6 +124,8 @@ function stampTerminal(
   agents?: AgentLinkLike,
   claudeDriver?: ClaudeDriverLinkLike,
   defaultPolicy?: TerminalAttachInfo["defaultPolicy"],
+  codexDriver?: CodexDriverLinkLike,
+  codexPolicy?: TerminalAttachInfo["defaultPolicy"],
 ): SessionDto {
   const withPolicy = (info: TerminalAttachInfo): TerminalAttachInfo =>
     defaultPolicy === undefined ? info : { ...info, defaultPolicy };
@@ -129,6 +134,9 @@ function stampTerminal(
   }
   if (session.source === "claude" && claudeDriver) {
     return toSessionDto({ ...session, terminal: withPolicy(claudeDriver.statusFor(session.id)) });
+  }
+  if (session.source === "codex" && codexDriver && !session.archived) {
+    return toSessionDto({ ...session, status: codexDriver.runStatusFor(session.id) ?? session.status, terminal: { ...codexDriver.statusFor(session.id), source: "codex", defaultPolicy: codexPolicy ?? "never" } });
   }
   return toSessionDto(session);
 }
@@ -252,7 +260,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
 
   /** 冲突保护：attach 接管期间拒绝 parallel 发送/压缩（防双写同一会话：pi 指令队列 / claude hub 驱动） */
   const rejectIfAttached = (id: string): void => {
-    if (deps.agents?.isAttached(id) || deps.claudeDriver?.isAttached(id)) {
+    if (deps.agents?.isAttached(id) || deps.claudeDriver?.isAttached(id) || deps.codexDriver?.isBusy?.(id) || deps.codexDriver?.isAttached(id) || deps.codexDriver?.isAttaching(id)) {
       throw new HubError(
         ErrorCodes.ATTACH_ACTIVE,
         "终端接管中：消息由电脑上的会话执行，平行发送已停用（切回 📱 平行模式可恢复）",
@@ -266,7 +274,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
     try {
       const sessions = (await hub.listSessions()).map(decorateSession);
       return reply.send({
-        sessions: sessions.map((s) => stampTerminal(s, deps.agents, deps.claudeDriver, deps.config.claudeDriver.defaultPolicy)),
+        sessions: sessions.map((s) => stampTerminal(s, deps.agents, deps.claudeDriver, deps.config.claudeDriver.defaultPolicy, deps.codexDriver, deps.config.codexDriver.defaultPolicy)),
       });
     } catch (err) {
       return handle(reply, err);
@@ -292,11 +300,13 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
         if (query.before !== undefined && before === undefined) {
           throw new HubError(ErrorCodes.INVALID_REQUEST, "before 必须是非空消息 id");
         }
-        const all = (await hub.loadMessages(req.params.id)) ?? [];
+        const history = (await hub.loadMessages(req.params.id)) ?? [];
+        const all = session.source === "codex"
+          ? mergeCodexSnapshot(history, deps.codexDriver?.snapshotFor?.(req.params.id) ?? []) : history;
         // 不带分页查询：保持 v0 全量行为（hasMore=false / nextBefore=null）
         const page = limit === undefined && before === undefined ? fullPage(all) : paginateMessages(all, { before, limit });
         return reply.send({
-          session: stampTerminal(session, deps.agents, deps.claudeDriver, deps.config.claudeDriver.defaultPolicy),
+          session: stampTerminal(session, deps.agents, deps.claudeDriver, deps.config.claudeDriver.defaultPolicy, deps.codexDriver, deps.config.codexDriver.defaultPolicy),
           messages: page.messages,
           hasMore: page.hasMore,
           nextBefore: page.nextBefore,
@@ -519,6 +529,10 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
         deps.claudeDriver.abortTurn(req.params.id);
         return reply.send({ aborted: true });
       }
+      if (session.source === "codex" && (deps.codexDriver?.isAttached(req.params.id) || deps.codexDriver?.isAttaching(req.params.id))) {
+        deps.codexDriver.abortTurn(req.params.id);
+        return reply.send({ aborted: true });
+      }
       await hub.abort(req.params.id);
       return reply.send({ aborted: true });
     } catch (err) {
@@ -596,6 +610,17 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
     }
     return deps.claudeDriver;
   };
+  const requireCodexDriver = (): CodexDriverLinkLike => {
+    if (!deps.codexDriver) throw new HubError(ErrorCodes.INVALID_REQUEST, "Codex 会话接管未启用，请配置 codexDriver.enabled", 400);
+    return deps.codexDriver;
+  };
+  const hostDriverFor = async (id: string): Promise<ClaudeDriverLinkLike | CodexDriverLinkLike> => {
+    const session = await hub.findSession(id);
+    if (!session) throw new HubError(ErrorCodes.SESSION_NOT_FOUND, `会话不存在: ${id}`, 404);
+    if (session.source === "codex") return requireCodexDriver();
+    if (session.source === "claude") return requireClaudeDriver();
+    throw new HubError(ErrorCodes.INVALID_REQUEST, "该会话没有手机审批通道", 400);
+  };
 
   // POST /api/agents/heartbeat：扩展启动即注册 + 每 30s 续（server 据此判定"终端 pi 在线"）
   app.post("/api/agents/heartbeat", async (req, reply) => {
@@ -671,8 +696,9 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
         const agent = requireAgents().attach(req.params.id);
         return reply.status(202).send({ attached: true, agent });
       }
-      if (session.source === "claude") {
-        const driver = requireClaudeDriver();
+      if (session.source === "claude" || session.source === "codex") {
+        if (session.archived) throw new HubError(ErrorCodes.INVALID_REQUEST, "归档会话请先在 Codex 恢复后再接管", 400);
+        const driver = session.source === "codex" ? requireCodexDriver() : requireClaudeDriver();
         const result = await driver.attach(req.params.id, {
           cwd: session.cwd,
           sessionFile: session.sessionFile,
@@ -682,7 +708,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
           agent: { sessionId: req.params.id, cwd: session.cwd, online: true, driver: result.driver, mirror: result.mirror },
         });
       }
-      throw new HubError(ErrorCodes.INVALID_REQUEST, "仅 pi / claude 会话支持终端接管", 400);
+      throw new HubError(ErrorCodes.INVALID_REQUEST, "该会话不支持接管", 400);
     } catch (err) {
       return handle(reply, err);
     }
@@ -693,7 +719,9 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
     try {
       const session = await hub.findSession(req.params.id);
       // 按接管形态分流（未知会话双向容错清理，保持幂等）
-      if (session?.source === "claude" || (!session && deps.claudeDriver?.isAttached(req.params.id))) {
+      if (session?.source === "codex" || (!session && (deps.codexDriver?.isAttached(req.params.id) || deps.codexDriver?.isAttaching(req.params.id)))) {
+        deps.codexDriver?.detach(req.params.id);
+      } else if (session?.source === "claude" || (!session && deps.claudeDriver?.isAttached(req.params.id))) {
         requireClaudeDriver().detach(req.params.id);
       } else {
         requireAgents().detach(req.params.id);
@@ -709,13 +737,19 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
     try {
       const body = (typeof req.body === "object" && req.body !== null ? req.body : {}) as Record<string, unknown>;
       const session = await hub.findSession(req.params.id);
+      if (!session) throw new HubError(ErrorCodes.SESSION_NOT_FOUND, `会话不存在: ${req.params.id}`, 404);
+      if (body.images !== undefined && !Array.isArray(body.images)) throw new HubError(ErrorCodes.INVALID_REQUEST, "images 必须是上传图片引用数组", 400);
+      const images = session.source === "codex" && body.images !== undefined
+        ? await loadImageAttachments(session.cwd, body.images as unknown[]) : undefined;
       const input = {
         text: typeof body.text === "string" ? body.text : "",
         mode: body.mode as CommandMode | undefined,
         clientMessageId: body.clientMessageId,
       };
       const command =
-        session?.source === "claude"
+        session.source === "codex"
+          ? requireCodexDriver().send(req.params.id, { ...input, images })
+          : session.source === "claude"
           ? requireClaudeDriver().send(req.params.id, input)
           : requireAgents().enqueue(req.params.id, input);
       return reply.status(202).send({
@@ -730,6 +764,15 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   });
 
   /* ===== host 权限请求（hub 驱动 claude 会话的手机批权限，契约 §12） ===== */
+  // 丢失 WS 回执时只读恢复，不以重发 turn 推测受理状态。
+  app.get<{ Params: { id: string; commandId: string } }>("/api/sessions/:id/commands/:commandId", async (req, reply) => {
+    try {
+      const session = await hub.findSession(req.params.id);
+      if (!session) throw new HubError(ErrorCodes.SESSION_NOT_FOUND, "会话不存在", 404);
+      if (session.source !== "codex") throw new HubError(ErrorCodes.INVALID_REQUEST, "该会话不提供原生回执查询", 400);
+      return reply.send(requireCodexDriver().commandStatusFor?.(req.params.id, req.params.commandId) ?? { state: "unknown", error: null });
+    } catch (error) { return handle(reply, error); }
+  });
 
   // POST /api/agents/host-requests：bridge 注册权限请求并挂起等人工应答（仅本机回环 + token）
   // 响应 {behavior, message} 直接作为 PermissionResult 依据；超时/收尾一律 deny（绝不自动 allow）
@@ -751,7 +794,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   // GET /api/sessions/:id/host-requests：未决权限请求（手机刷新/重连兜底拉取，防 WS 丢事件卡死）
   app.get<{ Params: { id: string } }>("/api/sessions/:id/host-requests", async (req, reply) => {
     try {
-      return reply.send({ requests: requireClaudeDriver().listHostRequests(req.params.id) });
+      return reply.send({ requests: (await hostDriverFor(req.params.id)).listHostRequests(req.params.id) });
     } catch (err) {
       return handle(reply, err);
     }
@@ -768,13 +811,13 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
           throw new HubError(ErrorCodes.INVALID_REQUEST, "outcome 必须是 allow|deny");
         }
         const message = typeof body.message === "string" ? body.message : undefined;
-        const ok = requireClaudeDriver().respondHostRequest(req.params.id, req.params.requestId, {
-          behavior: outcome,
-          message: message ?? "",
-        });
+        const driver = await hostDriverFor(req.params.id);
+        const ok = driver === deps.codexDriver
+          ? deps.codexDriver.respondHostRequest(req.params.id, req.params.requestId, { outcome, message })
+          : (driver as ClaudeDriverLinkLike).respondHostRequest(req.params.id, req.params.requestId, { behavior: outcome, message: message ?? "" });
         if (!ok) {
           // 未知 / 已决（契约 §12）：已决记忆判 409 HOST_REQUEST_RESOLVED，其余 404（双重应答/幂等回放不再误报 404）
-          const resolved = requireClaudeDriver().isResolvedHostRequest(req.params.requestId);
+          const resolved = driver.isResolvedHostRequest(req.params.requestId);
           throw new HubError(
             resolved ? ErrorCodes.HOST_REQUEST_RESOLVED : ErrorCodes.HOST_REQUEST_NOT_FOUND,
             resolved ? "该权限请求已决" : "权限请求不存在",

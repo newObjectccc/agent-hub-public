@@ -10,7 +10,7 @@
  * - 按序语义：队列顺序 = 发送顺序；网络类失败中止本轮 flush（保留顺序），业务类失败
  *   标记后继续（不让一条坏消息堵死整条队列）。
  */
-import type { PromptResult } from "../api/types";
+import type { PromptResult, SessionSource } from "../api/types";
 import type { PromptMode } from "../api/client";
 import type { Attachment } from "../utils/uploads";
 import type { SendMode } from "../api/prompt";
@@ -38,6 +38,9 @@ export interface QueuedSend {
   /** 乐观占位 id（local-*），兼作幂等键 clientMessageId（attach 指令队列与 parallel prompt 重发同键） */
   localId: string;
   sessionId: string;
+  source?: SessionSource;
+  /** Codex HTTP 已受理但尚未收到原生回执，刷新后只查询状态，不重发执行。 */
+  commandId?: string;
   /** 会话 cwd（附件补上传时直接用，免去 findSession 全量扫描） */
   cwd: string;
   text: string;
@@ -124,6 +127,8 @@ export function parseQueue(raw: string): QueuedSend[] {
       out.push({
         localId: item.localId,
         sessionId: item.sessionId,
+        ...(item.source === "pi" || item.source === "claude" || item.source === "codex" ? { source: item.source } : {}),
+        ...(typeof item.commandId === "string" && item.commandId.length <= 160 ? { commandId: item.commandId } : {}),
         cwd: typeof item.cwd === "string" ? item.cwd : "",
         text: item.text,
         images,
@@ -190,6 +195,7 @@ export function classifySendError(e: unknown): "network" | "business" {
 export class OfflineQueueStore {
   private items: QueuedSend[] = [];
   private listeners = new Set<() => void>();
+  private attachAcks = new Map<string, { ok: boolean; error: string | null }>();
 
   constructor(private readonly storage: StorageLike | null) {
     try {
@@ -213,6 +219,27 @@ export class OfflineQueueStore {
 
   get(localId: string): QueuedSend | null {
     return this.items.find((i) => i.localId === localId) ?? null;
+  }
+
+  /** 回执可能先于 HTTP 响应；先缓存，再与持久条目关联。 */
+  recordAttachAck(sessionId: string, commandId: string, ok: boolean, error: string | null): void {
+    const key = `${sessionId}\0${commandId}`;
+    this.attachAcks.set(key, { ok, error });
+    while (this.attachAcks.size > 200) this.attachAcks.delete(this.attachAcks.keys().next().value!);
+    for (const item of [...this.items]) {
+      if (item.sessionId !== sessionId || item.source !== "codex" || item.commandId !== commandId) continue;
+      if (ok) this.remove(item.localId);
+      else this.patch(item.localId, { commandId: undefined, autoRetry: false, lastError: error ?? "Codex 未确认接收，请核对后重试" });
+    }
+  }
+
+  trackAttachCommand(localId: string, commandId: string): { ok: boolean; error: string | null } | undefined {
+    const item = this.get(localId);
+    if (!item) return;
+    this.patch(localId, { commandId, autoRetry: false, lastError: null });
+    const ack = this.attachAcks.get(`${item.sessionId}\0${commandId}`);
+    if (ack) this.recordAttachAck(item.sessionId, commandId, ack.ok, ack.error);
+    return ack;
   }
 
   /** 入队（总在内存；持久化超限时返回原因由调用方提示） */
@@ -282,6 +309,8 @@ export function getOfflineQueue(storage?: StorageLike | null): OfflineQueueStore
 /* ====================== 队列 flush（按序重发） ====================== */
 
 export interface FlushQueueDeps {
+  /** 升级前的持久条目没有来源；生产发送前先补全，避免绕过 Codex 重试边界。 */
+  resolveSessionSource?: (id: string) => Promise<SessionSource | null>;
   uploadFile: (
     input: { sessionId?: string; cwd?: string; name: string; mimeType: string; data: string },
     signal?: AbortSignal,
@@ -308,7 +337,8 @@ export interface FlushQueueDeps {
     mode: PromptMode,
     clientMessageId?: string,
     signal?: AbortSignal,
-  ) => Promise<{ accepted: boolean }>;
+    images?: string[],
+  ) => Promise<{ accepted: boolean; commandId?: string }>;
 }
 
 export interface FlushFailure {
@@ -373,8 +403,25 @@ export async function flushQueue(
   const timeoutMs = options.timeoutMs ?? FLUSH_REQUEST_TIMEOUT_MS;
   const targets = options.only
     ? store.list().filter((i) => options.only?.includes(i.localId))
-    : [...store.list()];
-  for (const item of targets) {
+    : store.list().filter((item) => item.source !== "codex" || item.autoRetry);
+  const sources = new Map<string, SessionSource | null>();
+  for (const stored of targets) {
+    let item = stored;
+    if (item.source === undefined && deps.resolveSessionSource) {
+      try {
+        if (!sources.has(item.sessionId)) sources.set(item.sessionId, await withTimeout(deps.resolveSessionSource(item.sessionId), timeoutMs));
+        const source = sources.get(item.sessionId);
+        if (!source) throw Object.assign(new Error("无法确认旧消息的会话来源，请打开会话核对后重试"), { status: 409 });
+        item = { ...item, source };
+        store.patch(item.localId, { source, ...(source === "codex" && !options.only ? { autoRetry: false, lastError: "旧消息的执行状态未知，请核对会话后手动重试" } : {}) });
+        if (source === "codex" && !options.only) continue;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "会话来源尚未确认";
+        store.patch(item.localId, { autoRetry: false, lastError: message });
+        result.failed.push({ localId: item.localId, kind: "business", error: message });
+        continue;
+      }
+    }
     // 1. 补上传未上传附件（逐个回写，失败不重复上传已成功的）
     let uploadFailed: FlushFailure | null = null;
     const images = [...item.images];
@@ -423,11 +470,16 @@ export async function flushQueue(
     const sendOnce = async (channel: "parallel" | "attach"): Promise<void> => {
       if (channel === "attach") {
         const accepted = await withTimeout(
-          deps.sendAttachMessage(item.sessionId, text, item.attachMode, item.localId, timeoutSignal(timeoutMs)),
+          deps.sendAttachMessage(item.sessionId, text, item.attachMode, item.localId, timeoutSignal(timeoutMs), item.source === "codex" ? imagePaths : undefined),
           timeoutMs,
         );
         if (accepted && accepted.accepted === false) {
           throw Object.assign(new Error("终端未接受消息"), { status: 409, code: "ATTACH_REQUIRED" });
+        }
+        if (item.source === "codex") {
+          if (!accepted.commandId) throw Object.assign(new Error("Codex 未返回指令编号，请核对会话后重试"), { status: 409 });
+          const ack = store.trackAttachCommand(item.localId, accepted.commandId);
+          if (ack?.ok === false) throw Object.assign(new Error(ack.error ?? "Codex 未接收消息"), { status: 409 });
         }
         return;
       }
@@ -457,20 +509,20 @@ export async function flushQueue(
         await sendOnce(item.channel);
       } catch (e) {
         const code = (e as { code?: unknown } | null)?.code;
-        if (code !== "ATTACH_ACTIVE" || item.channel !== "parallel") throw e;
+        if (code !== "ATTACH_ACTIVE" || item.channel !== "parallel" || item.source === "codex") throw e;
         store.patch(item.localId, { channel: "attach" });
         await sendOnce("attach");
       }
     };
     try {
       await sendWithHeal();
-      store.remove(item.localId);
+      if (!(item.source === "codex" && item.channel === "attach")) store.remove(item.localId);
       result.sent.push(item.localId);
     } catch (e) {
       const kind = classifySendError(e);
       const error = e instanceof Error ? e.message : "发送失败";
       result.failed.push({ localId: item.localId, error, kind });
-      store.patch(item.localId, { attempts: item.attempts + 1, autoRetry: kind === "network", lastError: error });
+      store.patch(item.localId, { attempts: item.attempts + 1, autoRetry: item.source !== "codex" && kind === "network", lastError: error });
       if (kind === "network") {
         result.stopped = true;
         break;

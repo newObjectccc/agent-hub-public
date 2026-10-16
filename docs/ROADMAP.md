@@ -124,3 +124,10 @@
 3. 测试只增不减；`pnpm -r build/lint/test` 全绿（CI 守护）
 4. 安全：git/文件 API 只读 + 路径校验；不泄漏密钥
 5. 功能在 HTTP tailnet 环境可用（Web Push 等 HTTPS-only 能力优雅降级）
+
+## Codex 接管（2026-10-16）
+
+- ✅ codexBin 可配、CLI/server 只读版本诊断；parallel 并发、准备取消、图片与流式边界修复。
+- ✅ app-server 接管 MVP：完整握手、明确线程 resume、原生 steer/interrupt、本地 followUp、手机命令/文件/permissions 审批、localImage、断线快照与互斥保护。
+- ✅ 实验台默认只读、显式 --run、隔离目录、机器断言、脱敏日志与 CI 模拟测试。
+- 待验证：桌面正持有线程、daemon/rejoin、queue --remote、跨版本真实调用矩阵、Windows/Linux 真机；用户问答 UI 与实时用量为后续增强。见 [CODEX_DRIVER.md](CODEX_DRIVER.md)。

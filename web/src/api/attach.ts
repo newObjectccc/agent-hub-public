@@ -115,11 +115,12 @@ export function attachBadge(
 ): AttachBadgeInfo | null {
   if (!terminal) return null;
   const hub = terminal.driver === "hub";
+  const codex = terminal.source === "codex";
   if (terminal.attached) {
     return {
       icon: "🖥⚡",
       label: "已接管",
-      title: hub
+      title: codex ? "🖥⚡ 已接管：由 Codex 驱动执行，审批与回复同步到手机；退出接管后可在电脑继续" : hub
         ? "🖥⚡ 已接管：消息由 hub 驱动 claude 执行并写回同一会话（电脑终端投屏实时显示）"
         : "🖥⚡ 已接管：消息发往电脑终端 pi 进程执行",
       variant: "attached",
@@ -130,7 +131,7 @@ export function attachBadge(
     return {
       icon: "🖥",
       label: "可接管",
-      title: "🖥 可接管：切换接管模式后消息由 hub 直接驱动 claude 执行",
+      title: codex ? "🖥 可接管：切换后由 Codex 驱动继续；若电脑正在占用会话，会提示退出后重试" : "🖥 可接管：切换接管模式后消息由 hub 直接驱动 claude 执行",
       variant: "online",
     };
   }
@@ -150,7 +151,7 @@ export function attachBadge(
   };
 }
 
-/** 接管可用性：pi 需终端在线；hub 形态（claude）默认可接管；codex 暂不支持（二期） */
+/** 接管可用性：pi 需终端在线；hub 形态（Claude / Codex）可尝试启动驱动。 */
 export interface AttachAvailability {
   attachEnabled: boolean;
   attachDisabledReason: string | null;
@@ -166,7 +167,7 @@ export function attachAvailability(
   if (source === "codex") {
     return {
       attachEnabled: false,
-      attachDisabledReason: "codex 会话暂不支持接管终端，仅支持 📱 平行模式（接管在二期规划中）",
+      attachDisabledReason: "暂无法接管：server 未启用 Codex 接管（请检查版本、codexDriver.enabled；归档会话需先恢复）",
     };
   }
   if (source === "claude") {
@@ -222,6 +223,7 @@ export interface ChannelEchoState {
   commandId?: string;
   /** 驱动形态（hub=claude 驱动文案分支） */
   driver?: "queue" | "hub";
+  source?: "claude" | "codex";
 }
 
 export function echoText(echo: ChannelEchoState): string {
@@ -229,9 +231,9 @@ export function echoText(echo: ChannelEchoState): string {
     const hub = echo.driver === "hub";
     switch (echo.phase) {
       case "sent":
-        return hub ? "🖥 已发往 claude 驱动，等待接收确认…" : "🖥 已发往终端，等待接收确认…";
+        return echo.source === "codex" ? "🖥 已发往 Codex 驱动，等待接收确认…" : hub ? "🖥 已发往 claude 驱动，等待接收确认…" : "🖥 已发往终端，等待接收确认…";
       case "acked":
-        return hub ? "🖥 驱动已接收 ✓ 消息将在电脑的 claude 会话执行" : "🖥 终端已接收 ✓ 消息将在终端 pi 执行";
+        return echo.source === "codex" ? "🖥 Codex 已接收 ✓ 回复与审批将在此同步" : hub ? "🖥 驱动已接收 ✓ 消息将在电脑的 claude 会话执行" : "🖥 终端已接收 ✓ 消息将在终端 pi 执行";
       case "failed":
         return `🖥 ${hub ? "注入驱动" : "终端注入"}失败${echo.detail ? `：${echo.detail}` : ""}`;
       default:
@@ -246,9 +248,10 @@ export function echoText(echo: ChannelEchoState): string {
  * terminal 缺失（null/undefined：claudeDriver.enabled=false / 老 server 不下发）→ 不可接管
  * 就不走 attach 发送通道（否则 server 400「claude 会话接管未启用」卡死，detach 同样 400）；
  * terminal 存在时语义不变：server 未明确告知"未接管"（attached!==false）按接管发送，
- * 服务端未接管时返回 ATTACH_REQUIRED 由调用方回落平行，绝不与接管中的终端抢平行通道。
+ * Codex 选择接管后，即便驱动已退出也保持该通道，交由 server 明确拒绝并保留原文重试。
  */
-export function isAttachSending(attachMode: AttachMode, terminal: TerminalAttachInfo | null | undefined): boolean {
+export function isAttachSending(attachMode: AttachMode, terminal: TerminalAttachInfo | null | undefined, source?: string): boolean {
   if (terminal == null) return false; // 不可接管（terminal 缺失）→ 不走 attach 发送通道
+  if (attachMode === "attach" && (source === "codex" || terminal.source === "codex")) return true;
   return attachMode === "attach" && terminal.attached !== false;
 }

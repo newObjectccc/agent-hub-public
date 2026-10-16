@@ -7,6 +7,7 @@
 import { strict as assert } from "node:assert";
 import { describe, it } from "node:test";
 import { CodexStreamTranslator } from "../adapters/codex-stream.js";
+import { JsonlReader } from "../adapters/jsonl-reader.js";
 import type { ServerEvent } from "../types.js";
 
 const row = (obj: Record<string, unknown>): string => JSON.stringify(obj);
@@ -20,6 +21,29 @@ function feedAll(translator: CodexStreamTranslator, lines: string[]): ServerEven
 }
 
 describe("CodexStreamTranslator：消息流", () => {
+  it("task_complete 单独携带最终答案时保留可见文本，已有全文时不重复气泡", () => {
+    const onlyFinal = new CodexStreamTranslator().feed(row({ type: "task_complete", last_agent_message: "完成了" }));
+    const end = onlyFinal.find((event) => event.type === "message_end");
+    assert.equal(end?.type === "message_end" ? end.message.text : null, "完成了");
+    const t = new CodexStreamTranslator();
+    const events = feedAll(t, [
+      row({ type: "item.completed", item: { type: "agent_message", text: "完成了" } }),
+      row({ type: "task_complete", last_agent_message: "完成了" }),
+    ]);
+    assert.equal(events.filter((event) => event.type === "message_end").length, 1);
+  });
+
+  it("task_complete 最终文本不会覆盖真实工具 owner", () => {
+    const t = new CodexStreamTranslator();
+    const events = feedAll(t, [
+      row({ type: "item.completed", item: { id: "command", type: "command_execution", command: "pwd" } }),
+      row({ type: "task_complete", last_agent_message: "已完成" }),
+    ]);
+    const messages = events.filter((event): event is Extract<ServerEvent, { type: "message_end" }> => event.type === "message_end");
+    assert.equal(messages.length, 2); assert.equal(messages[0].message.toolCalls.length, 1);
+    assert.equal(messages[1].message.text, "已完成");
+  });
+
   it("content_delta → message_start + text_delta；task_complete → message_end + idle + settled", () => {
     const t = new CodexStreamTranslator();
     const events = feedAll(t, [
@@ -145,6 +169,29 @@ describe("CodexStreamTranslator：工具条目", () => {
 });
 
 describe("CodexStreamTranslator：终态与容错", () => {
+  it("空 agent/plan 占位不发气泡，后续真实工具和最终文本仍然保留", () => {
+    const t = new CodexStreamTranslator();
+    const empty = feedAll(t, [
+      row({ type: "item.started", item: { id: "empty", type: "agent_message" } }),
+      row({ type: "item.completed", item: { id: "empty", type: "agent_message", text: "" } }),
+      row({ type: "item.completed", item: { id: "plan", type: "reasoning", summary: [] } }),
+    ]);
+    assert.deepEqual(empty, []);
+    const events = feedAll(t, [
+      row({ type: "item.completed", item: { id: "tool", type: "mcp_tool_call", tool: "list_issues", server: "linear" } }),
+      row({ type: "item.started", item: { id: "final", type: "agent_message" } }),
+      row({ type: "item.completed", item: { id: "final", type: "agent_message", text: "已完成" } }),
+      row({ type: "turn.completed" }),
+    ]);
+    const messages = events.filter((event): event is Extract<ServerEvent, { type: "message_end" }> => event.type === "message_end");
+    assert.equal(messages.length, 2);
+    assert.equal(messages[0].message.text, "");
+    assert.equal(messages[0].message.toolCalls[0].name, "list_issues");
+    assert.equal(messages[1].message.text, "已完成");
+    assert.deepEqual(t.feed(row({ type: "turn.started" })), []);
+    assert.deepEqual(t.feed(row({ type: "turn.completed" })), []);
+  });
+
   it("error + turn.failed 只发一条 error；status error + settled", () => {
     const t = new CodexStreamTranslator();
     const events = feedAll(t, [
@@ -180,4 +227,13 @@ describe("CodexStreamTranslator：终态与容错", () => {
     assert.deepEqual(types(events), ["status", "status", "agent_settled"]);
     assert.equal(t.finished, true);
   });
+});
+
+it("Codex JSONL reader 跨 UTF-8 分块、无换行尾行与重复 end 均不丢不重", () => {
+  const lines: string[] = [];
+  const reader = new JsonlReader((line) => lines.push(line));
+  const bytes = Buffer.from('你好\n世界');
+  for (const byte of bytes) reader.write(Buffer.from([byte]));
+  reader.end(); reader.end(); reader.write('ignored');
+  assert.deepEqual(lines, ['你好', '世界']);
 });

@@ -29,9 +29,10 @@ import { ErrorCodes, HubError } from "../errors.js";
 import type { PromptResult } from "../sessions/hub.js";
 import { appendAttachmentHints } from "../uploads.js";
 import { decidePromptAction, parsePromptMode } from "../sessions/prompt-policy.js";
-import { inferExternalStatus } from "../sessions/tail.js";
+import { inferExternalStatus, registerTailStatusSink } from "../sessions/tail.js";
 import type { MessageDto, PromptImageAttachment, ServerEvent, SessionListItem, SessionStatus } from "../types.js";
 import { CodexStreamTranslator } from "./codex-stream.js";
+import { JsonlReader } from "./jsonl-reader.js";
 import {
   loadProviderEnv,
   mergeProviderEnvSync,
@@ -60,6 +61,12 @@ export interface CodexAdapterOptions {
   /** 可注入（测试伪造 spawn） */
   spawnFn?: typeof spawn;
   codexBin?: string;
+  /** provider 准备可注入，测试不读取用户 shell 配置。 */
+  prepareProviderEnv?: () => Promise<unknown>;
+  /** 接管或准备接管中的会话禁止 parallel 双写。 */
+  driverBusy?: (id: string) => boolean;
+  /** 已接管会话的真实状态；未接管返回 null。 */
+  driverStatus?: (id: string) => SessionStatus | null;
   /** fileCache LRU 上限（缺省 FILE_CACHE_MAX，测试注入小值） */
   fileCacheMax?: number;
 }
@@ -110,6 +117,11 @@ interface RunningRun {
   aborted: boolean;
 }
 
+interface PendingPrompt {
+  text: string;
+  images?: PromptImageAttachment[];
+}
+
 export class CodexAdapter implements SessionAdapter {
   readonly source = "codex" as const;
   private readonly sessionsDir: string;
@@ -118,13 +130,18 @@ export class CodexAdapter implements SessionAdapter {
   private readonly emit: EmitFn;
   private readonly spawnFn: typeof spawn;
   private readonly codexBin: string;
+  private readonly prepareProviderEnv: () => Promise<unknown>;
+  private readonly driverBusy?: (id: string) => boolean;
+  private readonly driverStatus?: (id: string) => SessionStatus | null;
   private readonly running = new Map<string, RunningRun>();
-  private readonly queues = new Map<string, string[]>();
+  private readonly pendingPrompts = new Map<string, Set<{ aborted: boolean }>>();
+  private readonly queues = new Map<string, PendingPrompt[]>();
   /** 内存运行态（含显式 idle）：带登记时间，超 STATE_TTL 清扫（镜像 hub.ts/claude.ts，audit P2-4） */
   private readonly statuses = new Map<string, { status: SessionStatus; at: number }>();
   private sessionIndex: Map<string, string> | null = null;
   private disposed = false;
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
+  private readonly unregisterTailStatus: () => void;
   /** 会话清单 TTL 缓存（listSessions/findSession/loadMessages 共享一次全量解析） */
   private listCache: SessionListItem[] | null = null;
   private listCacheAt = 0;
@@ -145,6 +162,12 @@ export class CodexAdapter implements SessionAdapter {
     this.emit = options.emit;
     this.spawnFn = options.spawnFn ?? spawn;
     this.codexBin = options.codexBin ?? "codex";
+    this.prepareProviderEnv = options.prepareProviderEnv ?? loadProviderEnv;
+    this.driverBusy = options.driverBusy;
+    this.driverStatus = options.driverStatus;
+    this.unregisterTailStatus = registerTailStatusSink((id, status) => {
+      if (!this.running.has(id)) this.statuses.set(id, { status, at: Date.now() });
+    });
     const fileCacheMax =
       typeof options.fileCacheMax === "number" && options.fileCacheMax > 0 ? Math.floor(options.fileCacheMax) : FILE_CACHE_MAX;
     this.fileCache = new LruMap<string, CodexFileCacheEntry>(fileCacheMax);
@@ -152,23 +175,32 @@ export class CodexAdapter implements SessionAdapter {
   }
 
   isLive(id: string): boolean {
-    return this.running.has(id);
+    return this.running.has(id) || (this.pendingPrompts.get(id)?.size ?? 0) > 0;
   }
 
   getStatus(id: string): SessionStatus {
-    return this.statuses.get(id)?.status ?? "idle";
+    const run = this.running.get(id);
+    return this.driverStatus?.(id) ?? (run ? (run.aborted ? "idle" : "running") : this.statuses.get(id)?.status ?? "idle");
   }
 
   private statusWithInference(id: string, updatedMs: number): SessionStatus {
-    // 本进程状态优先（含显式 idle）：与 sessions/hub.ts 同口径——刚创建/刚 settled 的
-    // 文件 mtime 必然新鲜，丢弃 idle 走时间推断会误判 running 60s（新会话显示「思考中」）
-    const own = this.statuses.get(id)?.status;
-    if (own) return own;
+    const driver = this.driverStatus?.(id);
+    if (driver) return driver;
+    const run = this.running.get(id);
+    if (run) return run.aborted ? "idle" : "running";
+    const own = this.statuses.get(id);
+    // 本次 settled/create 的 idle 覆盖当时的 mtime；更新的外部写入重新参与推断。
+    if (own && Math.floor(updatedMs) <= own.at) return own.status;
     return inferExternalStatus(updatedMs);
   }
 
+  private isEffectivelyBusy(id: string, updatedMs: number): boolean {
+    if (this.running.has(id) || this.driverBusy?.(id)) return true;
+    return !Number.isNaN(updatedMs) && this.statusWithInference(id, updatedMs) === "running";
+  }
+
   private setStatus(id: string, status: SessionStatus): void {
-    if (this.getStatus(id) === status) return;
+    if (this.statuses.get(id)?.status === status) return;
     this.dispatch(id, { type: "status", status });
   }
 
@@ -396,34 +428,56 @@ export class CodexAdapter implements SessionAdapter {
     // 与 claude 同口径降级为 @path 引用提示（通道 a），由 codex 的读文件工具自行取图。
     const effectiveText = appendAttachmentHints(text, images);
 
-    const found = await this.findSession(id);
-    if (!found) {
-      throw new HubError(ErrorCodes.SESSION_NOT_FOUND, `会话不存在: ${id}`, 404);
-    }
+    const attempt = { aborted: false };
+    const pending = this.pendingPrompts.get(id) ?? new Set<{ aborted: boolean }>();
+    pending.add(attempt);
+    this.pendingPrompts.set(id, pending);
+    try {
+      const found = await this.findSession(id);
+      if (!found) {
+        throw new HubError(ErrorCodes.SESSION_NOT_FOUND, `会话不存在: ${id}`, 404);
+      }
+      await this.prepareProviderEnv();
+      const updatedMs = await stat(found.sessionFile)
+        .then((info) => Math.max(Math.floor(info.mtimeMs), Date.parse(found.updatedAt)))
+        .catch(() => Date.parse(found.updatedAt));
+      if (attempt.aborted || this.disposed) {
+        throw new HubError(ErrorCodes.PROMPT_FAILED, "会话启动已取消，请重新发送", 409);
+      }
+      // 最后一次 busy 检查到 spawn 之间不允许 await：并发请求只能有一个启动者。
+      const decision = decidePromptAction(this.isEffectivelyBusy(id, updatedMs), mode);
+      if (decision.kind === "busy") {
+        return { accepted: false, mode: mode ?? "prompt", busy: true };
+      }
+      if (decision.kind === "steer" || decision.kind === "followUp") {
+        const run = this.running.get(id);
+        if (!run || run.aborted) {
+          throw new HubError(
+            ErrorCodes.SESSION_BUSY,
+            "电脑端会话仍在运行或正在接管，平行模式无法向该终端排队；请等待当前任务结束后重试",
+            409,
+          );
+        }
+        const queue = this.queues.get(id) ?? [];
+        queue.push({ text: effectiveText, images });
+        this.queues.set(id, queue);
+        return { accepted: true, mode: decision.kind };
+      }
 
-    const decision = decidePromptAction(this.running.has(id), mode);
-    if (decision.kind === "busy") {
-      return { accepted: false, mode: mode ?? "prompt", busy: true };
+      this.startRun(found, effectiveText, images);
+      return { accepted: true, mode: "prompt" };
+    } finally {
+      pending.delete(attempt);
+      if (pending.size === 0) this.pendingPrompts.delete(id);
     }
-    if (decision.kind === "steer" || decision.kind === "followUp") {
-      const queue = this.queues.get(id) ?? [];
-      queue.push(effectiveText);
-      this.queues.set(id, queue);
-      return { accepted: true, mode: decision.kind };
-    }
-
-    // 预热 provider 环境缓存（自定义 OPENAI_BASE_URL/API_KEY 等），startRun 同步取用
-    await loadProviderEnv();
-
-    this.startRun(found, effectiveText);
-    return { accepted: true, mode: "prompt" };
   }
 
   /** 中止当前运行（幂等）：杀子进程 + 清空排队 */
   async abort(id: string): Promise<void> {
+    for (const attempt of this.pendingPrompts.get(id) ?? []) attempt.aborted = true;
     this.queues.delete(id);
     const run = this.running.get(id);
-    if (!run) return;
+    if (!run || run.aborted) return;
     run.aborted = true;
     this.killChild(run.child);
     // close 回调负责释放运行态；这里先恢复 UI 可输入
@@ -433,11 +487,16 @@ export class CodexAdapter implements SessionAdapter {
 
   disposeAll(): void {
     this.disposed = true;
+    this.unregisterTailStatus();
+    for (const attempts of this.pendingPrompts.values()) {
+      for (const attempt of attempts) attempt.aborted = true;
+    }
     if (this.sweepTimer !== null) {
       clearInterval(this.sweepTimer);
       this.sweepTimer = null;
     }
     for (const run of this.running.values()) {
+      run.aborted = true;
       this.killChild(run.child);
     }
     this.running.clear();
@@ -460,22 +519,26 @@ export class CodexAdapter implements SessionAdapter {
       }
     }, KILL_GRACE_MS);
     timer.unref?.();
+    child.once("close", () => clearTimeout(timer));
   }
 
   /** 合成 user 消息：只发 message_end（translator 跳过 user_message 回显防重复），
    *  前端去重层会把同 role+同 text 的乐观占位（local-*）合并为权威消息，避免重复气泡 */
-  private emitUserMessage(id: string, text: string): void {
+  private emitUserMessage(id: string, text: string, images?: PromptImageAttachment[]): void {
     this.seq += 1;
     const messageId = `live-user-${this.seq}-${Date.now()}`;
     this.emit(id, {
       type: "message_end",
-      message: { id: messageId, role: "user", timestamp: Date.now(), text, toolCalls: [] },
+      message: {
+        id: messageId, role: "user", timestamp: Date.now(), text, toolCalls: [],
+        ...(images?.length ? { images: images.map((image) => ({ url: `data:${image.mimeType};base64,${image.data}`, alt: image.path })) } : {}),
+      },
     });
   }
 
   private seq = 0;
 
-  private startRun(session: SessionListItem, text: string): void {
+  private startRun(session: SessionListItem, text: string, images?: PromptImageAttachment[]): void {
     if (this.disposed) {
       throw new HubError(ErrorCodes.INTERNAL, "server 正在关闭", 503);
     }
@@ -494,20 +557,15 @@ export class CodexAdapter implements SessionAdapter {
     this.running.set(session.id, run);
     this.setStatus(session.id, "running");
     this.onLive?.(session.id);
-    this.emitUserMessage(session.id, text);
+    this.emitUserMessage(session.id, text, images);
 
-    let stdoutRest = "";
+    const isActive = (): boolean => !this.disposed && !run.aborted && this.running.get(session.id) === run;
+    const reader = new JsonlReader((line) => {
+      if (!isActive()) return;
+      for (const event of translator.feed(line)) this.dispatch(session.id, event);
+    });
     child.stdout?.on("data", (chunk: Buffer | string) => {
-      stdoutRest += String(chunk);
-      let idx = stdoutRest.indexOf("\n");
-      while (idx >= 0) {
-        const line = stdoutRest.slice(0, idx);
-        stdoutRest = stdoutRest.slice(idx + 1);
-        for (const event of translator.feed(line)) {
-          this.dispatch(session.id, event);
-        }
-        idx = stdoutRest.indexOf("\n");
-      }
+      if (isActive()) reader.write(chunk);
     });
     child.stderr?.on("data", (chunk: Buffer | string) => {
       run.stderrTail = (run.stderrTail + String(chunk)).slice(-STDERR_PREVIEW_LIMIT);
@@ -523,7 +581,13 @@ export class CodexAdapter implements SessionAdapter {
         }
         this.emit(session.id, { type: "agent_settled" });
         this.setStatus(session.id, errored ? "error" : "idle");
+      } else if (errored && !run.aborted) {
+        this.setStatus(session.id, "error");
       }
+      // CLI 可能在 turn.completed/abort 事件之后才写完 rollout。
+      // 记录 close 时刻，避免把尾部落盘误认为新的外部执行。
+      const terminalStatus = run.aborted ? "idle" : errored ? "error" : this.statuses.get(session.id)?.status ?? "idle";
+      this.statuses.set(session.id, { status: terminalStatus, at: Date.now() });
       // translator 已收尾（turn 终态）时：status 由 dispatch 同步，无需重复广播
       // 队列（steer/followUp）依次消费
       const queue = this.queues.get(session.id) ?? [];
@@ -532,24 +596,30 @@ export class CodexAdapter implements SessionAdapter {
       if (next !== undefined && !this.disposed) {
         if (queue.length > 0) this.queues.set(session.id, queue);
         try {
-          this.startRun(session, next);
+          this.startRun(session, next.text, next.images);
         } catch {
           this.setStatus(session.id, "error");
         }
       }
     };
 
+    // error 不等于 close：即使启动/管道报错，也要等 close 后才能消费下一条。
+    let processErrored = false;
     child.on("error", (err: Error) => {
+      if (processErrored) return;
+      processErrored = true;
+      if (!isActive()) return;
       this.emit(session.id, {
         type: "error",
         code: ErrorCodes.PROMPT_FAILED,
         message: `codex 启动失败: ${err.message}`,
       });
-      finish(true);
     });
     child.on("close", (code: number | null) => {
-      const failed = code !== 0 && code !== null && !translator.finished && !run.aborted;
-      if (failed) {
+      if (this.running.get(session.id) !== run) return;
+      if (isActive()) reader.end();
+      const failed = !run.aborted && (processErrored || (code !== 0 && code !== null && !translator.finished));
+      if (failed && !processErrored) {
         const detail = run.stderrTail.trim() !== "" ? run.stderrTail.trim() : `codex 退出码 ${code}`;
         this.emit(session.id, {
           type: "error",

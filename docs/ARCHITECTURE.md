@@ -14,7 +14,8 @@ PWA (web/) ←HTTP+WS→ server (Fastify + SessionRegistry)
                          ├─ PiAdapter     → pi SDK / pi-command 扩展
                          ├─ ClaudeAdapter → 单次 claude -p 进程
                          │  ClaudeDriverHub → 持续运行的 claude -p 进程 / 权限 MCP bridge
-                         └─ CodexAdapter  → codex exec resume
+                         └─ CodexAdapter  → codex exec resume（parallel）
+                         └─ CodexDriverHub → stdio app-server（attach，原生审批/steer/interrupt）
                                   │
                              原生 JSONL 会话文件
                          （扫描、增量 tail、历史对账）
@@ -56,7 +57,7 @@ pi 终端接管还需要在线的 pi-command 扩展。Claude 接管关闭时仍�
    列表扫描有缓存；发送前 Claude 重新检查文件 mtime，避免旧缓存掩盖外部活动。
 3. **模式按来源实现**：pi 平行模式用 SDK，接管模式经扩展注入已有终端进程；Claude 平行模式每轮
    启动 CLI，接管模式由 hub 新建持续运行的 CLI 进程续接同一 session。Claude 的原 TUI 不受控制，
-   tmux 只投屏 hub 进程。Codex 当前只支持平行模式。
+   tmux 只投屏 hub 进程。Codex 使用独立 app-server 接管同一线程，默认只手动接管；桌面已占用时拒绝，不转 exec 重试。
 4. **完成会话可以续聊**：手机发送新消息会从已保存上下文开始新一轮，无需原终端仍打开。
    只打开页面不重发任务。关闭 PWA 不停止已受理任务；服务重启保留历史，不自动恢复执行、队列或接管。
 5. **状态与消息分开**：`message_end` 只完成单条消息，`agent_settled` 表示整轮结束。
@@ -64,6 +65,7 @@ pi 终端接管还需要在线的 pi-command 扩展。Claude 接管关闭时仍�
    页面消息结束后静默 5 秒会补查状态，仍运行或请求失败时继续等待；迟到的查询结果不能覆盖新一轮。
 6. **对账不制造重复或丢图**：Claude 流式 assistant 尽量沿用原生 `message.id`，与历史及工具结果一致；
    UTF-8 与 JSONL 分块安全解码，退出时处理无换行尾行。历史和实时消息均过滤内部图片尺寸提示。
+   Codex 以真实 turnId 对账当前轮快照；历史 GET 在途收到的 WS 完成消息和终态不会被旧响应覆盖。
    图片对账保留已知附件；旧 `@上传路径` 历史只在存在对应成功读图结果时恢复缩略图，详见 API 契约。
 7. **并发由进程所有权约束**：同一 Claude 接管请求共用启动任务，待启动接管计入并发上限，取消后不再启动。
    平行发送在异步准备完成后才作最后的 busy 判定并立即启动，abort 同时取消启动中的请求与本地队列。
