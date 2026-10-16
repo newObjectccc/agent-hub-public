@@ -969,10 +969,20 @@ pi 会话文件是 **append-only + leafId 树**：终端 pi 进程与 server 内
 | live-feed 60s 内有事件 | 终端在跑但未装 pi-command，无法接管 | 说明等 ~1 分钟或装扩展 |
 | 会话文件 mtime 在 60s 静默窗内 | 外部 CLI 在写（无任何扩展信号） | 说明稍后重试 |
 
-**防自锁（实现约束，改动时勿破）**：本进程持有 live 实例时直接放行（自己的写入不算外部）；
-mtime 判据用 claude 同口径的 `mtime <= own.at` 比较（own 登记更晚 = 本次写盘是自己造成的），
-并额外记录 `SessionManager.open` 可能触发的迁移重写时刻——否则**手机新建会话后发第一条消息**
-会被自己的闸门拦死（createSession 写盘刷新 mtime）。
+**防自锁（实现约束，改动时勿破）**，四条：
+
+1. 本进程实例的**最后活动时刻**不早于文件写入（`mtime <= live.lastUsedMs + 5s 容差`，
+   `OWN_WRITE_SLACK_MS`）→ 放行。**不能**用 `live.has(id)` 无条件放行：abort 只中止 run
+   不删实例（空闲 10min 才逐出），那段窗口里外部写盘必须能拦住（浏览器实测：驻留实例
+   让闸门形同虚设）；也**不能**在 run 进行中拦截：SDK 边跑边 append、mtime 一直新鲜，
+   拦了 steer/followUp 就自锁。
+2. `statuses` 条目带 `source: "own" | "tail"`，mtime 与登记比较时**只信 `own`**：tail 对
+   「只有 user 消息、尚无 assistant 回复」的文件会启发式置 idle 回写，采信它会让闸门在同一
+   窗口内先 409 后 202 且消息真被执行（浏览器实测）；且 tail 回写不覆盖本进程权威登记
+   （否则 run 进行中被盖掉 running，闸门与状态显示都会错乱）。
+3. mtime 判据用 `mtime <= own.at` 比较（own 登记更晚 = 本次写盘是自己造成的）。
+4. 额外记录 `SessionManager.open` 可能触发的迁移重写时刻（`ownWrites`）——否则
+   **手机新建会话后发第一条消息**会被自己的闸门拦死（createSession 写盘刷新 mtime）。
 
 ## 13. 应用锁（app lock，F1 新增）
 
