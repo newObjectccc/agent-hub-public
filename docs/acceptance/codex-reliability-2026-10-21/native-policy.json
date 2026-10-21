@@ -1,7 +1,8 @@
 {
-  "date": "2026-10-21T10:53:24.767Z",
+  "date": "2026-10-21T11:29:29.951Z",
   "binaryVersion": "0.162.0-alpha.17.2",
-  "scope": "本机真实 app-server；自有临时 CODEX_HOME 与线程；仅验证权限握手和进程释放；未调用模型或触发真实审批",
+  "externalQuietMs": 3000,
+  "scope": "本机真实 app-server；自有临时 CODEX_HOME 与线程；生产默认静默窗；仅验证权限握手和进程释放；未调用模型或触发真实审批",
   "cases": [
     {
       "name": "tighten",

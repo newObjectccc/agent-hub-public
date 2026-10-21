@@ -5,6 +5,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
+import { setTimeout as wait } from "node:timers/promises";
 import { ErrorCodes, HubError } from "../errors.js";
 import type { EffectivePolicyDto, HostRequestDto, HostRequestOutcome, MessageDto, MessageImage, ServerEvent, TerminalAttachInfo, ToolCallDto } from "../types.js";
 import {
@@ -297,7 +298,7 @@ export class CodexDriverHub implements CodexDriverLinkLike {
             this.stopEntry(current, "正在应用收紧后的权限", false, false);
             await abortable(waitForDriverRelease(current), controller.signal);
             check();
-            await abortable(this.assertExternalQuiet(opts.sessionFile, Date.now()), controller.signal);
+            await this.waitForExternalQuiet(opts.sessionFile, controller.signal);
             check();
             continue;
           }
@@ -323,10 +324,27 @@ export class CodexDriverHub implements CodexDriverLinkLike {
   }
 
   private async assertExternalQuiet(sessionFile: string, now: number): Promise<void> {
-    if ((this.options.externalQuietMs ?? 3_000) <= 0) return;
+    if (await this.externalQuietDelay(sessionFile, now) > 0) throw unavailable("电脑端正在写入该会话，请稍候再接管");
+  }
+
+  /** resume/退出也会更新 rollout；旧 writer 释放后等到静默，而不是把自身写入直接当成冲突。
+   * 每次等待后重新 stat；外部持续写入或文件不可读时绝不能启动第二个 writer。
+   * 沿用启动总 deadline，退出接管也能立即取消等待。
+   */
+  private async waitForExternalQuiet(sessionFile: string, signal: AbortSignal): Promise<void> {
+    for (;;) {
+      throwIfAborted(signal);
+      const remaining = await abortable(this.externalQuietDelay(sessionFile, Date.now()), signal);
+      if (remaining <= 0) return;
+      await abortable(wait(Math.min(remaining, 1_000), undefined, { signal }), signal);
+    }
+  }
+
+  private async externalQuietDelay(sessionFile: string, now: number): Promise<number> {
+    if ((this.options.externalQuietMs ?? 3_000) <= 0) return 0;
     try {
       const info = await (this.options.statFn ?? stat)(sessionFile);
-      if (now - info.mtimeMs < (this.options.externalQuietMs ?? 3_000)) throw unavailable("电脑端正在写入该会话，请稍候再接管");
+      return Math.max(0, info.mtimeMs + (this.options.externalQuietMs ?? 3_000) - now);
     } catch (error) {
       if (error instanceof HubError) throw error;
       // 文件不存在或不可读时安全拒绝，不默默取消外部写入保护。

@@ -268,6 +268,70 @@ describe("Codex attach preparation and writer ownership", () => {
     assert.equal(f.hub.statusFor("s1").effectivePolicy?.approval, "untrusted");
   });
 
+  it("waits for resume's own rollout write to become quiet before starting the stricter writer", async (t) => {
+    let reads = 0;
+    let changedAt = 0;
+    const waiting = deferred<void>();
+    const f = fixture(t, {
+      approvalPolicy: "untrusted", externalQuietMs: 30,
+      statFn: async () => {
+        if (++reads <= 2) return { mtimeMs: Date.now() - 10_000 };
+        if (!changedAt) { changedAt = Date.now(); waiting.resolve(); }
+        return { mtimeMs: changedAt };
+      },
+    });
+    const pending = f.hub.attach("s1", opts);
+    await waiting.promise;
+    assert.equal(f.children.length, 1);
+    assert.equal(f.hub.isBusy("s1"), true);
+    assert.equal(f.hub.isAttached("s1"), false);
+    await pending;
+    assert.ok(Date.now() - changedAt >= 30);
+    assert.ok(reads >= 4);
+    assert.equal(f.children.length, 2);
+    assert.equal(f.hub.statusFor("s1").effectivePolicy?.approval, "untrusted");
+  });
+
+  it("persistent external writes hit the startup deadline without spawning another writer", async (t) => {
+    let reads = 0;
+    const f = fixture(t, {
+      approvalPolicy: "untrusted", externalQuietMs: 10, readyTimeoutMs: 60,
+      statFn: async () => ({ mtimeMs: ++reads <= 2 ? Date.now() - 10_000 : Date.now() }),
+    });
+    await assert.rejects(f.hub.attach("s1", opts), /启动超时/);
+    assert.ok(reads >= 3);
+    assert.equal(f.children.length, 1);
+    assert.equal(f.hub.isBusy("s1"), false);
+    assert.equal(f.events.some(event => event.type === "attach_state" && event.attached), false);
+  });
+
+  it("cancels the quiet-window wait promptly and rejects unreadable rollout files", async (t) => {
+    let reads = 0;
+    const waiting = deferred<void>();
+    const f = fixture(t, {
+      approvalPolicy: "untrusted", externalQuietMs: 1_000,
+      statFn: async () => {
+        if (++reads <= 2) return { mtimeMs: Date.now() - 10_000 };
+        waiting.resolve(); return { mtimeMs: Date.now() };
+      },
+    });
+    const pending = f.hub.attach("s1", opts);
+    const rejected = assert.rejects(pending, /取消/);
+    await waiting.promise;
+    f.hub.detach("s1");
+    await rejected;
+    assert.equal(f.children.length, 1);
+    assert.equal(f.hub.isBusy("s1"), false);
+    let missingReads = 0;
+    const g = fixture(t, {
+      approvalPolicy: "untrusted",
+      statFn: async () => { if (++missingReads <= 2) return { mtimeMs: Date.now() - 10_000 }; throw new Error("ENOENT"); },
+    });
+    await assert.rejects(g.hub.attach("s1", opts), /会话文件/);
+    assert.equal(g.children.length, 1);
+    assert.equal(g.hub.isBusy("s1"), false);
+  });
+
   it("version probe invokes only --version and is cancellable", async () => {
     const child = new FakeChild();
     const controller = new AbortController();
