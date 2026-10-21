@@ -170,3 +170,17 @@ test("已有 WS 退出接管后恢复文件监听，重复状态不重复取得�
     assert.deepEqual(operations, ["acquire", "release", "acquire"]);
   } finally { socket?.terminate(); wshub.closeAll(); await f.close(); }
 });
+
+test("Codex attach 与详情回传实际权限，退出后不保留旧策略", async () => {
+  const f=await fixture();
+  const policy={approval:"never",sandbox:"workspace-write",bypass:true};
+  const original=f.driver.statusFor.bind(f.driver);
+  f.driver.statusFor=id=>({...original(id),...(f.driver.isAttached(id)?{effectivePolicy:policy}:{})});
+  try {
+    const attached=await f.app.inject({method:"POST",url:`${f.url}/attach`});
+    assert.equal(attached.statusCode,202);assert.deepEqual(attached.json().effectivePolicy,policy);
+    assert.deepEqual((await f.app.inject(f.url)).json().session.terminal.effectivePolicy,policy);
+    await f.app.inject({method:"POST",url:`${f.url}/detach`});
+    assert.equal((await f.app.inject(f.url)).json().session.terminal.effectivePolicy,undefined);
+  } finally {await f.close();}
+});

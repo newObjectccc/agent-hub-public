@@ -750,24 +750,44 @@ export function buildSessionIndexLine(id: string, threadName: string, updatedAtI
  * （thread.started 带该 id），比 `codex exec` 起新会话更稳——后者依赖模型服务可用
  * 且生成的 session id 无法预知（列表/跳转需要）。与 claude 写空白 transcript 同思路。
  * base_instructions 填最小占位指令（resume 一般用当前配置指令；万一回放占位也不劣化）。
+ *
+ * ── codex 0.162 起的最小字段集（真机逐字段剔除实验，详见 codex-version.ts 头注）──
+ * 缺 `cli_version` → thread/resume 与 exec resume 都报 -32603 "rollout is empty"；
+ * 缺 `model_provider` → -32600 "Model provider `` not found"。二者必填（调用方经
+ * resolveCodexNewSessionMeta 探测/采样获得，绝不写死假值）。`ordinal`/`source`/
+ * `runtime_workspace_roots`/`git`/`history_mode` 非必需但照真实产物写齐（降低未来
+ * 版本挑剔风险）；history_mode 写 "legacy" 而非 "paginated"：0.143 与 0.162 都能读
+ * legacy，paginated 在 0.143 上会 -32601。creator_user_id/creator_account_id/
+ * context_window 非必需且涉及账号信息，不伪造（安全口径：不读凭据）。
  */
 export function buildCodexNewRollout(options: {
   sessionId: string;
   cwd: string;
   timestamp: string;
+  /** 必填：探测/采样所得的真实 codex 版本号（缺失会让 codex 0.162 拒绝 resume） */
+  cliVersion: string;
+  /** 必填：已有会话采样所得 provider，采样不到回落 "openai"（缺失 → -32600） */
+  modelProvider: string;
   originator?: string;
 }): string {
   const row = {
     timestamp: options.timestamp,
+    ordinal: 0, // 真实产物顶层带段内序号，照写
     type: "session_meta",
     payload: {
       session_id: options.sessionId,
       id: options.sessionId,
       timestamp: options.timestamp,
       cwd: options.cwd,
+      runtime_workspace_roots: [options.cwd],
       originator: options.originator ?? "agent-hub",
+      cli_version: options.cliVersion,
+      source: "cli",
+      model_provider: options.modelProvider,
       thread_source: "user",
       base_instructions: { text: "You are Codex, a coding agent." },
+      history_mode: "legacy",
+      git: {},
     },
   };
   return `${JSON.stringify(row)}\n`;

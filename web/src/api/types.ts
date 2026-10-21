@@ -49,7 +49,10 @@ export interface SessionSummary {
  * 终端驱动状态：pi=扩展心跳（online=90s 内）；claude=hub 驱动（online=可接管，docs/CLAUDE_DRIVER.md）。
  * attached=attach 接管生效。driver 缺省按 "queue"（pi）容错。
  */
+export interface EffectivePolicyDto { approval: string; sandbox: string; bypass: boolean }
+
 export interface TerminalAttachInfo {
+  effectivePolicy?: EffectivePolicyDto;
   online: boolean;
   attached: boolean;
   /** 驱动形态：queue=pi 扩展指令队列；hub=server 持有 claude -p 长驻进程 */
@@ -305,6 +308,7 @@ export type AttachCommandMode = "prompt" | "steer" | "followUp";
 
 /** POST /api/sessions/:id/attach 响应 */
 export interface AttachResult {
+  effectivePolicy?: EffectivePolicyDto;
   attached: boolean;
   agent: {
     sessionId: string;

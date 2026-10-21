@@ -78,3 +78,11 @@ test("缺少锚时按id更新已有流消息；缺时间、空快照及无user�
   const mixed = [message("new", "user", 3, "继续", "one"), message("new-a", "assistant", 4, "回复", "two")];
   assert.deepEqual(mergeCodexSnapshot(history, mixed), [...history, ...mixed]);
 });
+
+test("在途 assistant-only 快照整体丢弃：宁可少一段流式正文，也不重复气泡或覆盖更完整的磁盘历史", () => {
+  const history = [message("disk-u", "user", 1_000, "继续", "t1"), message("disk-a", "assistant", 2_000, "已落盘的完整回复", "t1")];
+  // 快照里只有 assistant（本轮 user 未被受理或已中止），且磁盘历史可能更新更完整：
+  // 合并会产生无法按 id 去重的重复气泡，或用过期内存正文覆盖已落盘的完整回复。
+  assert.equal(mergeCodexSnapshot(history, [message("codex-s1-m", "assistant", 1_500, "已落", "t1")]), history);
+  assert.equal(mergeCodexSnapshot(history, [message("codex-s1-m", "assistant", 1_500, "进行中")]), history);
+});

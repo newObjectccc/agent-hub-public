@@ -49,10 +49,26 @@ export interface CodexDriverConfig {
   idleDetachMs: number;
   maxConcurrent: number;
   externalQuietMs: number;
-  /** inherit 不覆盖 Codex 自身配置；手机仅批准当前请求。 */
-  approvalPolicy: "inherit" | "untrusted" | "on-request" | "never";
-  sandbox: "inherit" | "read-only" | "workspace-write" | "danger-full-access";
+  /**
+   * 审批策略覆盖，**只允许收紧**（adapters/codex.ts 文件头硬规则 2）：
+   * `inherit` = 不下发覆盖、沿用用户 ~/.codex/config.toml（默认）；`untrusted` / `on-request`
+   * 在接管时依据协议回显核验，无法证明更严则拒绝。`never`（完全不审批）已从可配集中移除——hub 绝不把 Codex
+   * 放到比用户在终端里跑更宽松的档位。
+   */
+  approvalPolicy: "inherit" | "untrusted" | "on-request";
+  /** 沙箱覆盖，同样只允许收紧：`inherit` 沿用用户配置；`danger-full-access` 已移除。 */
+  sandbox: "inherit" | "read-only" | "workspace-write";
 }
+
+/**
+ * 可配的审批策略档位（收紧集）。刻意不做「读用户 config.toml 再比较」的守卫：
+ * 读 ~/.codex/config.toml 有碰到凭据相关配置的风险（硬规则 1），白名单仅限制目标值，实际收紧校验由 codex-policy.ts 比较协议回显完成。
+ */
+export const CODEX_APPROVAL_POLICIES = ["inherit", "untrusted", "on-request"] as const;
+/** 可配的沙箱档位（收紧集，理由同 CODEX_APPROVAL_POLICIES） */
+export const CODEX_SANDBOXES = ["inherit", "read-only", "workspace-write"] as const;
+/** 历史版本可配、现已移除的「放宽」档位：老配置命中 → 告警并回落 inherit（不中断启动） */
+export const CODEX_RELAXED_TIERS: readonly string[] = ["never", "danger-full-access"];
 
 export const DEFAULT_CODEX_DRIVER_CONFIG: CodexDriverConfig = {
   enabled: true,
@@ -319,6 +335,21 @@ export function loadHubConfig(configDir: string, home = homedir()): LoadedConfig
         warnings.push(`hub.config.json 的 codexDriver.${key} 非法，使用 ${fallback}`);
         return fallback;
       };
+      /**
+       * 权限档位（P1-1）：只接受收紧集。命中已移除的放宽档位（never / danger-full-access）
+       * 走仓库既有的「非法值 warn + 回默认」路径，但文案要说清为什么被忽略——否则用户以为
+       * 配置生效了，实际手机端却拿不到任何审批（Codex 继承用户 config.toml）。
+       */
+      const policyValue = <T extends string>(key: string, values: readonly T[], fallback: T): T => {
+        const value: unknown = d[key];
+        if (typeof value === "string" && CODEX_RELAXED_TIERS.includes(value)) {
+          warnings.push(
+            `hub.config.json 的 codexDriver.${key}="${value}" 会把 Codex 放到比你自己 ~/.codex/config.toml 更宽松的权限，已忽略（使用 ${fallback}）`,
+          );
+          return fallback;
+        }
+        return enumValue(key, values, fallback);
+      };
       const numberValue = (key: string, min: number, fallback: number): number => {
         if (d[key] === undefined) return fallback;
         if (typeof d[key] === "number" && Number.isSafeInteger(d[key]) && d[key] >= min && d[key] <= 2_147_483_647) return d[key];
@@ -332,8 +363,8 @@ export function loadHubConfig(configDir: string, home = homedir()): LoadedConfig
         idleDetachMs: numberValue("idleDetachMs", 0, defaults.idleDetachMs),
         maxConcurrent: numberValue("maxConcurrent", 1, defaults.maxConcurrent),
         externalQuietMs: numberValue("externalQuietMs", 0, defaults.externalQuietMs),
-        approvalPolicy: enumValue("approvalPolicy", ["inherit", "untrusted", "on-request", "never"], defaults.approvalPolicy),
-        sandbox: enumValue("sandbox", ["inherit", "read-only", "workspace-write", "danger-full-access"], defaults.sandbox),
+        approvalPolicy: policyValue("approvalPolicy", CODEX_APPROVAL_POLICIES, defaults.approvalPolicy),
+        sandbox: policyValue("sandbox", CODEX_SANDBOXES, defaults.sandbox),
       };
     } else warnings.push("hub.config.json 的 codexDriver 必须是对象，已使用默认配置");
   }

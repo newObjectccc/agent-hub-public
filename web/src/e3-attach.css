@@ -230,3 +230,15 @@
     transition: none;
   }
 }
+
+/* 已接管 Codex 的实际权限持续可见；窄屏完整换行，不把未知状态藏进省略号。 */
+.codex-policy-note {
+  margin: 2px 0 6px;
+  padding: 4px 6px;
+  border: 1.5px solid var(--border);
+  background: var(--muted);
+  color: var(--foreground);
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}

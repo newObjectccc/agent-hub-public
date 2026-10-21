@@ -4,6 +4,7 @@
  * 语义零丢失：触发器 aria-label / title 带完整模式名与说明，菜单项 icon 在文字前便于视觉区分。
  * 接管不可用（终端离线/扩展未装）时接管项灰显 + 原因。
  */
+import { codexPolicySummary } from "../api/codexPolicy";
 import { useRef, useState } from "react";
 import type { SessionSource, TerminalAttachInfo } from "../api/types";
 import { attachAvailability, type AttachMode } from "../api/attach";
@@ -27,7 +28,7 @@ const PARALLEL_HINT_HUB =
 
 /** attach hint 按驱动形态分支（D9）：pi=注入终端 TUI；claude=hub 驱动 + 投屏 */
 function attachHint(terminal: TerminalAttachInfo | null | undefined): string {
-  if (terminal?.source === "codex") return "由电脑上的 Codex 驱动继续同一会话，回复与审批同步到手机。电脑正在占用会话时需先退出原会话；退出接管后可在电脑继续。";
+  if (terminal?.source === "codex") return `由电脑上的 Codex 驱动继续同一会话。${codexPolicySummary(terminal.effectivePolicy)}。电脑正在占用会话时需先退出原会话；退出接管后可在电脑继续。`;
   if (terminal?.driver === "hub") {
     return "手机消息由 hub 直接驱动 claude 执行并写回同一会话，电脑终端投屏实时显示。接管期间请勿在电脑原窗口继续输入；退出接管后可 claude --resume 无缝接回";
   }

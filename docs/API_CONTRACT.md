@@ -168,7 +168,7 @@ cwd、消息历史；**原会话文件只读，完全不受影响**，新旧会�
 - `"steer"`：插入当前运行之后（转向）
 - `"followUp"`：排队到当前 run 结束后
 
-请求：`{ "text": "消息内容", "mode": "prompt|steer|followUp" }`
+请求：`{ "text": "消息内容", "mode": "prompt|steer|followUp" }`；`images` 可选（上传图片相对路径数组；`null` 视为未传，仅非 `null` 的非数组值才 400）
 响应 202：`{ "accepted": true, "mode": "..." }`
 实际输出走 WebSocket 事件流。
 
@@ -831,6 +831,8 @@ Multiply coordinates …]`）不展示为额外用户消息；stdout 即使丢�
   pi 仍须 `online === true`；`"never"` = 只手动切换。Claude 实际 attach 仍受开关、静默窗和并发上限约束。
   **老 server 缺省该字段 → 前端按 `"active-only"` 容错**（行为与历史一致）；用户手动选择（pin）
   永远优先于该策略。
+- `effectivePolicy`（可选，Codex 接管会话）：生效权限策略 `{ approval, sandbox, bypass }`，
+  语义与 attach 202 响应一致（`bypass: true` = approval 为 never，不请求操作审批，不得暗示有门禁；缺省 = 未知，容错）。
 - `GET /api/sessions` 与 `GET /api/sessions/:id` 均注入（pi/claude/codex）；前端据此渲染会话列表徽章
   （🖥⚡ 已接管 / 🖥 终端在线|可接管 / 📱 平行线）与模式菜单可用性。
 
@@ -877,7 +879,7 @@ claude 响应 202：`{ "attached": true, "agent": { "sessionId", "cwd", "online"
 终端离线（pi）→ 409 `ATTACH_UNAVAILABLE`；claude 外部写入静默窗内 → 409 `ATTACH_UNAVAILABLE`；
 驱动并发满 → 409 `DRIVER_LIMIT`；会话不存在 → 404；驱动禁用或归档 Codex → 400 `INVALID_REQUEST`。
 
-Codex 使用相同的 202 响应（driver=hub、mirror=false）；完整 initialize/initialized 与 idle resume 成功才算 attached。版本要求 0.162+（含对应 alpha），旧版或 writer 占用明确报错。`codexBin` 由配置指定；接管期间和准备/释放过程中 parallel HTTP/WS 均返回 409，防止双写。
+Codex 使用相同的 202 响应（driver=hub、mirror=false）；完整 initialize/initialized 与 idle resume 成功才算 attached。版本要求 0.162+（含对应 alpha），旧版或 writer 占用明确报错。`codexBin` 由配置指定；接管期间和准备/释放过程中 parallel HTTP/WS 均返回 409，防止双写。接管成功后若 Codex 协议回显了生效策略，响应附 `effectivePolicy: { approval, sandbox, bypass }`（协议回显归一化；`bypass: true` = approval 为 never，不请求操作审批，沙箱范围独立显示；未回显时字段缺省，客户端按「未知」容错，不得把缺省当成安全档位）。
 
 **`terminal.responsive`（pi 防「假接管」）**：心跳 TTL 是 90s，用户关掉终端后的这 90s 里
 `online` 仍为 `true`，此时接管必然变成假接管（消息入队无人取，用户等一分钟才知道、文本还会丢）。
@@ -910,8 +912,11 @@ Claude 同会话并发 attach 共享一次启动；准备中的接管计入 `max
 
 请求：`{ "text": "…", "mode": "prompt|steer|followUp", "clientMessageId": "可选幂等键", "images": ["可选，Codex 上传图片引用"] }`
 响应 202：`{ "accepted": true, "channel": "attach", "commandId": "cmd-…", "mode": "…" }`。
-未 attach → 409 `ATTACH_REQUIRED`；队列满（pi）→ 409 `ATTACH_QUEUE_FULL`；同 `clientMessageId`
+会话不存在 → 404 `SESSION_NOT_FOUND`（此前误报 409 `ATTACH_REQUIRED`——会话不存在不等于
+「需要先接管」，409 会误导调用方补一次 attach 再重试）；已知会话但未 attach → 409 `ATTACH_REQUIRED`；
+队列满（pi）→ 409 `ATTACH_QUEUE_FULL`；同 `clientMessageId`
 重复提交返回同一 `commandId`（不重复入队）。
+`images` 允许为 `null`（老客户端显式表达「无附件」的写法），一律视为未传；仅非 `null` 的非数组值才 400。
 
 注入语义（pi=扩展 API `sendUserMessage`；claude=stdin 注入真用户 turn，docs/CLAUDE_DRIVER.md）：
 `prompt`=空闲时发（正忙回执失败原因）、`steer`=插话当前 run 后（claude 实测=工具间隙转向）、
@@ -934,7 +939,8 @@ Codex 的 steer 使用当前 expectedTurnId，followUp 在本地等前轮完成�
   **挂起**至人工应答/超时后返回 `{ "behavior": "allow|deny", "message" }`（bridge 据此回注
   PermissionResult）。超时/收尾一律 `deny`（**绝不自动 allow**）。
 - `GET /api/sessions/:id/host-requests`（手机）→ `{ "requests": HostRequestDto[] }`
-  （断线重连兜底拉取，防 WS 丢事件卡死）。
+  （断线重连兜底拉取，防 WS 丢事件卡死）。无审批通道的会话（pi 源，权限在终端里确认）按
+  「空列表」语义回落 200 `{ "requests": [] }`，不报 400（只读端点向后兼容；写路径应答仍 400）。
 - `POST /api/sessions/:id/host-requests/:requestId`（手机）：`{ "outcome": "allow|deny", "message"? }`
   → `{ "resolved": true, "outcome" }`；未知 → 404 `HOST_REQUEST_NOT_FOUND`；已决 → 409 `HOST_REQUEST_RESOLVED`
   （已决 id 短期记忆 TTL 约 5 分钟、上限约 200 条，过期/淘汰后回 404）。
@@ -1221,3 +1227,10 @@ chat 输入区上传文件/图片：base64 JSON 落盘到会话 `cwd/.agent-hub-
 | `INVALID_PATH` | 400 | 上传路径越界（含符号链接逃逸） |
 | `UPLOAD_TOO_LARGE` | 413 | 文件超过 10MB 上限 |
 | `UNSUPPORTED_MEDIA_TYPE` | 415 | 不在 MIME/扩展名白名单 |
+
+### Codex 权限与实时对账补充（2026-10-21）
+
+- `attach_state` 的 Codex 事件可附带 `source: "codex"` 与可选 `effectivePolicy`；老事件缺字段时按未知处理。退出接管清理旧策略。
+- 显式权限覆盖先比较继承设置，确认只收紧；无法确认、目标放宽或最终回显不符返回 400 `INVALID_REQUEST`，不发起 turn。更严覆盖需释放探测进程再建立实际驱动，准备/释放期仍阻止平行发送。
+- `bypass` 只取决于 approval=never；不能把 danger-full-access 沙箱等同于无审批。
+- 前端 GET 对账以请求开始时的本地事件版本保护随后到达的消息，消息 timestamp 只用于排序，不充当删除依据。压缩后的下一次 GET 重新建立基线。

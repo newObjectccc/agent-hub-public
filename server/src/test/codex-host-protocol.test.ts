@@ -1,5 +1,8 @@
-import { describe, it } from "node:test";
+import { describe, it, type TestContext } from "node:test";
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import {
   buildApprovalResult, buildDriverArgs, buildResumeParams, buildTurnInput, codexMessageId,
   hostRequestPreview, parseDriverMode, safePreview, snapshotRequestedPermissions,
@@ -15,11 +18,23 @@ describe("Codex native protocol shapes", () => {
     assert.equal(JSON.stringify(buildDriverArgs()).includes("dangerously"), false);
   });
 
-  it("sends native localImage inputs, never @path text or base64 in RPC", () => {
-    assert.deepEqual(buildTurnInput("inspect", [{ path: "images/a.png", mimeType: "image/png", data: "secret-image" }], "/work"), [
-      { type: "text", text: "inspect", text_elements: [] }, { type: "localImage", path: "/work/images/a.png" },
+  it("sends native localImage inputs, never @path text or base64 in RPC", (t: TestContext) => {
+    const dir = mkdtempSync(join(tmpdir(), "agent-hub-protocol-"));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const uploads = join(dir, ".agent-hub-uploads");
+    mkdirSync(uploads, { recursive: true });
+    const image = join(uploads, "a.png");
+    writeFileSync(image, "png");
+    const input = buildTurnInput("inspect", [{ path: image, mimeType: "image/png", data: "secret-image" }], dir);
+    assert.deepEqual(input, [
+      { type: "text", text: "inspect", text_elements: [] }, { type: "localImage", path: resolve(image) },
     ]);
-    assert.deepEqual(buildTurnInput("", ["/images/a.png"], "/work"), [{ type: "localImage", path: "/images/a.png" }]);
+    assert.equal(JSON.stringify(input).includes("secret-image"), false);
+    assert.deepEqual(buildTurnInput("", [image], dir), [{ type: "localImage", path: resolve(image) }]);
+    // P2-6：上传根之外的路径不下发 localImage，降级为脱敏后的纯文本提示（绝不静默丢）
+    const downgraded = buildTurnInput("", ["/images/a.png"], dir);
+    assert.equal(downgraded.some((item) => item.type === "localImage"), false);
+    assert.match(JSON.stringify(downgraded), /已忽略 1 个不在上传目录内的图片路径/);
     for (const args of [["", [], "/w"], [null, [], "/w"], ["x", [null], "/w"], ["x", ["\0"], "/w"]] as const) {
       assert.throws(() => buildTurnInput(args[0], args[1], args[2]), /text|图片/);
     }

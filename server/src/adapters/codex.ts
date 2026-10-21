@@ -6,7 +6,8 @@
  * - prompt：本地 spawn `codex exec resume <id> --json <text>`（cwd 用会话 cwd），
  *   解析 stdout 流事件 → 契约 WS 广播（codex-stream.ts）
  * - abort：杀掉本进程 spawn 的子进程（SIGTERM → 宽限后 SIGKILL），幂等
- * - createSession：写最小 rollout（仅 session_meta 行；调研结论见方法注释）
+ * - createSession：写最小 rollout（仅 session_meta 行；调研结论见方法注释；0.162 起
+ *   meta 必须带 cli_version/model_provider，解析链见 codex-version.ts）
  * - forkSession：复制全部分段 rollout 为新 UUID 会话（行内 session_id/id 同步替换，原文件只读）
  *
  * 注：同一会话可跨多个 rollout 分段文件（续写/压缩轮转），列表/详情按 session_id
@@ -32,6 +33,7 @@ import { decidePromptAction, parsePromptMode } from "../sessions/prompt-policy.j
 import { inferExternalStatus, registerTailStatusSink } from "../sessions/tail.js";
 import type { MessageDto, PromptImageAttachment, ServerEvent, SessionListItem, SessionStatus } from "../types.js";
 import { CodexStreamTranslator } from "./codex-stream.js";
+import { safePreview } from "./codex-host-protocol.js";
 import { JsonlReader } from "./jsonl-reader.js";
 import {
   loadProviderEnv,
@@ -46,6 +48,7 @@ import {
   scanCodexSessions,
   type CodexFileCacheEntry,
 } from "./codex-rollout.js";
+import { resolveCodexNewSessionMeta, type CodexNewSessionMeta } from "./codex-version.js";
 import type { SessionAdapter } from "./types.js";
 
 export type EmitFn = (sessionId: string, event: ServerEvent) => void;
@@ -69,6 +72,13 @@ export interface CodexAdapterOptions {
   driverStatus?: (id: string) => SessionStatus | null;
   /** fileCache LRU 上限（缺省 FILE_CACHE_MAX，测试注入小值） */
   fileCacheMax?: number;
+  /**
+   * 新建会话 session_meta 的 model_provider 注入（测试/显式配置用）；
+   * 缺省走采样已有会话 + "openai" 回落（不读 ~/.codex/config.toml，守凭据口径）。
+   */
+  modelProvider?: string;
+  /** 版本/meta 解析结果的缓存 TTL（缺省 META_TTL_MS；避免每次新建都 spawn --version） */
+  metaTtlMs?: number;
 }
 
 /** stderr 预览上限（错误提示用） */
@@ -77,6 +87,9 @@ const STDERR_PREVIEW_LIMIT = 500;
 const KILL_GRACE_MS = 2_000;
 /** fileCache LRU 上限（audit P2-4）：数百个 rollout 文件快照不无上界驻留 */
 export const FILE_CACHE_MAX = 500;
+
+/** 新建会话 meta（版本探测+采样）缓存 TTL：codex 二进制版本进程生命周期内几乎不变 */
+const META_TTL_MS = 10 * 60_000;
 
 /**
  * LRU Map（audit P2-4）：get 刷新位次、set 逐出最久未用（Map 插入序 = 使用序）。
@@ -152,6 +165,11 @@ export class CodexAdapter implements SessionAdapter {
   private readonly fileCache: LruMap<string, CodexFileCacheEntry>;
   /** id → 时间序分段文件（同一会话可跨多个 rollout 段，详情/消息全量加载用） */
   private segmentsById = new Map<string, string[]>();
+  /** 新建会话 meta（cli_version/model_provider）：成功结果按 TTL 缓存，失败不缓存（瞬态探测故障不永久拒绝新建） */
+  private metaCache: { at: number; meta: CodexNewSessionMeta } | null = null;
+  private metaInflight: Promise<CodexNewSessionMeta> | null = null;
+  private readonly injectedModelProvider: string | undefined;
+  private readonly metaTtlMs: number;
   /** 会话转 live 时回调（用于停掉文件 tail，保持单一推送源） */
   onLive?: (id: string) => void;
 
@@ -165,6 +183,8 @@ export class CodexAdapter implements SessionAdapter {
     this.prepareProviderEnv = options.prepareProviderEnv ?? loadProviderEnv;
     this.driverBusy = options.driverBusy;
     this.driverStatus = options.driverStatus;
+    this.injectedModelProvider = options.modelProvider;
+    this.metaTtlMs = typeof options.metaTtlMs === "number" && options.metaTtlMs >= 0 ? options.metaTtlMs : META_TTL_MS;
     this.unregisterTailStatus = registerTailStatusSink((id, status) => {
       if (!this.running.has(id)) this.statuses.set(id, { status, at: Date.now() });
     });
@@ -317,6 +337,12 @@ export class CodexAdapter implements SessionAdapter {
    * 会话被正常识别并继续追加（与 CLI 自建会话行为一致）。故「新建」= 落盘最小
    * rollout（比 spawn 起会话更稳：不依赖网络/模型，幂等快），首条消息走既有
    * `codex exec resume <id>` 流程，无需特例。
+   *
+   * ── P0 修复（真机实测 codex 0.162）──────────────────────────────
+   * session_meta 缺 `cli_version`/`model_provider` 时，0.162 在 thread/resume 与
+   * exec resume 两条路上都报 -32603，首条消息发不出去。故落盘前先解析 meta
+   * （探测 --version → 采样已有会话回落 → 都失败抛 HubError，见 codex-version.ts）；
+   * 解析失败时**绝不落盘**：宁可不建会话，也不留一个 codex 读不懂的残缺文件污染列表。
    */
   async createSession(cwd: string, name?: string): Promise<SessionListItem> {
     if (typeof cwd !== "string" || cwd.trim() === "") {
@@ -332,11 +358,18 @@ export class CodexAdapter implements SessionAdapter {
       throw new HubError(ErrorCodes.INVALID_CWD, `cwd 不存在或不是目录: ${cwd}`);
     }
     const trimmedName = typeof name === "string" ? name.trim() : "";
+    // 先解析 meta 再碰磁盘：解析失败（探测不到版本且采样不到）时直接抛 HubError，
+    // 不 mkdir/不落盘，避免留下 codex 读不懂的残缺 rollout 污染会话列表。
+    const meta = await this.resolveNewSessionMeta();
     const sessionId = randomUUID();
     const timestamp = new Date().toISOString();
     const file = this.rolloutFilePath(sessionId, new Date());
     await mkdir(dirname(file), { recursive: true });
-    await writeFile(file, buildCodexNewRollout({ sessionId, cwd, timestamp }), { flag: "wx" });
+    await writeFile(
+      file,
+      buildCodexNewRollout({ sessionId, cwd, timestamp, cliVersion: meta.cliVersion, modelProvider: meta.modelProvider }),
+      { flag: "wx" },
+    );
     if (trimmedName !== "") {
       // name 事实源是 session_index.jsonl（解析层优先取 thread_name），登记一行
       await appendFile(this.sessionIndexFile, buildSessionIndexLine(sessionId, trimmedName, timestamp), "utf8");
@@ -368,6 +401,32 @@ export class CodexAdapter implements SessionAdapter {
       `T${pad(when.getHours())}-${pad(when.getMinutes())}-${pad(when.getSeconds())}`;
     const dateDir = join(String(when.getFullYear()), pad(when.getMonth() + 1), pad(when.getDate()));
     return join(this.sessionsDir, dateDir, `rollout-${stamp}-${sessionId}.jsonl`);
+  }
+
+  /**
+   * 新建会话所需 meta（cli_version/model_provider）：探测+采样链见 codex-version.ts。
+   * 成功结果按 TTL 缓存 + 并发 inflight 去重（避免每次新建都 spawn --version）；
+   * 失败不缓存：瞬态探测故障（如二进制临时不可用）不应永久拒绝新建。
+   */
+  private resolveNewSessionMeta(): Promise<CodexNewSessionMeta> {
+    const cached = this.metaCache;
+    if (cached !== null && Date.now() - cached.at < this.metaTtlMs) return Promise.resolve(cached.meta);
+    if (this.metaInflight !== null) return this.metaInflight;
+    this.metaInflight = resolveCodexNewSessionMeta({
+      codexBin: this.codexBin,
+      sessionsDir: this.sessionsDir,
+      archivedSessionsDir: this.archivedSessionsDir,
+      spawnFn: this.spawnFn,
+      modelProvider: this.injectedModelProvider,
+    })
+      .then((meta) => {
+        this.metaCache = { at: Date.now(), meta };
+        return meta;
+      })
+      .finally(() => {
+        this.metaInflight = null;
+      });
+    return this.metaInflight;
   }
 
   /**
@@ -620,7 +679,11 @@ export class CodexAdapter implements SessionAdapter {
       if (isActive()) reader.end();
       const failed = !run.aborted && (processErrored || (code !== 0 && code !== null && !translator.finished));
       if (failed && !processErrored) {
-        const detail = run.stderrTail.trim() !== "" ? run.stderrTail.trim() : `codex 退出码 ${code}`;
+        // stderr 尾部会随错误事件推到手机，必须先脱敏：codex 失败输出里常带命令行原文
+        // （含 OPENAI_API_KEY / Bearer / 私钥块等），与接管通道（codex-driver 的 attachError）
+        // 同口径走 safePreview，避免平行模式成为凭据外泄的旁路。
+        const tail = safePreview(run.stderrTail.trim());
+        const detail = tail !== "" ? tail : `codex 退出码 ${code}`;
         this.emit(session.id, {
           type: "error",
           code: ErrorCodes.PROMPT_FAILED,

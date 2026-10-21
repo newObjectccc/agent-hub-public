@@ -194,10 +194,45 @@ describe("message_end 内容级去重兜底（重复气泡防御）", () => {
     ];
     const next = applyWsEvent(msgs, {
       type: "message_end",
-      message: { id: "b", role: "assistant", timestamp: 1, text: "", toolCalls: [] },
+      message: { id: "b", role: "assistant", timestamp: 1, text: "", toolCalls: [{ name: "read", summary: "y", status: "done", resultPreview: null }] },
     });
     expect(next).toHaveLength(2);
     expect(next.map((m) => m.id)).toEqual(["a", "b"]);
+  });
+
+  it("纯空气泡终态不新增（text 空、无工具卡/思维链/图片/错误）", () => {
+    const msgs: SessionMessage[] = [
+      { id: "a", role: "user", timestamp: 0, text: "你好", toolCalls: [] },
+    ];
+    const next = applyWsEvent(msgs, {
+      type: "message_end",
+      message: { id: "b", role: "assistant", timestamp: 1, text: "", toolCalls: [] },
+    });
+    expect(next).toHaveLength(1);
+    expect(next.map((m) => m.id)).toEqual(["a"]);
+  });
+
+  it("流式占位收束为空 assistant 终态时连占位一起移除", () => {
+    const msgs: SessionMessage[] = [
+      { id: "user-1", role: "user", timestamp: 0, text: "你好", toolCalls: [] },
+      { id: "live-1", role: "assistant", timestamp: 1, text: "", toolCalls: [], streaming: true },
+    ];
+    const next = applyWsEvent(msgs, {
+      type: "message_end",
+      message: { id: "live-1", role: "assistant", timestamp: 2, text: "", toolCalls: [] },
+    });
+    expect(next.map((m) => m.id)).toEqual(["user-1"]);
+  });
+
+  it("空文本但带思维链/错误的终态不按空气泡丢弃", () => {
+    const msgs: SessionMessage[] = [];
+    const next = applyWsEvent(msgs, {
+      type: "message_end",
+      message: { id: "a", role: "assistant", timestamp: 1, text: "", toolCalls: [], thinking: "内部推理", error: { message: "模型/网络失败", kind: "other" } },
+    });
+    expect(next).toHaveLength(1);
+    expect(next[0].id).toBe("a");
+    expect(next[0].error).toEqual({ message: "模型/网络失败", kind: "other" });
   });
 
   it("同 role+同 text、时间接近、但中间隔有其它消息 → 不合并（占位形态 id）", () => {

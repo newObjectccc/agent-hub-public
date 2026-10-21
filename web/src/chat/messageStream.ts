@@ -92,6 +92,23 @@ function updateMessage(
   return next;
 }
 
+/**
+ * 空 assistant 终态判定：无文本、无工具卡、无思维链/图片/错误——渲染出来只会是「（无内容）」空气泡。
+ * codex 接管真机实测：工具调用轮的中间产物会发 message_end role=assistant text=""
+ * （driver endItem 对空 agentMessage 也发终态）；server 快照层（codex-rollout）已过滤同类空消息，
+ * WS live 路径对齐同一口径。有 toolCalls 必须保留（工具卡片载体）；有 error 必须保留（错误条载体）。
+ */
+function isEmptyAssistant(m: SessionMessage): boolean {
+  return (
+    m.role === "assistant" &&
+    m.text.trim() === "" &&
+    m.toolCalls.length === 0 &&
+    !m.thinking &&
+    (m.images?.length ?? 0) === 0 &&
+    !m.error
+  );
+}
+
 /** 流式/乐观占位 id 形态（仅这些候选允许被权威消息合并） */
 function isPlaceholderId(id: string): boolean {
   return id.startsWith("local-") || id.startsWith("live-") || id.startsWith("stream-");
@@ -231,8 +248,17 @@ export function applyWsEvent(messages: SessionMessage[], event: WsEvent): Sessio
       const authoritative = normalizeMessage(event.message);
       const idx = messages.findIndex((m) => m.id === authoritative.id);
       if (idx >= 0) {
+        const merged = withToolTiming(withLocalFallbacks(authoritative, messages[idx]), messages[idx]);
+        // 空 assistant 终态：连同已展示的流式占位一起移除——留着要么渲染「（无内容）」，
+        // 要么（占位还带 streaming 标志时）永远转「✍️ 回复中」活占位，两者都是脏 UI。
+        // 判空基于合并后的消息：占位已累积的 thinking/images/error 不会被误删。
+        if (isEmptyAssistant(merged)) {
+          const next = messages.slice();
+          next.splice(idx, 1);
+          return next;
+        }
         const next = messages.slice();
-        next[idx] = withToolTiming(withLocalFallbacks(authoritative, messages[idx]), messages[idx]);
+        next[idx] = merged;
         return next;
       }
       // 纯防御去重：合并尾部连续同文本占位段内最早一条（同 role+同非空 text），
@@ -244,6 +270,8 @@ export function applyWsEvent(messages: SessionMessage[], event: WsEvent): Sessio
         next[dupIdx] = withToolTiming(withLocalFallbacks(authoritative, messages[dupIdx]), messages[dupIdx]);
         return next;
       }
+      // 空 assistant 不新增气泡（codex 工具轮中间产物；快照层已过滤，live 路径同口径）
+      if (isEmptyAssistant(authoritative)) return messages;
       return [...messages, authoritative];
     }
     default:
@@ -318,11 +346,21 @@ export function reconcileMessages(prev: SessionMessage[], fresh: SessionMessage[
   return preserveRecentMessages(prev, tail.length === 0 ? (changed ? merged : fresh) : [...merged, ...tail], recentIds);
 }
 
-/** GET 在途期间到达的 WS 消息更新比旧快照新；完成消息也不能被旧响应抹掉。 */
+/** GET 开始后的 WS 更新由接收版本保护，不能用消息创建时间推断已删除。
+ * 压缩后的下一次 GET 会重新建立版本基线；此前已完成的消息不再属于 recentIds。
+ * 时间戳只参与显示顺序，不参与判断消息是否存在。 */
 function preserveRecentMessages(prev: SessionMessage[], merged: SessionMessage[], recentIds: ReadonlySet<string>): SessionMessage[] {
   if (recentIds.size === 0) return merged;
-  const recent = new Map(prev.filter((message) => recentIds.has(message.id)).map((message) => [message.id, message]));
+  const recent = new Map(prev.filter((message) => recentIds.has(message.id)).map((message) => [message.id, message] as const));
   const ids = new Set(merged.map((message) => message.id));
   const result = merged.map((message) => recent.get(message.id) ?? message);
-  return [...result, ...prev.filter((message) => recent.has(message.id) && !ids.has(message.id))];
+  for (const message of prev) {
+    if (!recent.has(message.id) || ids.has(message.id)) continue;
+    // 按时序插入：从尾部找第一个 timestamp <= 本条的位置（相等时排在其后，保持既有相对顺序）；
+    // 典型竞态里本条就是最新的，扫描立即命中末尾，等价旧行为的 append（常见路径零额外开销）
+    let at = result.length;
+    while (at > 0 && result[at - 1].timestamp > message.timestamp) at -= 1;
+    result.splice(at, 0, message);
+  }
+  return result;
 }

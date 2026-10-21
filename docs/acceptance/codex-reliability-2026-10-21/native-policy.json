@@ -1,0 +1,38 @@
+{
+  "date": "2026-10-21T10:53:24.767Z",
+  "binaryVersion": "0.162.0-alpha.17.2",
+  "scope": "本机真实 app-server；自有临时 CODEX_HOME 与线程；仅验证权限握手和进程释放；未调用模型或触发真实审批",
+  "cases": [
+    {
+      "name": "tighten",
+      "attached": true,
+      "approval": "untrusted",
+      "sandbox": "read-only",
+      "processes": 2,
+      "expectedMatched": true,
+      "released": true,
+      "modelTurnsStarted": 0
+    },
+    {
+      "name": "reject-widening",
+      "attached": false,
+      "rejected": true,
+      "rejectionCode": "INVALID_REQUEST",
+      "rejectionStatus": 400,
+      "processes": 1,
+      "expectedMatched": true,
+      "released": true,
+      "modelTurnsStarted": 0
+    },
+    {
+      "name": "inherit",
+      "attached": true,
+      "approval": "on-request",
+      "sandbox": "workspace-write",
+      "processes": 1,
+      "expectedMatched": true,
+      "released": true,
+      "modelTurnsStarted": 0
+    }
+  ]
+}

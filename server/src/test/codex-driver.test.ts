@@ -1,10 +1,14 @@
 import { describe, it, type TestContext } from "node:test";
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { EventEmitter } from "node:events";
 import { PassThrough, Writable } from "node:stream";
-import type { spawn as Spawn, ChildProcess } from "node:child_process";
+import type { spawn as Spawn } from "node:child_process";
 import { CodexDriverHub, probeCodexCapabilities, type CodexDriverOptions } from "../adapters/codex-driver.js";
 import { codexMessageId } from "../adapters/codex-host-protocol.js";
+import { UPLOAD_DIR_NAME } from "../uploads.js";
 import type { ServerEvent } from "../types.js";
 
 interface Frame { id?: string | number; method?: string; params?: Record<string, unknown>; result?: unknown; error?: { code: number; message: string } }
@@ -20,8 +24,10 @@ class FakeChild extends EventEmitter {
   autoStart = true;
   autoResume = true;
   autoInitialize = true;
+  policyEcho: Record<string, unknown> | null = null;
   resumeStatus = "idle";
   resumeError: string | null = null;
+  startError: { code: number; message: string } | null = null;
   constructor() {
     super();
     this.stdin = new Writable({ write: (chunk, _encoding, callback) => {
@@ -34,9 +40,12 @@ class FakeChild extends EventEmitter {
     if (frame.method === "initialize" && this.autoInitialize) this.respond(frame, { userAgent: "codex/0.162.0-alpha.17.2" });
     if (frame.method === "thread/resume" && this.autoResume) {
       if (this.resumeError) this.stdout.write(`${JSON.stringify({ id: frame.id, error: { code: -32600, message: this.resumeError } })}\n`);
-      else this.respond(frame, { thread: { id: frame.params?.threadId, status: { type: this.resumeStatus } } });
+      else this.respond(frame, { ...(this.policyEcho ? { approvalPolicy: frame.params?.approvalPolicy ?? this.policyEcho.approvalPolicy, sandbox: frame.params?.sandbox ? { type: frame.params.sandbox, networkAccess: false, writableRoots: [] } : this.policyEcho.sandbox } : {}), thread: { id: frame.params?.threadId, status: { type: this.resumeStatus } } });
     }
-    if (frame.method === "turn/start" && this.autoStart) this.respond(frame, { turn: { id: `turn-${++this.nextTurn}`, status: "inProgress" } });
+    if (frame.method === "turn/start" && this.autoStart) {
+      if (this.startError) this.stdout.write(`${JSON.stringify({ id: frame.id, error: this.startError })}\n`);
+      else this.respond(frame, { turn: { id: `turn-${++this.nextTurn}`, status: "inProgress" } });
+    }
     if (frame.method === "turn/steer") this.respond(frame, { turnId: frame.params?.expectedTurnId });
     if (frame.method === "turn/interrupt") this.respond(frame, {});
   }
@@ -61,7 +70,9 @@ function fixture(t: TestContext, overrides: Partial<CodexDriverOptions> = {}, co
   const children: FakeChild[] = [];
   const calls: Array<{ bin: string; args: string[] }> = [];
   const spawnFn = ((bin: string, args: string[]) => {
-    calls.push({ bin, args }); const child = new FakeChild(); configure?.(child); children.push(child); return child;
+    calls.push({ bin, args }); const child = new FakeChild();
+    if (overrides.approvalPolicy || overrides.sandbox) child.policyEcho = { approvalPolicy: "on-request", sandbox: { type: "workspaceWrite", networkAccess: false, writableRoots: [] } };
+    configure?.(child); children.push(child); return child;
   }) as unknown as typeof Spawn;
   const hub = new CodexDriverHub({
     emit: (_id, event) => events.push(event), spawnFn,
@@ -72,8 +83,10 @@ function fixture(t: TestContext, overrides: Partial<CodexDriverOptions> = {}, co
   });
   t.after(() => hub.disposeAll());
   const acks = (id: string) => events.filter((event): event is Extract<ServerEvent, { type: "command_ack" }> => event.type === "command_ack" && event.commandId === id);
+  const errors = () => events.filter((event): event is Extract<ServerEvent, { type: "error" }> => event.type === "error");
+  const settled = () => events.filter((event) => event.type === "agent_settled");
   const child = () => children.at(-1)!;
-  return { hub, events, children, calls, acks, child };
+  return { hub, events, children, calls, acks, errors, settled, child };
 }
 function approval(child: FakeChild, id: number, method = "item/commandExecution/requestApproval", extra: Record<string, unknown> = {}) {
   child.request(id, method, { threadId: "s1", turnId: `turn-${child.nextTurn}`, itemId: `item-${id}`, command: "ls", ...extra });
@@ -193,6 +206,22 @@ describe("Codex attach preparation and writer ownership", () => {
     assert.equal(f.hub.statusFor("s1").online, false);
   });
 
+  it("keeps statusFor().online per session instead of globalizing a verified runtime", async (t) => {
+    const f = fixture(t, { maxConcurrent: 2 });
+    await f.hub.attach("s1", opts);
+    assert.equal(f.hub.statusFor("s1").online, true);
+    assert.equal(f.hub.statusFor("s1").attached, true);
+    // 一个会话接管成功不得让未接管的会话也显示在线（旧行为：capabilityVerified 是进程级单次标志）。
+    assert.equal(f.hub.statusFor("s2").online, false);
+    assert.equal(f.hub.statusFor("s2").attached, false);
+    f.hub.detach("s1");
+    await tick();
+    assert.equal(f.hub.statusFor("s1").attached, false);
+    // 已验证过可接管的会话退出后仍标 online（随时可重新接管），但不外溢到其它会话。
+    assert.equal(f.hub.statusFor("s1").online, true);
+    assert.equal(f.hub.statusFor("s2").online, false);
+  });
+
   for (const failure of ["already has an active writer", "notLoaded", "active", "systemError"] as const) {
     it(`releases the writer on resume failure: ${failure}`, async (t) => {
       const f = fixture(t, {}, (child) => {
@@ -233,7 +262,10 @@ describe("Codex attach preparation and writer ownership", () => {
   it("sends explicit configured policies only in resume", async (t) => {
     const f = fixture(t, { approvalPolicy: "untrusted", sandbox: "read-only" });
     await f.hub.attach("s1", opts);
+    assert.equal(f.children.length, 2);
+    assert.deepEqual(f.children[0].method("thread/resume")[0].params, { threadId: "s1", excludeTurns: true, cwd: "/work" });
     assert.deepEqual(f.child().method("thread/resume")[0].params, { threadId: "s1", excludeTurns: true, cwd: "/work", approvalPolicy: "untrusted", sandbox: "read-only" });
+    assert.equal(f.hub.statusFor("s1").effectivePolicy?.approval, "untrusted");
   });
 
   it("version probe invokes only --version and is cancellable", async () => {
@@ -302,14 +334,21 @@ describe("Codex commands and native streaming", () => {
   });
 
   it("uses turn/steer with the expected active ID, including steering while start is pending", async (t) => {
+    // P2-6：localImage 只接受会话上传目录内的真实文件，附件路径需走真实上传根
+    const dir = mkdtempSync(join(tmpdir(), "agent-hub-driver-"));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const uploads = join(dir, UPLOAD_DIR_NAME);
+    mkdirSync(uploads, { recursive: true });
+    const image = join(uploads, "a.png");
+    writeFileSync(image, "png");
     const f = fixture(t);
-    await f.hub.attach("s1", opts);
+    await f.hub.attach("s1", { cwd: dir, sessionFile: "/fake/rollout.jsonl" });
     f.hub.send("s1", { text: "begin" });
-    const steer = f.hub.send("s1", { text: "change direction", mode: "steer", images: ["/work/a.png"] });
+    const steer = f.hub.send("s1", { text: "change direction", mode: "steer", images: [image] });
     await tick();
     assert.equal(f.child().method("turn/start").length, 1);
     assert.deepEqual(f.child().method("turn/steer")[0].params, {
-      threadId: "s1", expectedTurnId: "turn-1", input: [{ type: "text", text: "change direction", text_elements: [] }, { type: "localImage", path: "/work/a.png" }],
+      threadId: "s1", expectedTurnId: "turn-1", input: [{ type: "text", text: "change direction", text_elements: [] }, { type: "localImage", path: resolve(image) }],
     });
     assert.equal(f.acks(steer.id)[0].ok, true);
     assert.equal(f.hub.runStatusFor("s1"), "running");
@@ -411,12 +450,165 @@ describe("Codex commands and native streaming", () => {
     f.child().notify("error", { threadId: "s1", turnId: "turn-1", error: { message: "temporary" }, willRetry: true });
     assert.equal(f.hub.runStatusFor("s1"), "running");
     assert.equal(f.events.some((event) => event.type === "agent_settled"), false);
+    // 可重试错误不是终态：不得当作失败推给手机（旧行为会在此产生一条假报错）。
+    assert.equal(f.errors().length, 0);
     assert.equal(f.events.filter((event) => event.type === "tool_start").length, 1);
     assert.equal(f.events.some((event) => event.type === "tool_end" && event.toolCall.status === "error"), true);
     f.child().done("failed");
     assert.equal(f.hub.runStatusFor("s1"), "error");
-    assert.equal(f.events.filter((event) => event.type === "agent_settled").length, 1);
-    assert.equal(f.events.filter((event) => event.type === "error").length, 1);
+    assert.equal(f.settled().length, 1);
+    // 终态错误有且只有一条，内容是 turn/completed 携带的真实原因，而不是重连提示。
+    assert.equal(f.errors().length, 1);
+    assert.equal(f.errors()[0].message, "model failed");
+  });
+
+  it("keeps retryable errors off the phone and surfaces the real failure reason once", async (t) => {
+    const f = fixture(t);
+    await f.hub.attach("s1", opts);
+    f.hub.send("s1", { text: "begin" });
+    await tick();
+    // 真机复现的形状：任务成功/失败前先来几条 willRetry:true 的重连错误。
+    f.child().notify("error", { threadId: "s1", turnId: "turn-1", error: { message: "Reconnecting... 1/5" }, willRetry: true });
+    f.child().notify("error", { threadId: "s1", turnId: "turn-1", error: { message: "Reconnecting... 2/5" }, willRetry: true });
+    assert.equal(f.errors().length, 0);
+    assert.equal(f.hub.runStatusFor("s1"), "running");
+    f.child().notify("turn/completed", { threadId: "s1", turn: { id: "turn-1", status: "failed", error: { message: "model refused the request" } } });
+    await tick();
+    assert.equal(f.errors().length, 1);
+    assert.equal(f.errors()[0].code, "PROMPT_FAILED");
+    assert.equal(f.errors()[0].message, "model refused the request");
+    assert.equal(f.settled().length, 1);
+    assert.equal(f.hub.runStatusFor("s1"), "error");
+  });
+
+  it("emits no error when a retryable error is followed by a successful turn", async (t) => {
+    const f = fixture(t);
+    await f.hub.attach("s1", opts);
+    f.hub.send("s1", { text: "begin" });
+    await tick();
+    f.child().notify("error", { threadId: "s1", turnId: "turn-1", error: { message: "Reconnecting... 2/5" }, willRetry: true });
+    f.child().done("completed");
+    await tick();
+    assert.equal(f.errors().length, 0);
+    assert.equal(f.settled().length, 1);
+    assert.equal(f.hub.runStatusFor("s1"), "idle");
+  });
+
+  it("falls back to the last retryable text only when the terminal notice carries no reason", async (t) => {
+    const f = fixture(t);
+    await f.hub.attach("s1", opts);
+    f.hub.send("s1", { text: "begin" });
+    await tick();
+    f.child().notify("error", { threadId: "s1", turnId: "turn-1", error: { message: "Reconnecting... 3/5" }, willRetry: true });
+    f.child().notify("turn/completed", { threadId: "s1", turn: { id: "turn-1", status: "failed", error: null } });
+    await tick();
+    assert.equal(f.errors().length, 1);
+    assert.equal(f.errors()[0].message, "Reconnecting... 3/5");
+  });
+
+  it("reports a non-retryable error immediately and never duplicates it at completion", async (t) => {
+    const f = fixture(t);
+    await f.hub.attach("s1", opts);
+    f.hub.send("s1", { text: "begin" });
+    await tick();
+    f.child().notify("error", { threadId: "s1", turnId: "turn-1", error: { message: "fatal boom" } });
+    assert.equal(f.errors().length, 1);
+    assert.equal(f.errors()[0].message, "fatal boom");
+    f.child().done("failed");
+    await tick();
+    assert.equal(f.errors().length, 1);
+    assert.equal(f.settled().length, 1);
+    assert.equal(f.hub.runStatusFor("s1"), "error");
+  });
+
+  it("fails a turn that never receives a terminal notification and frees the session", async (t) => {
+    const f = fixture(t, { turnWatchdogMs: 20 });
+    await f.hub.attach("s1", opts);
+    const first = f.hub.send("s1", { text: "begin" });
+    await tick();
+    assert.equal(f.hub.runStatusFor("s1"), "running");
+    await delay(60);
+    // 丢一条 turn/completed 不再等于永久 running：watchdog 走既有失败收尾路径。
+    assert.equal(f.hub.isAttached("s1"), false);
+    assert.notEqual(f.hub.runStatusFor("s1"), "running");
+    assert.equal(f.settled().length, 1);
+    assert.equal(f.errors().length, 1);
+    assert.equal(f.errors()[0].code, "DRIVER_FAILED");
+    assert.equal(f.events.at(-1)?.type, "attach_state");
+    assert.equal(f.child().killed, true);
+    assert.equal(f.acks(first.id).length, 1);
+    // 后续 prompt 不再被「会话正忙」卡死；重新接管即可继续发消息。
+    assert.throws(() => f.hub.send("s1", { text: "again" }), /尚未完成接管/);
+    assert.equal(f.events.some((event) => event.type === "command_ack" && event.ok === false && /正忙/.test(event.error ?? "")), false);
+    await f.hub.attach("s1", opts);
+    const retry = f.hub.send("s1", { text: "again" });
+    await tick();
+    assert.equal(f.children.length, 2);
+    assert.equal(f.acks(retry.id)[0].ok, true);
+  });
+
+  it("watchdog waits for live activity instead of killing a streaming turn", async (t) => {
+    const f = fixture(t, { turnWatchdogMs: 60 });
+    await f.hub.attach("s1", opts);
+    f.hub.send("s1", { text: "begin" });
+    await tick();
+    for (let index = 0; index < 4; index += 1) {
+      await delay(25);
+      f.child().notify("item/agentMessage/delta", { threadId: "s1", turnId: "turn-1", itemId: "m", delta: "x" });
+    }
+    assert.equal(f.hub.isAttached("s1"), true);
+    assert.equal(f.hub.runStatusFor("s1"), "running");
+    await delay(120);
+    assert.equal(f.hub.isAttached("s1"), false);
+    assert.equal(f.settled().length, 1);
+  });
+
+  it("watchdog never kills a turn waiting for a phone approval", async (t) => {
+    const f = fixture(t, { turnWatchdogMs: 20, hostRequestTtlMs: 2_000 });
+    await f.hub.attach("s1", opts);
+    f.hub.send("s1", { text: "begin" });
+    await tick();
+    approval(f.child(), 1);
+    const requestId = f.hub.listHostRequests("s1")[0].id;
+    await delay(80);
+    // 手机还没点允许时 thread 可能长时间静止甚至报 idle，不能当成停滞误杀。
+    assert.equal(f.hub.isAttached("s1"), true);
+    assert.equal(f.hub.runStatusFor("s1"), "running");
+    assert.equal(f.hub.listHostRequests("s1").length, 1);
+    assert.equal(f.errors().length, 0);
+    assert.equal(f.hub.respondHostRequest("s1", requestId, { outcome: "allow" }), true);
+    await tick();
+    f.child().done();
+    await tick();
+    assert.equal(f.hub.runStatusFor("s1"), "idle");
+    assert.equal(f.errors().length, 0);
+    assert.equal(f.settled().length, 1);
+  });
+
+  it("surfaces writer contention as a typed error when turn/start is rejected with -32600", async (t) => {
+    const f = fixture(t, {}, (child) => { child.startError = { code: -32600, message: "thread already has an active writer" }; });
+    await f.hub.attach("s1", opts);
+    const command = f.hub.send("s1", { text: "begin" });
+    await tick();
+    const ack = f.acks(command.id)[0];
+    assert.equal(ack.ok, false);
+    assert.match(ack.error!, /其他客户端占用/);
+    assert.equal(f.errors().length, 1);
+    assert.equal(f.errors()[0].code, "SESSION_BUSY");
+    assert.match(f.errors()[0].message, /其他客户端占用/);
+    assert.equal(f.hub.runStatusFor("s1"), "error");
+    assert.equal(f.events.some((event) => event.type === "agent_settled"), true);
+  });
+
+  it("maps -32600 to writer contention even when the wording changes", async (t) => {
+    const f = fixture(t, {}, (child) => { child.resumeError = "thread is locked by another client"; });
+    await assert.rejects(f.hub.attach("s1", opts), (error: unknown) => {
+      const err = error as { code: string; statusCode: number };
+      assert.equal(err.code, "SESSION_BUSY");
+      assert.equal(err.statusCode, 409);
+      return true;
+    });
+    assert.equal(f.hub.isBusy("s1"), false);
   });
 
   it("interrupts without killing app-server, clears queues, and suppresses aborted late output", async (t) => {
@@ -491,6 +683,33 @@ describe("Codex commands and native streaming", () => {
     await delay(25);
     assert.equal(f.hub.isAttached("s1"), false);
     assert.equal(f.child().killed, true);
+  });
+
+  it("drops the entry when the child reports error or exit without close", async (t) => {
+    // spawn 失败、kill 抛错等场景可能只发 error/exit 不发 close；只依赖 close 时条目永驻，
+    // 该会话永久 isReleasing/isBusy 并长期占掉一个并发名额。
+    const f = fixture(t, {}, (child) => { child.closeOnKill = false; });
+    await f.hub.attach("s1", opts);
+    f.hub.send("s1", { text: "begin" });
+    await tick();
+    f.child().emit("error", new Error("spawn failed"));
+    assert.equal(f.hub.isBusy("s1"), false);
+    assert.equal(f.hub.isAttached("s1"), false);
+    assert.equal(f.settled().length, 1);
+    assert.equal(f.errors().length, 1);
+    assert.equal(f.events.at(-1)?.type, "attach_state");
+
+    const g = fixture(t, { maxConcurrent: 1 }, (child) => { child.closeOnKill = false; });
+    await g.hub.attach("s2", opts);
+    g.hub.detach("s2");
+    assert.equal(g.hub.isReleasing("s2"), true);
+    assert.equal(g.hub.isBusy("s2"), true);
+    g.child().emit("exit", 0);
+    assert.equal(g.hub.isReleasing("s2"), false);
+    assert.equal(g.hub.isBusy("s2"), false);
+    // 名额已释放：另一个会话可以接管。
+    await g.hub.attach("s3", opts);
+    assert.equal(g.children.length, 2);
   });
 });
 
@@ -652,5 +871,55 @@ describe("Codex native ServerRequests", () => {
     assert.equal(f.hub.isResolvedHostRequest(request.id), true);
     assert.equal(f.hub.respondHostRequest("s1", request.id, { outcome: "allow" }), false);
     assert.equal(f.hub.isAttached("s1"), false);
+  });
+});
+
+describe("Codex 接管权限基线", () => {
+  it("拒绝只读覆盖为工作区可写，且从不发 turn", async t => {
+    const f = fixture(t, {sandbox:"workspace-write"}, child => {child.policyEcho={approvalPolicy:"untrusted",sandbox:{type:"readOnly",networkAccess:false}};});
+    await assert.rejects(f.hub.attach("s1", opts), /更宽松/);
+    assert.equal(f.children.length,1);
+    assert.equal(f.child().method("turn/start").length,0);
+    assert.equal(f.hub.isAttached("s1"),false);
+  });
+  it("缺少基线回显时拒绝显式覆盖，inherit 仍兼容旧回显", async t => {
+    const f=fixture(t,{approvalPolicy:"untrusted"},child=>{child.policyEcho=null;});
+    await assert.rejects(f.hub.attach("s1",opts),/无法确认/);
+    assert.equal(f.child().method("turn/start").length,0);
+  });
+  it("新进程忽略权限覆盖时不标记 attached", async t => {
+    let spawned=0;
+    const f=fixture(t,{approvalPolicy:"untrusted"},child=>{
+      spawned+=1;
+      if(spawned===2){const receive=child.receive.bind(child);child.receive=frame=>{
+        if(frame.method==="thread/resume"){child.respond(frame,{approvalPolicy:"on-request",sandbox:{type:"workspaceWrite",networkAccess:false},thread:{id:"s1",status:{type:"idle"}}});return;}
+        receive(frame);
+      };}
+    });
+    await assert.rejects(f.hub.attach("s1",opts),/未应用/);
+    assert.equal(f.hub.isAttached("s1"),false);
+  });
+});
+
+describe("权限重建期间保持写者互斥",()=>{
+  it("未确认旧进程退出时仍 busy，取消后不启动第二个 writer",async t=>{
+    const f=fixture(t,{approvalPolicy:"untrusted",readyTimeoutMs:2000},child=>{child.closeOnKill=false;});
+    const pending=f.hub.attach("s1",opts);await tick();
+    assert.equal(f.hub.isAttaching("s1"),true);assert.equal(f.hub.isBusy("s1"),true);
+    assert.equal(f.children.length,1);
+    f.hub.detach("s1");
+    await assert.rejects(pending,/取消/);
+    f.child().emit("close",0);await tick();
+    assert.equal(f.children.length,1);assert.equal(f.hub.isBusy("s1"),false);
+  });
+});
+
+describe("释放写者的异常路径",()=>{
+  it("已发送停止但 kill 报错，不能把仍存活的进程当作已释放",async t=>{
+    const f=fixture(t);await f.hub.attach("s1",opts);
+    Object.assign(f.child(),{pid:12345,exitCode:null,signalCode:null});f.child().closeOnKill=false;
+    f.hub.detach("s1");f.child().emit("error",new Error("kill EPERM"));
+    assert.equal(f.hub.isBusy("s1"),true);assert.equal(f.hub.isReleasing("s1"),true);
+    f.child().emit("close",0);assert.equal(f.hub.isBusy("s1"),false);
   });
 });

@@ -7,6 +7,10 @@ import type { MessageDto } from "../types.js";
 
 export function mergeCodexSnapshot(history: MessageDto[], snapshot: MessageDto[]): MessageDto[] {
   if (snapshot.length === 0) return history;
+  // 无 user 的在途快照整体丢弃（有意为之，勿轻易放宽）：驱动的 snapshotFor 只在本轮 user
+  // 消息已被 Codex 受理后才会带上 user（emitUser），所以「只有 assistant」通常意味着本轮被
+  // 中止或未被受理，此时把流式正文并进历史既无法与 rollout 的 id 体系去重（会产生重复气泡），
+  // 又会重新打开「过期快照覆盖实时消息」的竞态——磁盘历史可能已比内存快照更完整。
   if (!snapshot.some((message) => message.role === "user")) return history;
   const candidateTurnId = snapshot[0].turnId;
   const turnId = candidateTurnId && snapshot.every((message) => message.turnId === candidateTurnId) ? candidateTurnId : null;

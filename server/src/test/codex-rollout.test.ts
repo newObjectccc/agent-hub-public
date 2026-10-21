@@ -21,6 +21,7 @@ import {
   buildSessionIndexLine,
   codexSummaries,
   groupCodexSegments,
+  loadCodexSessionMessages,
   parseCodexRollout,
   parseCodexSessionIndex,
   parseCodexUsageFile,
@@ -409,7 +410,9 @@ describe("适配层纯函数（fork 重写 / 新建 rollout / 文件名）", () 
 
   it("buildCodexNewRollout：仅一条 session_meta，可被解析层识别", () => {
     const ts = "2026-10-09T02:53:50.000Z";
-    const content = buildCodexNewRollout({ sessionId: SID, cwd: CWD, timestamp: ts });
+    const content = buildCodexNewRollout({
+      sessionId: SID, cwd: CWD, timestamp: ts, cliVersion: "0.162.0-alpha.17.2", modelProvider: "openai",
+    });
     const parsed = parseCodexRollout(content);
     assert.equal(parsed.sessionId, SID);
     assert.equal(parsed.cwd, CWD);
@@ -435,6 +438,81 @@ describe("适配层纯函数（fork 重写 / 新建 rollout / 文件名）", () 
     assert.equal(summarizeCodexToolCall("exec_command", { cmd: "git status" }, ""), "git status");
     assert.equal(summarizeCodexToolCall("apply_patch", "*** Begin Patch\nabc", "*** Begin Patch\nabc"), "*** Begin Patch\nabc");
     assert.equal(summarizeCodexToolCall("x", "not json {", "not json {"), "not json {");
+  });
+});
+
+describe("buildCodexNewRollout：codex 0.162 必需字段（P0：缺 cli_version/model_provider 两条 resume 路都 -32603/-32600）", () => {
+  const ts = "2026-10-09T02:53:50.000Z";
+  const build = (over: Partial<Parameters<typeof buildCodexNewRollout>[0]> = {}): string =>
+    buildCodexNewRollout({ sessionId: SID, cwd: CWD, timestamp: ts, cliVersion: "0.162.0-alpha.17.2", modelProvider: "azure", ...over });
+
+  it("顶层 ordinal:0 + payload 带 cli_version/model_provider/source/runtime_workspace_roots/git/history_mode=legacy", () => {
+    const row = JSON.parse(build().trim()) as { ordinal: number; type: string; payload: Record<string, unknown> };
+    assert.equal(row.type, "session_meta");
+    assert.equal(row.ordinal, 0, "真实产物顶层带 ordinal，照写降低未来版本挑剔风险");
+    const p = row.payload;
+    // 真机剔除实验确认的两个必需字段
+    assert.equal(p.cli_version, "0.162.0-alpha.17.2");
+    assert.equal(p.model_provider, "azure");
+    // 非必需但照真实产物写齐
+    assert.equal(p.source, "cli");
+    assert.deepEqual(p.runtime_workspace_roots, [CWD]);
+    assert.deepEqual(p.git, {});
+    // legacy 而非 paginated：0.143 与 0.162 都能读 legacy，paginated 在 0.143 上 -32601
+    assert.equal(p.history_mode, "legacy");
+    // 既有向后兼容字段保留
+    assert.equal(p.session_id, SID);
+    assert.equal(p.id, SID);
+    assert.equal(p.timestamp, ts);
+    assert.equal(p.cwd, CWD);
+    assert.equal(p.originator, "agent-hub");
+    assert.equal(p.thread_source, "user");
+    assert.deepEqual(p.base_instructions, { text: "You are Codex, a coding agent." });
+    // 账号/凭据相关字段不伪造（安全口径：不读 auth.json）
+    assert.equal("creator_user_id" in p, false);
+    assert.equal("creator_account_id" in p, false);
+    assert.equal("context_window" in p, false);
+  });
+
+  it("originator 可注入覆盖（默认 agent-hub）", () => {
+    const p = (JSON.parse(build({ originator: "custom" }).trim()) as { payload: Record<string, unknown> }).payload;
+    assert.equal(p.originator, "custom");
+  });
+
+  it("新合成会话能被 hub 自己的扫描/消息层读回（scanCodexSessions + loadCodexSessionMessages）", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agent-hub-codex-newmeta-"));
+    try {
+      const sessionsDir = join(dir, "sessions");
+      const dayDir = join(sessionsDir, "2026", "10", "09");
+      await mkdir(dayDir, { recursive: true });
+      const file = join(dayDir, `rollout-2026-10-09T02-53-50-${SID}.jsonl`);
+      await writeFile(file, build(), "utf8");
+
+      const { items, segments } = await scanCodexSessions(sessionsDir);
+      assert.equal(items.length, 1, "新形状 session_meta 必须被扫描层识别");
+      assert.equal(items[0].id, SID);
+      assert.equal(items[0].cwd, CWD);
+      assert.equal(items[0].messageCount, 0);
+      assert.deepEqual(segments.get(SID), [file]);
+
+      assert.deepEqual(await loadCodexSessionMessages(file), [], "只有 meta 行 → 零消息，不报错");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fork 核实：rewriteCodexRolloutIds 只换 id 字段，ordinal/cli_version 等新字段不被破坏", () => {
+    const newId = "019e67ea-c861-78a1-b429-119496dac86f";
+    const row = JSON.parse(rewriteCodexRolloutIds(build(), SID, newId).trim()) as { ordinal: number; payload: Record<string, unknown> };
+    assert.equal(row.ordinal, 0);
+    assert.equal(row.payload.session_id, newId);
+    assert.equal(row.payload.id, newId);
+    // 非 id 字段原封不动（replaceIdFields 只碰值 === oldId 的 id/session_id/thread_id）
+    assert.equal(row.payload.cli_version, "0.162.0-alpha.17.2");
+    assert.equal(row.payload.model_provider, "azure");
+    assert.equal(row.payload.history_mode, "legacy");
+    assert.deepEqual(row.payload.runtime_workspace_roots, [CWD]);
+    assert.deepEqual(row.payload.git, {});
   });
 });
 

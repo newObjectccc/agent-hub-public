@@ -41,6 +41,7 @@ import {
 } from "./uploads.js";
 import type {
   CommandListDto,
+  EffectivePolicyDto,
   FsTreeDto,
   MessageDto,
   PromptImageAttachment,
@@ -118,6 +119,8 @@ export function toSessionDto(session: SessionListItem): SessionDto {
  * defaultPolicy（config.claudeDriver.defaultPolicy）合并进 terminal 下发——前端默认接管判定
  * 按服务端策略走（active-only=活跃会话默认接管；always=打开即接管；never=只手动；
  * 老 server 缺省 → 前端按 active-only 容错）。pi/claude 通道的 statusFor 结果都要带。
+ * 注：terminal 全量展开 statusFor 结果，因此 driver 回传的 `effectivePolicy`（P1-2：接管后
+ * 实际生效的权限策略 + bypass 判定）会随之透传给前端；driver 未提供时不下发（向后兼容）。
  */
 function stampTerminal(
   session: SessionListItem,
@@ -614,12 +617,22 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
     if (!deps.codexDriver) throw new HubError(ErrorCodes.INVALID_REQUEST, "Codex 会话接管未启用，请配置 codexDriver.enabled", 400);
     return deps.codexDriver;
   };
-  const hostDriverFor = async (id: string): Promise<ClaudeDriverLinkLike | CodexDriverLinkLike> => {
+  /**
+   * 手机审批通道的归属驱动：codex / claude 各自驱动；返回 null = 该会话没有审批通道
+   * （pi 源走终端扩展指令队，权限在终端里确认）。
+   * P2-1：null 不再当错误抛——只读列表端点据此回落 200 空列表而不是 400：
+   * e74bcde 之前 pi 会话拿到的是 `{requests: []}`，改成 400「该会话没有手机审批通道」
+   * 是共享端点的错误码语义变更（且契约未记录），旧缓存 PWA / 第三方调用会突然报错。
+   * 向后兼容优先：没有审批请求本就是「空列表」的语义，不是客户端错误。
+   * 写路径（应答 host-requests/:requestId）仍抛 400：只有收到 host_request 事件才会调用，
+   * pi 会话永远不会走到，不存在兼容风险。
+   */
+  const hostDriverFor = async (id: string): Promise<ClaudeDriverLinkLike | CodexDriverLinkLike | null> => {
     const session = await hub.findSession(id);
     if (!session) throw new HubError(ErrorCodes.SESSION_NOT_FOUND, `会话不存在: ${id}`, 404);
     if (session.source === "codex") return requireCodexDriver();
     if (session.source === "claude") return requireClaudeDriver();
-    throw new HubError(ErrorCodes.INVALID_REQUEST, "该会话没有手机审批通道", 400);
+    return null;
   };
 
   // POST /api/agents/heartbeat：扩展启动即注册 + 每 30s 续（server 据此判定"终端 pi 在线"）
@@ -703,11 +716,22 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
           cwd: session.cwd,
           sessionFile: session.sessionFile,
         });
-        return reply.status(202).send({
+        const payload: {
+          attached: true;
+          agent: { sessionId: string; cwd: string; online: boolean; driver?: "queue" | "hub"; mirror: boolean };
+          effectivePolicy?: EffectivePolicyDto;
+        } = {
           attached: true,
           agent: { sessionId: req.params.id, cwd: session.cwd, online: true, driver: result.driver, mirror: result.mirror },
-        });
+        };
+        // P1-2：接管生效后把「实际生效的权限策略」随响应下发（bypass=true → 审批通道空转，
+        // 前端不得暗示有门禁）。driver 未回传时不下发该字段（可选 + 缺省不出现 = 向后兼容）。
+        const effectivePolicy = driver.statusFor(req.params.id).effectivePolicy;
+        if (effectivePolicy) payload.effectivePolicy = effectivePolicy;
+        return reply.status(202).send(payload);
       }
+      // 兼容兼底（P2-3）：source 枚举扩展后未接接管实现的会话走这里——400 而不是 404/500，
+      // 因为会话确实存在、只是该来源不支持接管（文案给前端直接展示）。
       throw new HubError(ErrorCodes.INVALID_REQUEST, "该会话不支持接管", 400);
     } catch (err) {
       return handle(reply, err);
@@ -737,10 +761,16 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
     try {
       const body = (typeof req.body === "object" && req.body !== null ? req.body : {}) as Record<string, unknown>;
       const session = await hub.findSession(req.params.id);
+      // P2-2：未知会话 → 404 SESSION_NOT_FOUND（e74bcde 之前是 agents.enqueue 兼底抛的
+      // 409 ATTACH_REQUIRED）。保留 404：语义更准确（会话根本不存在，而不是「需要先接管」），
+      // 409 会让调用方误以为补一次 attach 就能重试；此为有意的错误码语义变更（待同步契约文档）。
       if (!session) throw new HubError(ErrorCodes.SESSION_NOT_FOUND, `会话不存在: ${req.params.id}`, 404);
-      if (body.images !== undefined && !Array.isArray(body.images)) throw new HubError(ErrorCodes.INVALID_REQUEST, "images 必须是上传图片引用数组", 400);
-      const images = session.source === "codex" && body.images !== undefined
-        ? await loadImageAttachments(session.cwd, body.images as unknown[]) : undefined;
+      // P2-2：`images: null` 是老 PWA 显式表达「无附件」的写法（JSON 序列化会保留 null），
+      // 一律宽容视为未传；只有非 null 的非数组才是真非法值 → 400（与 /prompt 的 images 口径一致）。
+      const rawImages = body.images === null ? undefined : body.images;
+      if (rawImages !== undefined && !Array.isArray(rawImages)) throw new HubError(ErrorCodes.INVALID_REQUEST, "images 必须是上传图片引用数组", 400);
+      const images = session.source === "codex" && rawImages !== undefined
+        ? await loadImageAttachments(session.cwd, rawImages) : undefined;
       const input = {
         text: typeof body.text === "string" ? body.text : "",
         mode: body.mode as CommandMode | undefined,
@@ -794,7 +824,9 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   // GET /api/sessions/:id/host-requests：未决权限请求（手机刷新/重连兜底拉取，防 WS 丢事件卡死）
   app.get<{ Params: { id: string } }>("/api/sessions/:id/host-requests", async (req, reply) => {
     try {
-      return reply.send({ requests: (await hostDriverFor(req.params.id)).listHostRequests(req.params.id) });
+      const driver = await hostDriverFor(req.params.id);
+      // 无审批通道的源（pi）→ 200 空列表（向后兼容，理由见 hostDriverFor 注释）
+      return reply.send({ requests: driver ? driver.listHostRequests(req.params.id) : [] });
     } catch (err) {
       return handle(reply, err);
     }
@@ -812,6 +844,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
         }
         const message = typeof body.message === "string" ? body.message : undefined;
         const driver = await hostDriverFor(req.params.id);
+        if (!driver) throw new HubError(ErrorCodes.INVALID_REQUEST, "该会话没有手机审批通道", 400);
         const ok = driver === deps.codexDriver
           ? deps.codexDriver.respondHostRequest(req.params.id, req.params.requestId, { outcome, message })
           : (driver as ClaudeDriverLinkLike).respondHostRequest(req.params.id, req.params.requestId, { behavior: outcome, message: message ?? "" });

@@ -1,3 +1,4 @@
+import { codexPolicySummary, codexAttachNotice, normalizeCodexPolicy } from "../api/codexPolicy";
 import { ChatSkeleton } from "../components/Skeletons";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ClipboardEvent as ReactClipboardEvent, type CSSProperties } from "react";
 import { api, ApiError } from "../api/client";
@@ -374,6 +375,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
     async (autoDefault: boolean, source?: SessionSource) => {
       try {
         const result = await api.attachSession(sessionId);
+        terminalVersionRef.current += 1;
         // 重建 terminal 时把旧 terminal 的 defaultPolicy 带上（D3）：server 策略字段只随
         // 会话详情下发，重建丢字段会让未来按策略复用时退回 active-only 容错
         setTerminal((prev) => ({
@@ -383,11 +385,12 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
           mirror: result.agent?.mirror,
           defaultPolicy: prev?.defaultPolicy,
           source: source === "codex" ? "codex" : prev?.source,
+          effectivePolicy: normalizeCodexPolicy(result.effectivePolicy),
         }));
         applyAttachMode("attach");
         if (autoDefault) {
           setNotice(
-            source === "codex" ? "已默认接管 Codex，回复与审批将在此同步" : result.agent?.driver === "hub"
+            source === "codex" ? codexAttachNotice(normalizeCodexPolicy(result.effectivePolicy)) : result.agent?.driver === "hub"
               ? "会话活跃，已默认接管（hub 驱动 claude 执行）"
               : "终端在线，已默认接管终端",
           );
@@ -460,7 +463,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
           if (attachModeRef.current !== "attach") void ensureAttached(true, detail.session.source);
           else if (modeBefore !== "attach") {
             setNotice(
-              detail.session.source === "codex" ? "已默认接管 Codex，回复与审批将在此同步" : detail.session.terminal?.driver === "hub"
+              detail.session.source === "codex" ? codexAttachNotice(detail.session.terminal?.effectivePolicy) : detail.session.terminal?.driver === "hub"
                 ? "会话活跃，已默认接管（hub 驱动 claude 执行）"
                 : "终端在线，已默认接管终端",
             );
@@ -1203,7 +1206,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
           const attached = event.attached === true;
           const online = event.terminalOnline === true;
           terminalVersionRef.current += 1;
-          setTerminal((prev) => ({ ...prev, online, attached }));
+          setTerminal((prev) => ({ ...prev, online, attached, ...(event.source === "codex" || sourceRef.current === "codex" ? { source: "codex" as const, effectivePolicy: attached ? normalizeCodexPolicy(event.effectivePolicy) : undefined } : {}) }));
           if (!attached) {
             setHostRequests([]); // 驱动已停：挂起请求一律已被服务端 deny 收尾
             if (attachModeRef.current === "attach") {
@@ -1625,11 +1628,12 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
     try {
       if (mode === "attach") {
         const result = await api.attachSession(sessionId);
-        setTerminal((prev) => ({ ...prev, online: result.agent?.online ?? true, attached: true, driver: result.agent?.driver, mirror: result.agent?.mirror, source: session?.source === "codex" ? "codex" : prev?.source }));
-        setNotice(session?.source === "codex" ? "已接管 Codex：回复与审批将在此同步" : result.agent?.driver === "hub" ? "已接管：消息由 Claude 驱动继续执行" : "已接管终端：消息将发往电脑终端 pi 实时执行");
+        terminalVersionRef.current += 1;
+        setTerminal((prev) => ({ ...prev, online: result.agent?.online ?? true, attached: true, driver: result.agent?.driver, mirror: result.agent?.mirror, source: session?.source === "codex" ? "codex" : prev?.source, effectivePolicy: normalizeCodexPolicy(result.effectivePolicy) }));
+        setNotice(session?.source === "codex" ? codexAttachNotice(normalizeCodexPolicy(result.effectivePolicy)) : result.agent?.driver === "hub" ? "已接管：消息由 Claude 驱动继续执行" : "已接管终端：消息将发往电脑终端 pi 实时执行");
       } else {
         await api.detachSession(sessionId);
-        setTerminal((prev) => (prev ? { ...prev, attached: false } : prev));
+        setTerminal((prev) => (prev ? { ...prev, attached: false, effectivePolicy: undefined } : prev));
         setNotice(`已切回 📱 平行模式：消息由电脑上的 ${session?.source ?? "pi"} 实例继续处理`);
       }
       attachModeRef.current = mode;
@@ -2108,7 +2112,10 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
           />
         ))}
         {/* 发送归属确认一行小字（E3）："已发往终端" / "平行线工作中"；无内容零占位 */}
-        <ChannelEcho echo={echo} />
+        {session?.source === "codex" && terminal?.attached && (
+          <div className="codex-policy-note" role="note" aria-label="Codex 权限设置">{codexPolicySummary(terminal.effectivePolicy)}</div>
+        )}
+        <ChannelEcho echo={echo?.channel === "attach" && session?.source === "codex" ? { ...echo, source: "codex", effectivePolicy: terminal?.effectivePolicy } : echo} />
         <div className="composer">          <SlashCommandPanel
             ref={slashPanelRef}
             open={slashOpen && slashSpan !== null}

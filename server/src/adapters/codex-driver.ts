@@ -6,12 +6,13 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
 import { ErrorCodes, HubError } from "../errors.js";
-import type { HostRequestDto, HostRequestOutcome, MessageDto, MessageImage, ServerEvent, TerminalAttachInfo, ToolCallDto } from "../types.js";
+import type { EffectivePolicyDto, HostRequestDto, HostRequestOutcome, MessageDto, MessageImage, ServerEvent, TerminalAttachInfo, ToolCallDto } from "../types.js";
 import {
   APPROVAL_METHODS, approvalItemPreview, buildApprovalResult, buildDriverArgs, buildResumeParams, buildTurnInput,
-  codexMessageId, hostRequestPreview, parseDriverMode, safePreview, snapshotRequestedPermissions,
+  codexMessageId, hostRequestPreview, parseDriverMode, parseEffectivePolicy, safePreview, snapshotRequestedPermissions,
   type CodexApprovalItemPreview, type CodexApprovalPolicy, type CodexApprovalType, type CodexDriverMode, type CodexSandbox, type CodexUserInput,
 } from "./codex-host-protocol.js";
+import { planPolicyOverrides, assertPolicyNotWeaker, type PolicyOverrides } from "./codex-policy.js";
 import { CodexRpc, CodexRpcError, isRecord, isRpcId, type CodexNotification, type CodexRpcId, type CodexServerRequest } from "./codex-rpc.js";
 
 export type EmitFn = (sessionId: string, event: ServerEvent) => void;
@@ -62,6 +63,8 @@ export interface CodexDriverOptions {
   requestTimeoutMs?: number;
   writeTimeoutMs?: number;
   interruptTimeoutMs?: number;
+  /** 轮次不活跃 watchdog（毫秒）：本轮长时间没有任何 codex 事件、也没有终态通知时兜底收尾；<=0 关闭。 */
+  turnWatchdogMs?: number;
   approvalPolicy?: CodexApprovalPolicy;
   sandbox?: CodexSandbox;
   spawnFn?: typeof spawn;
@@ -94,6 +97,8 @@ interface TurnState {
   id: string | null;
   aborted: boolean;
   errorEmitted: boolean;
+  /** 本轮最后一次可重试错误（willRetry:true）文本；只在终态未给出真实原因时兜底展示。 */
+  lastRetryableError: string | null;
   accepted: Promise<string>;
   resolveAccepted: (id: string) => void;
   rejectAccepted: (error: Error) => void;
@@ -103,6 +108,9 @@ interface TurnState {
   users: MessageDto[];
   interruptSent: boolean;
   interruptTimer: ReturnType<typeof setTimeout> | null;
+  /** 本轮最后一次活动时间（codex 通知与审批动作都会刷新），watchdog 据此判定轮次是否停滞。 */
+  lastActivity: number;
+  watchdog: ReturnType<typeof setTimeout> | null;
 }
 interface HostRequestEntry {
   id: string;
@@ -124,6 +132,8 @@ interface DriverEntry {
   failed: boolean;
   turn: TurnState | null;
   snapshotTurn: TurnState | null;
+  /** thread/resume 协议回显归一化后的生效策略（P1-2）；未回显时缺省，前端按「未知」容错。 */
+  effectivePolicy?: EffectivePolicyDto;
   queue: Command[];
   commands: Map<string, Command>;
   hostRequests: Map<string, HostRequestEntry>;
@@ -142,6 +152,10 @@ interface AttachAttempt {
 const CLIENT_TTL_MS = 10 * 60_000;
 const RESOLVED_TTL_MS = 5 * 60_000;
 const KILL_GRACE_MS = 2_000;
+/** 轮次不活跃兜底阈值：丢失 turn/completed 时的最长等待，避免会话永久停在 running。 */
+const TURN_INACTIVITY_MS = 10 * 60_000;
+/** JSON-RPC invalid request：codex 用它表达写者互斥（线程已被其它客户端占用）。 */
+const RPC_INVALID_REQUEST = -32600;
 const MAX_QUEUE = 100;
 const MAX_BUFFERED_EVENTS = 1_000;
 
@@ -160,7 +174,12 @@ export class CodexDriverHub implements CodexDriverLinkLike {
   private readonly commandStates = new Map<string, CodexCommandStatus & { at: number }>();
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
   private disposed = false;
-  private capabilityVerified = false;
+  /**
+   * 已在本进程内验证过「能完成 app-server 握手 + 写者互斥 resume」的会话 id。
+   * 必须按会话记录：早先是进程级单次标志，任一会话接管成功后所有 codex 会话的
+   * statusFor().online 都会变 true，未接管的会话被误报为在线。
+   */
+  private readonly capabilityVerified = new Set<string>();
 
   constructor(options: CodexDriverOptions) {
     this.options = options;
@@ -211,58 +230,90 @@ export class CodexDriverHub implements CodexDriverLinkLike {
       if (!capabilities.appServer || !capabilities.writerLock) throw unavailable("该 Codex 版本未通过 app-server 写者互斥能力检查，请配置兼容的 Codex 可执行文件");
       await abortable(this.assertExternalQuiet(opts.sessionFile, Math.max(now, Date.now())), controller.signal);
       check();
-      const child = this.spawnFn(context.codexBin, buildDriverArgs(), {
-        cwd: opts.cwd || undefined, env: context.env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true,
-      });
-      entry = {
-        id, cwd: opts.cwd, child, rpc: undefined as unknown as CodexRpc,
-        ready: false, stopped: false, closed: false, failed: false, turn: null, snapshotTurn: null,
-        queue: [], commands: new Map(), hostRequests: new Map(), nativeRequests: new Map(), nativeRequestTurns: new Map(), retiredTurns: new Set(),
-        idleTimer: null, killTimer: null,
-      };
-      const current = entry;
-      current.rpc = new CodexRpc(child, {
-        requestTimeoutMs: this.options.requestTimeoutMs,
-        writeTimeoutMs: this.options.writeTimeoutMs,
-        onNotification: (notification) => this.handleNotification(current, notification),
-        onRequest: (request) => this.handleServerRequest(current, request),
-        onFault: (error) => {
-          if (error instanceof CodexRpcError && error.code === "PROCESS_CLOSED") current.closed = true;
-          this.failEntry(current, error);
-        },
-      });
-      // 持续排空 stderr，但不保留或转发：provider 诊断可能含凭据。
-      // 界面仅接收经过截断和脱敏的 RPC 错误信息。
-      child.stderr?.on("data", () => undefined);
-      child.stderr?.on("error", () => undefined);
-      child.on("close", () => {
-        current.closed = true;
-        if (current.killTimer) clearTimeout(current.killTimer);
-        current.killTimer = null;
-        if (this.drivers.get(id) === current) this.drivers.delete(id);
-      });
-      this.drivers.set(id, current);
-      await abortable(current.rpc.request("initialize", {
-        clientInfo: { name: "agent_hub", title: "Agent Hub", version: "0.3.0" },
-        capabilities: { experimentalApi: true },
-      }), controller.signal);
-      check();
-      await abortable(current.rpc.notify("initialized"), controller.signal);
-      check();
-      const result = await abortable(current.rpc.request("thread/resume", buildResumeParams(id, {
-        cwd: opts.cwd, approvalPolicy: this.options.approvalPolicy, sandbox: this.options.sandbox,
-      })), controller.signal);
-      check();
-      if (current.stopped) throw unavailable("Codex 接管连接已关闭");
-      const thread = isRecord(result) && isRecord(result.thread) ? result.thread : null;
-      if (!thread || thread.id !== id || !isRecord(thread.status)) throw unavailable("Codex thread/resume 返回了不兼容的线程状态");
-      if (thread.status.type === "active") throw new HubError(ErrorCodes.SESSION_BUSY, "Codex 会话仍在运行，等待电脑端结束后再接管", 409);
-      if (thread.status.type !== "idle") throw unavailable(`Codex 会话当前无法接管（${safePreview(String(thread.status.type), 80)}）`);
-      current.ready = true;
-      this.capabilityVerified = true;
-      this.touchIdle(current);
-      this.emit(id, { type: "attach_state", attached: true, terminalOnline: true });
-      return { attached: true, driver: "hub", mirror: false };
+      let baseline: unknown;
+      let overrides: PolicyOverrides = {};
+      for (let pass = 0; pass < 2; pass += 1) {
+        const child = this.spawnFn(context.codexBin, buildDriverArgs(), {
+          cwd: opts.cwd || undefined, env: context.env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true,
+        });
+        entry = {
+          id, cwd: opts.cwd, child, rpc: undefined as unknown as CodexRpc,
+          ready: false, stopped: false, closed: false, failed: false, turn: null, snapshotTurn: null,
+          queue: [], commands: new Map(), hostRequests: new Map(), nativeRequests: new Map(), nativeRequestTurns: new Map(), retiredTurns: new Set(),
+          idleTimer: null, killTimer: null,
+        };
+        const current = entry;
+        current.rpc = new CodexRpc(child, {
+          requestTimeoutMs: this.options.requestTimeoutMs,
+          writeTimeoutMs: this.options.writeTimeoutMs,
+          onNotification: (notification) => this.handleNotification(current, notification),
+          onRequest: (request) => this.handleServerRequest(current, request),
+          onFault: (error) => {
+            if (error instanceof CodexRpcError && error.code === "PROCESS_CLOSED") current.closed = true;
+            this.failEntry(current, error);
+          },
+        });
+        // 持续排空 stderr，但不保留或转发：provider 诊断可能含凭据。
+        // 界面仅接收经过截断和脱敏的 RPC 错误信息。
+        child.stderr?.on("data", () => undefined);
+        child.stderr?.on("error", () => undefined);
+        // 子进程可能只发 exit/error 而不发 close（spawn 失败、kill 抛错等）。只依赖 close 时
+        // 条目会永驻 drivers：该会话永久 isReleasing/isBusy，并长期占用一个 maxConcurrent 名额。
+        // 三个事件共用同一幂等收尾：标记 closed、清理 SIGKILL 定时器、摘除条目。
+        const settle = (kind: "close" | "exit" | "error") => {
+          // error 只在进程确定不可用时兜底（RPC 已断开、已主动收尾或已退出），
+          // 否则 kill 失败之类的 error 会把一个仍在运行的进程误判为已释放写者锁。
+          if (kind === "error" && child.pid !== undefined && child.exitCode === null && child.signalCode === null) return;
+          current.closed = true;
+          if (current.killTimer) clearTimeout(current.killTimer);
+          current.killTimer = null;
+          if (this.drivers.get(id) === current) this.drivers.delete(id);
+        };
+        child.on("close", () => settle("close"));
+        child.on("exit", () => settle("exit"));
+        child.on("error", () => settle("error"));
+        this.drivers.set(id, current);
+        await abortable(current.rpc.request("initialize", {
+          clientInfo: { name: "agent_hub", title: "Agent Hub", version: "0.3.0" },
+          capabilities: { experimentalApi: true },
+        }), controller.signal);
+        check();
+        await abortable(current.rpc.notify("initialized"), controller.signal);
+        check();
+        const result = await abortable(current.rpc.request("thread/resume", buildResumeParams(id, {
+          cwd: opts.cwd, ...overrides,
+        })), controller.signal);
+        check();
+        if (current.stopped) throw unavailable("Codex 接管连接已关闭");
+        const thread = isRecord(result) && isRecord(result.thread) ? result.thread : null;
+        if (!thread || thread.id !== id || !isRecord(thread.status)) throw unavailable("Codex thread/resume 返回了不兼容的线程状态");
+        if (thread.status.type === "active") throw new HubError(ErrorCodes.SESSION_BUSY, "Codex 会话仍在运行，等待电脑端结束后再接管", 409);
+        if (thread.status.type !== "idle") throw unavailable(`Codex 会话当前无法接管（${safePreview(String(thread.status.type), 80)}）`);
+        if (pass === 0) {
+          baseline = result;
+          overrides = planPolicyOverrides(baseline, { approvalPolicy: this.options.approvalPolicy, sandbox: this.options.sandbox });
+          if (Object.keys(overrides).length > 0) {
+            // 0.162 在同一进程重复 resume 会忽略覆盖参数，必须先确认旧 writer 释放再重建。
+            this.stopEntry(current, "正在应用收紧后的权限", false, false);
+            await abortable(waitForDriverRelease(current), controller.signal);
+            check();
+            await abortable(this.assertExternalQuiet(opts.sessionFile, Date.now()), controller.signal);
+            check();
+            continue;
+          }
+        } else assertPolicyNotWeaker(baseline, result, overrides, opts.cwd);
+        // P1-2：从 thread/resume 回显解析实际生效策略（只取协议回显，不读 ~/.codex/config.toml）。
+        // 解析不出 = 不回传该字段，前端按「未知」容错，绝不把缺省当成安全档位。
+        const policy = parseEffectivePolicy(result);
+        if (policy) current.effectivePolicy = policy;
+        current.ready = true;
+        this.capabilityVerified.add(id);
+        trimSet(this.capabilityVerified, 200);
+        this.touchIdle(current);
+        this.emit(id, { type: "attach_state", attached: true, terminalOnline: true, source: "codex", ...(policy ? { effectivePolicy: policy } : {}) });
+        return { attached: true, driver: "hub", mirror: false };
+      }
+      throw unavailable("Codex 权限初始化未完成");
     } catch (error) {
       if (entry) this.stopEntry(entry, "Codex 接管启动失败", false);
       throw attachError(error);
@@ -307,7 +358,14 @@ export class CodexDriverHub implements CodexDriverLinkLike {
     return this.isAttached(id) && entry ? entry.turn ? "running" : entry.failed ? "error" : "idle" : null;
   }
   statusFor(id: string): TerminalAttachInfo {
-    return { online: this.isAttached(id) || this.capabilityVerified, attached: this.isAttached(id), driver: "hub", mirror: false, source: "codex" };
+    const attached = this.isAttached(id);
+    // online 只描述本会话：已接管，或本进程确实验证过它可以被接管（可重新接管）。
+    const info: TerminalAttachInfo = { online: attached || this.capabilityVerified.has(id), attached, driver: "hub", mirror: false, source: "codex" };
+    // P1-2：接管期间带出生效策略（bypass=true → 审批通道空转）；未接管/未回显时不带出，
+    // 前端按「未知」容错（可选字段缺省不出现 = 向后兼容）。
+    const policy = this.drivers.get(id)?.effectivePolicy;
+    if (policy) info.effectivePolicy = policy;
+    return info;
   }
   snapshotFor(id: string): MessageDto[] {
     const entry = this.drivers.get(id);
@@ -374,13 +432,15 @@ export class CodexDriverHub implements CodexDriverLinkLike {
     const accepted = new Promise<string>((resolve, reject) => { resolveAccepted = resolve; rejectAccepted = reject; });
     void accepted.catch(() => undefined);
     const turn: TurnState = {
-      id: null, aborted: false, errorEmitted: false, accepted, resolveAccepted, rejectAccepted,
+      id: null, aborted: false, errorEmitted: false, lastRetryableError: null, accepted, resolveAccepted, rejectAccepted,
       buffered: [], items: new Map(), approvalPreviews: new Map(), users: [], interruptSent: false, interruptTimer: null,
+      lastActivity: Date.now(), watchdog: null,
     };
     entry.turn = turn; // 立即占用当前轮，避免两个 HTTP 请求同时启动两轮。
     entry.snapshotTurn = turn;
     entry.failed = false;
     this.clearIdle(entry);
+    this.armTurnWatchdog(entry, turn);
     void (async () => {
       try {
         command.delivery = "sent";
@@ -414,9 +474,17 @@ export class CodexDriverHub implements CodexDriverLinkLike {
         if (isTransportFailure(error)) { this.failEntry(entry, asError(error)); return; }
         entry.turn = null;
         entry.failed = true;
+        // 本轮已不再持有 turn，watchdog 不能再悬挂到超时（stopEntry 路径由其自身清理）。
+        if (turn.watchdog) clearTimeout(turn.watchdog);
+        turn.watchdog = null;
         this.clearQueue(entry, "当前轮未被 Codex 接收，排队指令取消");
         this.rejectHostRequests(entry, "cancelled");
-        this.emit(entry.id, { type: "error", code: ErrorCodes.PROMPT_FAILED, message: safePreview(asError(error).message) });
+        // 写者互斥（-32600）不是笼统失败：让手机端能看出是会话已被其它客户端占用。
+        const conflict = isWriterConflict(error);
+        this.emit(entry.id, {
+          type: "error", code: conflict ? ErrorCodes.SESSION_BUSY : ErrorCodes.PROMPT_FAILED,
+          message: conflict ? commandFailure(error) : safePreview(asError(error).message),
+        });
         this.emit(entry.id, { type: "status", status: "error" });
         this.emit(entry.id, { type: "agent_settled" });
         this.touchIdle(entry);
@@ -467,15 +535,52 @@ export class CodexDriverHub implements CodexDriverLinkLike {
     turn.interruptTimer = setTimeout(() => {
       if (entry.turn === turn && !entry.stopped) this.failEntry(entry, new CodexRpcError("INTERRUPT_TIMEOUT", "Codex 中止后未在时限内结束当前轮"));
     }, this.options.interruptTimeoutMs ?? 30_000);
+    turn.interruptTimer.unref?.();
     void entry.rpc.request("turn/interrupt", { threadId: entry.id, turnId: turn.id }).catch((error: unknown) => {
       if (entry.turn === turn && !entry.stopped) this.failEntry(entry, asError(error));
     });
+  }
+
+  /**
+   * 轮次终局兜底：丢失或未发 turn/completed 时，entry.turn 永不清空会让会话
+   * 永久 running（不触发 idle-detach，后续 prompt 一律「会话正忙」）。
+   * 超时后走与既有失败收尾相同的 failEntry（error + agent_settled + status error 并终止进程
+   * 释放写者锁），不留下可能仍在执行的僵尸进程。
+   * 注意不能看到 thread/status/changed === idle 就立即收尾：等审批时 thread 也可能报 idle，
+   * 那样会误杀正在等手机点「允许」的轮次；改为有未决审批时不计入不活跃时长。
+   */
+  private armTurnWatchdog(entry: DriverEntry, turn: TurnState): void {
+    const limit = this.options.turnWatchdogMs ?? TURN_INACTIVITY_MS;
+    if (limit <= 0) return;
+    const check = () => {
+      turn.watchdog = null;
+      // 幂等：本轮已正常收尾（completeTurn/stopEntry）或已换轮时不再重复处理。
+      if (entry.stopped || entry.turn !== turn) return;
+      const now = Date.now();
+      if (entry.hostRequests.size) turn.lastActivity = now;
+      const elapsed = now - turn.lastActivity;
+      if (elapsed >= limit) {
+        this.failEntry(entry, new CodexRpcError("TURN_INACTIVE", `Codex 超过 ${Math.round(limit / 1_000)} 秒未推进当前轮，也未发送终态通知`));
+        return;
+      }
+      turn.watchdog = setTimeout(check, limit - elapsed);
+      turn.watchdog.unref?.();
+    };
+    turn.watchdog = setTimeout(check, limit);
+    turn.watchdog.unref?.();
+  }
+
+  /** 刷新轮次活动基线：watchdog 只统计「codex 与手机都无动作」的静默时长。 */
+  private touchTurn(entry: DriverEntry): void {
+    if (entry.turn) entry.turn.lastActivity = Date.now();
   }
 
   private handleNotification(entry: DriverEntry, event: CodexNotification): void {
     if (entry.stopped || !isRecord(event.params)) return;
     const params = event.params;
     if (params.threadId !== entry.id) return;
+    // 任何本线程通知（item/delta/status/error 等）都算本轮有推进，刷新 watchdog 基线。
+    this.touchTurn(entry);
     if (event.method === "serverRequest/resolved") {
       if (!isRpcId(params.requestId)) return;
       const rawKey = nativeKey(params.requestId);
@@ -507,12 +612,16 @@ export class CodexDriverHub implements CodexDriverLinkLike {
     }
     if (turn.aborted) return;
     if (event.method === "error") {
-      const error = isRecord(params.error) ? params.error.message : "Codex 运行失败";
+      const message = errorText(params.error) ?? "Codex 运行失败";
+      // willRetry:true 是可重试错误（网络抖动重连等），不是本轮终态：
+      // 立即 emit 会给手机一条假报错横幅，还会占掉唯一的终态错误名额，
+      // 让随后 turn/completed 携带的真实失败原因被静默丢弃。只记录，留待收尾兜底。
+      if (params.willRetry === true) { turn.lastRetryableError = safePreview(message); return; }
       if (!turn.errorEmitted) {
         turn.errorEmitted = true;
-        this.emit(entry.id, { type: "error", code: ErrorCodes.PROMPT_FAILED, message: safePreview(typeof error === "string" ? error : "Codex 运行失败") });
+        this.emit(entry.id, { type: "error", code: ErrorCodes.PROMPT_FAILED, message: safePreview(message) });
       }
-      // 可重试或不可重试的 error 都等待 turn/completed 再整轮收尾。
+      // 不可重试的 error 也等待 turn/completed 再整轮收尾。
       return;
     }
     if (event.method === "item/agentMessage/delta" && typeof params.itemId === "string" && typeof params.delta === "string") {
@@ -587,6 +696,8 @@ export class CodexDriverHub implements CodexDriverLinkLike {
     }
     if (turn.interruptTimer) clearTimeout(turn.interruptTimer);
     turn.interruptTimer = null;
+    if (turn.watchdog) clearTimeout(turn.watchdog);
+    turn.watchdog = null;
     this.rejectHostRequests(entry, "cancelled");
     for (const message of turn.items.values()) {
       if (message.ended) continue;
@@ -599,10 +710,12 @@ export class CodexDriverHub implements CodexDriverLinkLike {
     entry.turn = null;
     if (turn.id) { entry.retiredTurns.add(turn.id); trimSet(entry.retiredTurns, 100); }
     entry.failed = status === "failed";
-    if (entry.failed && !turn.errorEmitted) this.emit(entry.id, {
-      type: "error", code: ErrorCodes.PROMPT_FAILED,
-      message: safePreview(isRecord(error) && typeof error.message === "string" ? error.message : "Codex 运行失败"),
-    });
+    if (entry.failed && !turn.errorEmitted) {
+      // 终态错误只发一条，且必须是真实失败原因：turn/completed 携带的 message 优先，
+      // 缺失时才回落到本轮最后一次可重试错误文本（例如 "Reconnecting... 2/5"）。
+      const message = errorText(error) ?? turn.lastRetryableError ?? "Codex 运行失败";
+      this.emit(entry.id, { type: "error", code: ErrorCodes.PROMPT_FAILED, message: safePreview(message) });
+    }
     this.emit(entry.id, { type: "status", status: entry.failed ? "error" : "idle" });
     this.emit(entry.id, { type: "agent_settled" });
     const next = entry.queue.shift();
@@ -660,6 +773,7 @@ export class CodexDriverHub implements CodexDriverLinkLike {
     entry.nativeRequestTurns.set(rawKey, previousTurn === undefined || previousTurn === turn.id ? turn.id! : null);
     trimMap(entry.nativeRequests, 1_000);
     trimMap(entry.nativeRequestTurns, 1_000);
+    this.touchTurn(entry);
     this.emit(entry.id, { type: "host_request", request: { ...dto } });
   }
 
@@ -686,6 +800,8 @@ export class CodexDriverHub implements CodexDriverLinkLike {
     if (entry.hostRequests.get(request.id) !== request) return;
     clearTimeout(request.timer);
     entry.hostRequests.delete(request.id);
+    // 审批有动作（含超时/取消）也算本轮活动，避免 watchdog 把刚回答的轮次当成停滞。
+    this.touchTurn(entry);
     this.resolvedHostRequests.set(request.id, Date.now() + RESOLVED_TTL_MS);
     trimMap(this.resolvedHostRequests, 200);
     if (send) void entry.rpc.respond(request.nativeId, buildApprovalResult(request.type, decision, request.permissions, outcome === "cancelled")).catch((error: unknown) => {
@@ -740,7 +856,7 @@ export class CodexDriverHub implements CodexDriverLinkLike {
     this.stopEntry(entry, safePreview(error.message), true);
   }
 
-  private stopEntry(entry: DriverEntry, reason: string, failed: boolean): void {
+  private stopEntry(entry: DriverEntry, reason: string, failed: boolean, announce = true): void {
     if (entry.stopped) return;
     const wasReady = entry.ready;
     entry.stopped = true;
@@ -753,6 +869,9 @@ export class CodexDriverHub implements CodexDriverLinkLike {
       turn.aborted = true;
       turn.rejectAccepted(new Error(reason));
       if (turn.interruptTimer) clearTimeout(turn.interruptTimer);
+      turn.interruptTimer = null;
+      if (turn.watchdog) clearTimeout(turn.watchdog);
+      turn.watchdog = null;
       for (const message of turn.items.values()) {
         if (message.tool && !message.ended) message.tool.status = "error";
         this.endItem(entry, message);
@@ -766,7 +885,7 @@ export class CodexDriverHub implements CodexDriverLinkLike {
     if (failed && wasReady) this.emit(entry.id, { type: "error", code: ErrorCodes.DRIVER_FAILED, message: `Codex 接管已断开：${safePreview(reason)}` });
     entry.rpc.dispose(new Error(reason));
     entry.snapshotTurn = null;
-    this.emit(entry.id, { type: "attach_state", attached: false, terminalOnline: false });
+    if (announce) this.emit(entry.id, { type: "attach_state", attached: false, terminalOnline: false, source: "codex" });
     // unsubscribe 不会释放写者锁；必须终止进程，真实退出前仍占容量。
     // 若 TERM 未能退出，再用 KILL 收尾。
     if (!entry.closed) {
@@ -877,15 +996,30 @@ function toolResult(item: Record<string, unknown>): string | null {
   return text ? safePreview(text, 1_000) : null;
 }
 function unavailable(message: string): HubError { return new HubError(ErrorCodes.ATTACH_UNAVAILABLE, message, 409); }
+/** 提取 codex 错误载荷里的可读原因；缺失时返回 null，便于按优先级回落。 */
+function errorText(value: unknown): string | null {
+  const message = isRecord(value) ? value.message : value;
+  return typeof message === "string" && message.trim() !== "" ? message : null;
+}
+/** 写者互斥以协议错误码为准；codex 改措辞时仍能识别。 */
+function isWriterConflict(error: unknown): boolean {
+  return error instanceof CodexRpcError && error.code === RPC_INVALID_REQUEST;
+}
+const WRITER_CONFLICT_RE = /active writer|already.*writer|writer.*(?:held|active|busy)|thread.*already.*(?:active|running)/i;
 function attachError(error: unknown): HubError {
   if (error instanceof HubError) return error;
   const message = safePreview(asError(error).message);
-  if (/active writer|already.*writer|writer.*(?:held|active|busy)|thread.*already.*(?:active|running)/i.test(message)) return new HubError(ErrorCodes.SESSION_BUSY, `Codex 会话正由其他客户端占用：${message}`, 409);
+  // 先判错误码（-32600 = invalid request，codex 用它表达线程已被其它客户端持有），
+  // 文案正则只作旧版本/改措辞时的兜底。
+  if (isWriterConflict(error) || WRITER_CONFLICT_RE.test(message)) {
+    return new HubError(ErrorCodes.SESSION_BUSY, `Codex 会话正由其他客户端占用：${message}`, 409);
+  }
   return unavailable(`Codex 接管不可用：${message}`);
 }
 function isTransportFailure(error: unknown): boolean { return error instanceof CodexRpcError && typeof error.code === "string"; }
 function commandFailure(error: unknown): string {
   const message = safePreview(asError(error).message);
+  if (isWriterConflict(error)) return `Codex 会话正由其他客户端占用，请先在电脑端退出该会话后重试：${message}`;
   return error instanceof CodexRpcError && error.code === "RPC_TIMEOUT"
     ? `Codex 未确认是否收到此消息，请先核对会话内容；相同消息编号不会自动重发。${message}` : message;
 }
@@ -906,4 +1040,15 @@ function trimMap<K, V>(map: Map<K, V>, limit: number): void {
 }
 function trimSet<T>(set: Set<T>, limit: number): void {
   while (set.size > limit) { const key = set.values().next(); if (key.done) break; set.delete(key.value); }
+}
+
+/** 不以“已经发出 kill”冒充 writer 已释放；超时仍保留 busy 条目。 */
+function waitForDriverRelease(entry: DriverEntry): Promise<void> {
+  if (entry.closed) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const done = () => { cleanup(); resolve(); };
+    const timer = setTimeout(() => { cleanup(); reject(unavailable("Codex 写者尚未释放，请稍后重试")); }, KILL_GRACE_MS + 1_000);
+    const cleanup = () => { clearTimeout(timer); entry.child.off("close", done); entry.child.off("exit", done); };
+    entry.child.once("close", done); entry.child.once("exit", done);
+  });
 }

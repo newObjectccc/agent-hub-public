@@ -80,6 +80,25 @@ export interface TerminalAttachInfo {
    * 可缺省：老 server 不下发 → 前端按 true 容错（保持历史行为）。
    */
   responsive?: boolean;
+  /**
+   * 接管后**实际生效**的权限策略（P1-2，来自 codex `thread/resume` 响应回显，绝不读
+   * ~/.codex/config.toml）。`bypass: true` = approval 为 never；沙箱范围单独显示，不能据此推断是否审批。
+   * 可缺省：老 server / driver 未回传 → 前端按「未知」容错，不得推断为有门禁。
+   */
+  effectivePolicy?: EffectivePolicyDto;
+}
+
+/**
+ * 生效权限策略回显（P1-2）：值是协议原样归一化后的字符串（kebab-case），
+ * 未回显的维度用 "unknown"，避免前端把缺省当成安全档位。
+ */
+export interface EffectivePolicyDto {
+  /** 生效审批策略：untrusted | on-request | never | unknown（协议回显归一化） */
+  approval: string;
+  /** 生效沙箱：read-only | workspace-write | danger-full-access | unknown */
+  sandbox: string;
+  /** approval=never：不请求操作审批；与沙箱是否受限独立 */
+  bypass: boolean;
 }
 
 /** host 权限请求（hub 驱动 claude 会话的手机批权限，契约 §12） */
@@ -252,7 +271,7 @@ export type ServerEvent =
       activity: SubAgentActivityUpdate;
     }
   | { type: "error"; code: string; message: string }
-  | { type: "attach_state"; attached: boolean; terminalOnline: boolean }
+  | { type: "attach_state"; attached: boolean; terminalOnline: boolean; source?: "codex"; effectivePolicy?: EffectivePolicyDto }
   | { type: "command_ack"; commandId: string; ok: boolean; error: string | null }
   | { type: "host_request"; request: HostRequestDto }
   | { type: "host_request_resolved"; requestId: string; outcome: HostRequestOutcome }

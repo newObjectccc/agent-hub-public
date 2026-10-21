@@ -32,6 +32,13 @@ async function fixture(options: Partial<CodexAdapterOptions> = {}) {
     sessionsDir: join(base, "sessions"), sessionIndexFile: join(base, "session_index.jsonl"),
     prepareProviderEnv: async () => {},
     spawnFn: ((bin: string, args: string[]) => {
+      // createSession 的 --version 探测（P0：session_meta 必需 cli_version）：立即回应并退出，
+      // 不计入 children/calls（本文件断言只针对 prompt 流程子进程）；测试绝不真 spawn codex。
+      if (args[0] === "--version") {
+        const probe = new FakeChild();
+        setImmediate(() => { probe.stdout.end("codex-cli 0.162.0\n"); probe.emit("close", 0); });
+        return probe as unknown as ChildProcess;
+      }
       const child = new FakeChild(); children.push(child); calls.push({ bin, args });
       return child as unknown as ChildProcess;
     }) as unknown as typeof spawn,

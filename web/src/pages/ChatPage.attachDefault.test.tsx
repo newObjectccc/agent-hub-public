@@ -606,3 +606,26 @@ describe("残留 attach 模式卡死自愈（claudeDriver.enabled=false / 老 se
     expect(window.localStorage.getItem(PINNED_KEY)).toBe("attach");
   });
 });
+
+describe("Codex 权限状态与界面一致", () => {
+  it("详情回显 never 后持续展示不审批，缺省策略显示未知", async () => {
+    mockDetail({online:true,attached:true,driver:"hub"},"codex",{terminal:{online:true,attached:true,driver:"hub",source:"codex",effectivePolicy:{approval:"never",sandbox:"workspace-write",bypass:true}}});
+    const el=await render();
+    expect(el.querySelector('[aria-label="Codex 权限设置"]')?.textContent).toContain("不请求操作审批");
+    await act(async()=>{wsEvent?.({type:"attach_state",attached:true,terminalOnline:true,source:"codex"});});
+    expect(el.querySelector('[aria-label="Codex 权限设置"]')?.textContent).toContain("尚未确认");
+    expect(el.textContent).not.toContain("回复与审批将在此同步");
+  });
+  it("握手与跨设备 WS 都能更新实际策略，断开后旧策略清除", async () => {
+    localStorage.setItem(PINNED_KEY,"attach");
+    mockDetail({online:false,attached:false,driver:"hub"},"codex");
+    mocks.attachSession.mockResolvedValue({attached:true,agent:{online:true,driver:"hub"},effectivePolicy:{approval:"never",sandbox:"read-only",bypass:true}});
+    const el=await render();
+    expect(el.querySelector('[aria-label="Codex 权限设置"]')?.textContent).toContain("不请求操作审批");
+    await act(async()=>{wsEvent?.({type:"attach_state",attached:true,terminalOnline:true,source:"codex",effectivePolicy:{approval:"untrusted",sandbox:"danger-full-access",bypass:false}});});
+    expect(el.querySelector('[aria-label="Codex 权限设置"]')?.textContent).toContain("需要确认的操作");
+    expect(el.querySelector('[aria-label="Codex 权限设置"]')?.textContent).toContain("文件访问范围未限制");
+    await act(async()=>{wsEvent?.({type:"attach_state",attached:false,terminalOnline:false,source:"codex"});});
+    expect(el.querySelector('[aria-label="Codex 权限设置"]')).toBeNull();
+  });
+});

@@ -6,7 +6,8 @@
  * - parallel（📱 平行继续）：消息走 server SDK（现状），终端 pi 不受影响
  * - attach（🖥 接管终端）：消息入指令队列，电脑终端 pi 进程实时显示并执行
  */
-import type { AttachCommandMode, TerminalAttachInfo } from "./types";
+import { codexPolicySummary } from "./codexPolicy";
+import type { EffectivePolicyDto, AttachCommandMode, TerminalAttachInfo } from "./types";
 import type { SendMode } from "./prompt";
 
 export type AttachMode = "parallel" | "attach";
@@ -120,7 +121,7 @@ export function attachBadge(
     return {
       icon: "🖥⚡",
       label: "已接管",
-      title: codex ? "🖥⚡ 已接管：由 Codex 驱动执行，审批与回复同步到手机；退出接管后可在电脑继续" : hub
+      title: codex ? `🖥⚡ 已接管：${codexPolicySummary(terminal.effectivePolicy)}；退出接管后可在电脑继续` : hub
         ? "🖥⚡ 已接管：消息由 hub 驱动 claude 执行并写回同一会话（电脑终端投屏实时显示）"
         : "🖥⚡ 已接管：消息发往电脑终端 pi 进程执行",
       variant: "attached",
@@ -224,6 +225,7 @@ export interface ChannelEchoState {
   /** 驱动形态（hub=claude 驱动文案分支） */
   driver?: "queue" | "hub";
   source?: "claude" | "codex";
+  effectivePolicy?: EffectivePolicyDto;
 }
 
 export function echoText(echo: ChannelEchoState): string {
@@ -233,7 +235,7 @@ export function echoText(echo: ChannelEchoState): string {
       case "sent":
         return echo.source === "codex" ? "🖥 已发往 Codex 驱动，等待接收确认…" : hub ? "🖥 已发往 claude 驱动，等待接收确认…" : "🖥 已发往终端，等待接收确认…";
       case "acked":
-        return echo.source === "codex" ? "🖥 Codex 已接收 ✓ 回复与审批将在此同步" : hub ? "🖥 驱动已接收 ✓ 消息将在电脑的 claude 会话执行" : "🖥 终端已接收 ✓ 消息将在终端 pi 执行";
+        return echo.source === "codex" ? `🖥 Codex 已接收 ✓ ${codexPolicySummary(echo.effectivePolicy)}` : hub ? "🖥 驱动已接收 ✓ 消息将在电脑的 claude 会话执行" : "🖥 终端已接收 ✓ 消息将在终端 pi 执行";
       case "failed":
         return `🖥 ${hub ? "注入驱动" : "终端注入"}失败${echo.detail ? `：${echo.detail}` : ""}`;
       default:
