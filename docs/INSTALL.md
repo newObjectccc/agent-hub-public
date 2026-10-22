@@ -14,12 +14,12 @@ Codex 接管当前要求二进制 ≥0.162（含对应 alpha），不要求版�
 ## 2. 安装与首次启动
 
 ```bash
-npm install -g @newobjectccc/agent-hub@beta
+npm install -g @newobjectcccddd/agent-hub@beta --registry=https://registry.npmjs.org/
 agent-hub --version
 agent-hub remote
 ```
 
-临时试用可用 `npx @newobjectccc/agent-hub@beta remote`。不要安装裸名 `agent-hub`，那是第三方包。全局安装遇到 EACCES 时使用用户级 Node/npm 安装或 npm prefix；以你自己的用户运行 Hub，避免误用 root 的空会话目录。
+临时试用可用 `npx --registry=https://registry.npmjs.org/ @newobjectcccddd/agent-hub@beta remote`。上述命令仅对本次指定 npm 官方源，保留已有公司源设置；安装公开包不需要 npm 登录。不要安装裸名 `agent-hub`，那是第三方包。全局安装遇到 EACCES 时使用用户级 Node/npm 安装或 npm prefix；以你自己的用户运行 Hub，避免误用 root 的空会话目录。
 
 `remote` 自动完成配置初始化、可用的 pi 扩展安装和 Tailscale Serve 引导。全局 pi CLI 是可选项；使用 Claude/Codex 不需要另外安装 pi。只测本机可运行 `agent-hub start`，打开 `http://127.0.0.1:7700`。
 
@@ -46,7 +46,7 @@ agent-hub remote
 
 `~` 指当前用户的主目录（Windows 通常是 `C:\Users\<user>`）。npm 升级或 npx 换缓存目录不影响这份用户状态。`workspaceRoot` 可设置为你实际的项目目录；原有 agent 会话仍留在各 agent 的标准目录，不会被搬入包目录。
 
-更新：先停止前台或自启动实例，再执行 `npm install -g @newobjectccc/agent-hub@beta`，然后重新启动。先确认前台路径工作，再用全局安装执行：
+更新：先停止前台或自启动实例，再执行 `npm install -g @newobjectcccddd/agent-hub@beta --registry=https://registry.npmjs.org/`，然后重新启动。先确认前台路径工作，再用全局安装执行：
 
 ```bash
 agent-hub setup --autostart

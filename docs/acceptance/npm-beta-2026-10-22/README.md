@@ -1,6 +1,6 @@
 # npm Beta 发布前验收（2026-10-22）
 
-版本：0.3.0-beta.1；包名最终以发布账号实际拥有的全小写 scope 为准。当前记录不表示 registry 已发布成功，发布状态须另行检查 npm 元数据。
+版本：0.3.0-beta.1；包名：`@newobjectcccddd/agent-hub`，使用已核验的 npm 发布账号作用域。当前记录不表示 registry 已发布成功，发布状态须另行检查 npm 元数据。
 
 ## 已验证
 

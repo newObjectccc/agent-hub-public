@@ -65,11 +65,11 @@ Claude 接管不会控制原来的 TUI 窗口。接管期间请避免同时在�
 推荐全局安装，便于长期使用和注册自启动；npm 包自带前后端产物，**不需要 Git、pnpm 或现场构建**：
 
 ```bash
-npm install -g @newobjectccc/agent-hub@beta
+npm install -g @newobjectcccddd/agent-hub@beta --registry=https://registry.npmjs.org/
 agent-hub remote
 ```
 
-只想临时试用，也可以执行 `npx @newobjectccc/agent-hub@beta remote`。裸名 `agent-hub` 是无关第三方包，请使用完整作用域。npm 包与 npx 共用 `~/.agent-hub/config/hub.config.json` 和 `~/.agent-hub/data/`，更换版本或清理 npx 缓存不会删除配置、应用锁和运行状态。
+只想临时试用，也可以执行 `npx --registry=https://registry.npmjs.org/ @newobjectcccddd/agent-hub@beta remote`。上述命令仅对本次指定 npm 官方源，不修改已有的公司源设置。裸名 `agent-hub` 是无关第三方包，请使用完整作用域。npm 包与 npx 共用 `~/.agent-hub/config/hub.config.json` 和 `~/.agent-hub/data/`，更换版本或清理 npx 缓存不会删除配置、应用锁和运行状态。
 
 首次 `remote` 会生成配置、按需安装 pi 终端扩展，并尝试配置 Tailscale Serve；之后可重复执行。只在电脑本机试用时运行 `agent-hub start`，打开 `http://127.0.0.1:7700` 即可。
 

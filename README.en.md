@@ -65,11 +65,11 @@ Prepare **Node.js ≥22.19 (includes npm)** and install/sign in to **at least on
 A global install is recommended for regular use and autostart. The npm package includes the frontend and backend builds: **no Git, pnpm, or on-device build is required**.
 
 ```bash
-npm install -g @newobjectccc/agent-hub@beta
+npm install -g @newobjectcccddd/agent-hub@beta --registry=https://registry.npmjs.org/
 agent-hub remote
 ```
 
-For a temporary trial, use `npx @newobjectccc/agent-hub@beta remote`. The unscoped `agent-hub` is an unrelated package; use the full scoped name. Global installs and npx share `~/.agent-hub/config/hub.config.json` and `~/.agent-hub/data/`, so changing versions or clearing the npx cache does not erase configuration, the app lock, or runtime state.
+For a temporary trial, use `npx --registry=https://registry.npmjs.org/ @newobjectcccddd/agent-hub@beta remote`. These commands select the official npm registry for this invocation and preserve existing company registry settings. The unscoped `agent-hub` is an unrelated package; use the full scoped name. Global installs and npx share `~/.agent-hub/config/hub.config.json` and `~/.agent-hub/data/`, so changing versions or clearing the npx cache does not erase configuration, the app lock, or runtime state.
 
 The first `remote` generates configuration, installs pi terminal extensions when applicable, and attempts to configure Tailscale Serve. It is safe to repeat. For computer-only use, run `agent-hub start` and open `http://127.0.0.1:7700`.
 
