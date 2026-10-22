@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// agent-hub remote — 一键远程入口：首次自动 setup（缺 config / 依赖时）→ 构建 → start --tailscale。
+// agent-hub remote — 首次自动 setup → 启动；默认推荐 Tailscale，可选 --lan / --no-tailscale。
 // 幂等：已初始化时直接走 start 流程；纯 Node 跨平台，零 bash 依赖。
 import fs from 'node:fs';
 import { pathToFileURL } from 'node:url';
@@ -31,16 +31,16 @@ export function remotePlan({ hasConfig, hasDeps, skipSetup = false } = {}) {
 
 /**
  * 生成透传给 setup / start 子流程的参数（纯函数，供测试）。
- * start 固定带 --tailscale（一键远程语义）。
+ * 默认推荐 Tailscale；--lan / --no-tailscale 跳过 Tailscale 配置。
  */
-export function remoteChildArgs({ port, skipBuild = false, dryRun = false, color = true } = {}) {
+export function remoteChildArgs({ port, skipBuild = false, dryRun = false, color = true, lan = false, tailscale = true } = {}) {
   const common = [];
   if (port !== undefined && port !== null && port !== '') common.push('--port', String(port));
   if (dryRun) common.push('--dry-run');
   if (color === false) common.push('--no-color');
   return {
     setupArgs: [...common],
-    startArgs: ['--tailscale', ...common, ...(skipBuild ? ['--skip-build'] : [])],
+    startArgs: [...(lan ? ['--lan'] : tailscale ? ['--tailscale'] : []), ...common, ...(skipBuild ? ['--skip-build'] : [])],
   };
 }
 
@@ -48,7 +48,7 @@ export async function main(argv = [], deps = {}) {
   let parsed;
   try {
     parsed = parseCliArgs(argv, {
-      booleans: ['skip-setup', 'skip-build', 'dry-run', 'help', 'color'],
+      booleans: ['skip-setup', 'skip-build', 'dry-run', 'help', 'color', 'lan', 'tailscale'],
       values: ['port'],
     });
   } catch (e) {
@@ -69,6 +69,10 @@ export async function main(argv = [], deps = {}) {
   const root = deps.root ?? repoRoot();
   const dryRun = Boolean(options.dryRun);
   const configPath = deps.configPath ?? defaultConfigPath(root, { home: deps.home });
+  if (options.lan && options.tailscale === true) {
+    log('请选择 --lan 或 --tailscale，不能同时使用。');
+    return 1;
+  }
 
   log(colors.bold('agent-hub remote') + colors.dim(` (platform=${platform}${dryRun ? ', dry-run' : ''})`));
 
@@ -77,6 +81,8 @@ export async function main(argv = [], deps = {}) {
     skipBuild: options.skipBuild === true,
     dryRun,
     color: colorOn,
+    lan: options.lan === true,
+    tailscale: options.tailscale !== false,
   });
 
   // [1/2] 初始化检查：缺 config / 依赖 → 首次自动 setup（幂等，已初始化则跳过）
@@ -98,8 +104,8 @@ export async function main(argv = [], deps = {}) {
     log(`${colors.ok} [1/2] ${PLAN_REASON_LABELS[plan.reason]}，跳过 setup`);
   }
 
-  // [2/2] 构建并启动（--tailscale 远程）
-  log(`${colors.info} [2/2] 构建并启动（Tailscale 远程）…`);
+  const mode = options.lan ? '局域网' : options.tailscale === false ? '沿用绑定配置，跳过 Tailscale' : 'Tailscale 远程（推荐，可选）';
+  log(`${colors.info} [2/2] 准备并启动（${mode}）…`);
   const { main: startMain } = await import('./start.js');
   return startMain(startArgs, deps);
 }

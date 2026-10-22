@@ -10,9 +10,18 @@ import { defaultConfigPath, defaultConfigTemplatePath, repoRoot } from './lib/pa
 import { ensureConfig } from './lib/config.js';
 import { installAutostart } from './lib/autostart.js';
 import { installExtensions } from './lib/extensions.js';
-import { installDeps, isWindows, resolvePackageManager, findCommand, runCapture } from './lib/process.js';
+import { installDeps, isWindows, resolvePackageManager } from './lib/process.js';
+import { findTailscale } from './lib/tailscale.js';
 import { depsInstalled, isPublishedLayout } from './start.js';
 import { printReport } from './check.js';
+
+/** 显式选择优先于自动检测；--no-tailscale 不调用检测，更不会配置 Serve。 */
+export function autostartNetworkArgs(options = {}, locate = () => findTailscale()) {
+  if (options.lan) return ['--lan'];
+  if (options.tailscale === false) return [];
+  if (options.tailscale === true || locate().found) return ['--tailscale'];
+  return [];
+}
 
 export async function main(argv = [], deps = {}) {
   let parsed;
@@ -38,6 +47,10 @@ export async function main(argv = [], deps = {}) {
   const colors = createColors({ enabled: options.color !== false && deps.useColor !== false });
   const root = deps.root ?? repoRoot();
   const dryRun = Boolean(options.dryRun);
+  if (options.lan && options.tailscale === true) {
+    log('请选择 --lan 或 --tailscale，不能同时使用。');
+    return 1;
+  }
 
   log(colors.bold('agent-hub setup') + colors.dim(` (platform=${platform}${dryRun ? ', dry-run' : ''})`));
 
@@ -132,12 +145,8 @@ export async function main(argv = [], deps = {}) {
     log('');
     log(colors.bold('== 开机自启 / Autostart =='));
     // 常驻即远程：检测到 tailscale 时自启自动带 --tailscale（启动时幂等重配 serve，手机通道开箱即连）；
-    // 显式 --lan（纯局域网）/ --tailscale 优先；未装 tailscale 则纯本地启动（零影响）
-    const extraArgs = options.lan
-      ? ['--lan']
-      : options.tailscale
-        ? ['--tailscale']
-        : (findCommand('tailscale', { platform, env, run: runCapture }).found ? ['--tailscale'] : []);
+    // --lan / --no-tailscale / --tailscale 优先；未装 Tailscale 则沿用本地绑定。
+    const extraArgs = autostartNetworkArgs(options, () => findTailscale({ platform, env }));
     if (extraArgs.includes('--tailscale')) {
       log(`${colors.info} 自启命令携带 --tailscale：开机自动确保 Tailscale Serve（手机远程开箱即连）`);
     }

@@ -11,6 +11,7 @@ import { parseCliArgs, checkHelpText } from './lib/args.js';
 import { defaultConfigPath, repoRoot, expandHome } from './lib/paths.js';
 import { isWindows, runCapture, findCommand } from './lib/process.js';
 import { inspectCodexRuntime, formatCodexRuntimeDiagnostics } from './lib/codex-runtime.js';
+import { findTailscale, tailscaleRunOptions } from './lib/tailscale.js';
 
 /**
  * 打印检测结果（setup / check 共用）。
@@ -102,12 +103,13 @@ export function reportLatency(colors, log, deps = {}) {
   } = deps;
   log('');
   log(colors.bold('-- 链路延迟体检 / Remote latency (Tailscale) --'));
-  const locate = find('tailscale', { platform, env, run });
+  const locate = findTailscale({ ...deps, platform, env, run, find });
   if (!locate.found) {
-    log(`${colors.warn} 未检测到 tailscale（手机远程需要；纯局域网 --lan 模式可忽略）`);
+    log(`${colors.info} Tailscale 为推荐的可选远程方案，未安装则跳过链路体检；本机与局域网使用不受影响。`);
     return;
   }
-  const res = run('tailscale', ['netcheck'], { env, shell: isWindows(platform), timeout: 20_000 });
+  const binary = locate.path || 'tailscale';
+  const res = run(binary, ['netcheck'], { ...tailscaleRunOptions({ platform, env, binary }), timeout: 20_000 });
   const report = parseNetcheck(res.stdout);
   if (!res.ok || !report.ok) {
     log(`${colors.warn} netcheck 执行/解析失败（${res.error || res.stderr.trim() || '未知原因'}），可手动执行 \`tailscale netcheck\` 自查`);

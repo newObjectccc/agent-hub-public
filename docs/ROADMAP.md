@@ -69,6 +69,7 @@
 
 ### T11 一键集成 ✅
 - Tailscale 检测假阳性修复、npm run remote、npm 发包就绪（本地 pack-smoke 冒烟通过；npm Beta 发布状态见安装指南）、workspaceRoot 回落
+- Tailscale 推荐可选：源码版 remote 支持局域网 / 跳过 Tailscale，自启可显式退出自动检测；统一识别系统客户端路径、补安装/登录引导，保留 npm Beta.1 的可用替代命令。
 
 ### 批次 5（✅ 完成）— 手机继续不活跃会话：正确性与性能（含真机验证抓 bug）
 

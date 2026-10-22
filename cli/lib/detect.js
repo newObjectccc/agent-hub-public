@@ -1,6 +1,7 @@
 // 环境检测：node / pi / tmux / ttyd / tailscale。
 // 检测失败=给出平台对应安装建议，不算错误（Node 版本过低时明确提示）。
 import { findCommand, runCapture, isWindows } from './process.js';
+import { findTailscale, tailscaleRunOptions } from './tailscale.js';
 
 /** 各工具元数据：检测命令、版本参数、安装建议（按平台）。 */
 export const TOOLS = {
@@ -49,7 +50,7 @@ export const TOOLS = {
   },
   tailscale: {
     name: 'tailscale',
-    label: 'Tailscale（出门远程访问）',
+    label: 'Tailscale（推荐的可选远程方案）',
     required: false,
     versionArgs: ['version'],
     hints: {
@@ -121,7 +122,9 @@ export function detectTool(toolName, deps = {}) {
   const tool = TOOLS[toolName];
   if (!tool) throw new Error(`未知工具: ${toolName}`);
 
-  const located = find(tool.name, { platform, env, run });
+  const located = tool.name === 'tailscale'
+    ? findTailscale({ ...deps, platform, env, run, find })
+    : find(tool.name, { platform, env, run });
   if (!located.found) {
     return {
       name: tool.name,
@@ -138,7 +141,11 @@ export function detectTool(toolName, deps = {}) {
     };
   }
 
-  const res = run(tool.name, tool.versionArgs, { env, shell: isWindows(platform) });
+  const binary = tool.name === 'tailscale' ? located.path || tool.name : tool.name;
+  const execOptions = tool.name === 'tailscale'
+    ? tailscaleRunOptions({ platform, env, binary })
+    : { env, shell: isWindows(platform) };
+  const res = run(binary, tool.versionArgs, execOptions);
   const { version, firstLine } = parseVersionOutput(res.ok ? res.stdout || res.stderr : res.stderr || res.stdout);
 
   // 严格模式：提取不到版本（含崩溃特征 / 无输出）→「检测到二进制但不可用」，绝不能报 [OK]

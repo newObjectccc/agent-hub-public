@@ -45,6 +45,7 @@ const REQUIRED_FILES = [
   "cli/lib/entry.js",
   "cli/lib/extensions.js",
   "cli/lib/net.js",
+  "cli/lib/tailscale.js",
   "cli/lib/paths.js",
   "cli/lib/paths.d.ts",
   "cli/lib/process.js",

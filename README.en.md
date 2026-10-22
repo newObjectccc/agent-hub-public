@@ -71,11 +71,20 @@ agent-hub remote
 
 For a temporary trial, use `npx --registry=https://registry.npmjs.org/ @newobjectcccddd/agent-hub@beta remote`. These commands select the official npm registry for this invocation and preserve existing company registry settings. The unscoped `agent-hub` is an unrelated package; use the full scoped name. Global installs and npx share `~/.agent-hub/config/hub.config.json` and `~/.agent-hub/data/`, so changing versions or clearing the npx cache does not erase configuration, the app lock, or runtime state.
 
-The first `remote` generates configuration, installs pi terminal extensions when applicable, and attempts to configure Tailscale Serve. It is safe to repeat. For computer-only use, run `agent-hub start` and open `http://127.0.0.1:7700`.
+The first `remote` generates configuration, installs pi terminal extensions when applicable, and attempts to configure Tailscale Serve. It is safe to repeat. **Tailscale is the recommended optional remote-access method, not a required Hub dependency.**
+
+| Access method | Command | Prerequisites |
+|---|---|---|
+| This computer | `agent-hub start` | Defaults to `http://127.0.0.1:7700`; no Tailscale needed |
+| Trusted LAN | `agent-hub start --lan` | Both devices on the same LAN; HTTP limits PWA installation |
+| Across networks (recommended) | `agent-hub remote` | Install and sign in to Tailscale on both devices |
+| Your own network / reverse proxy | `agent-hub start` | Use your existing network and authentication; see [security](SECURITY.md) and [Headscale](docs/HEADSCALE.md) |
+
+The source version also supports `remote --lan`, `remote --no-tailscale`, and `setup --autostart --no-tailscale` to skip automatic detection. With npm `0.3.0-beta.1`, use the `start` commands above for local or LAN access.
 
 ### Connect the computer and phone with Tailscale
 
-1. Install [Tailscale](https://tailscale.com/download) on both devices, sign in with the same account, and connect to the same tailnet. Ensure `tailscale` is available on the computer's PATH. Custom ACLs must allow the phone to access the computer.
+1. If you choose this recommended method, install [Tailscale](https://tailscale.com/download) on both devices, sign in with the same account, and connect to the same tailnet. The computer needs a working Tailscale CLI; the source version also discovers the macOS app's bundled CLI and the default Windows installation path. Custom ACLs must allow the phone to access the computer.
 2. First-time Serve setup requires MagicDNS and HTTPS certificates. Follow the authorization URL printed by the CLI, or enable them on the admin console's DNS page. See the [official Serve guide](https://tailscale.com/docs/features/tailscale-serve).
 3. Run `agent-hub remote` on the computer. The remote entry is ready when it reports **Tailscale Serve enabled (HTTPS)** and prints `https://<node>.<tailnet>.ts.net`.
 4. Open that HTTPS URL on the phone. Use Chrome's install entry on Android, or Safari's Share → Add to Home Screen on iPhone. Set an app lock if desired, then choose a session in the workbench.
@@ -162,7 +171,7 @@ Always-on on your own machine (platform-native autostart recommended):
 agent-hub setup --autostart   # global install; stop the foreground instance first, registration attempts startup
 ```
 
-Once registered it starts with the user session; see the platform guide for details. When tailscale is detected the autostart command automatically carries `--tailscale` (Tailscale Serve is re-provisioned idempotently on every boot, so the phone remote channel is always ready; override with `agent-hub setup --autostart --lan` for LAN-only). Day-to-day operations:
+Once registered it starts with the user session; see the platform guide for details. When tailscale is detected the autostart command automatically carries `--tailscale` to attempt Serve setup at startup; use `agent-hub setup --autostart --lan` for LAN-only access. Complete Tailscale installation, sign-in, and first-time HTTPS consent beforehand. Day-to-day operations:
 
 | Task | macOS (launchd) | Linux (systemd --user) |
 |---|---|---|

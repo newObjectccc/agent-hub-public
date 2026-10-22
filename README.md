@@ -71,11 +71,20 @@ agent-hub remote
 
 只想临时试用，也可以执行 `npx --registry=https://registry.npmjs.org/ @newobjectcccddd/agent-hub@beta remote`。上述命令仅对本次指定 npm 官方源，不修改已有的公司源设置。裸名 `agent-hub` 是无关第三方包，请使用完整作用域。npm 包与 npx 共用 `~/.agent-hub/config/hub.config.json` 和 `~/.agent-hub/data/`，更换版本或清理 npx 缓存不会删除配置、应用锁和运行状态。
 
-首次 `remote` 会生成配置、按需安装 pi 终端扩展，并尝试配置 Tailscale Serve；之后可重复执行。只在电脑本机试用时运行 `agent-hub start`，打开 `http://127.0.0.1:7700` 即可。
+首次 `remote` 会生成配置、按需安装 pi 终端扩展，并尝试配置 Tailscale Serve；之后可重复执行。**Tailscale 是推荐的可选远程方案，不是 Hub 的必装依赖。**
+
+| 使用方式 | 启动命令 | 需要准备 |
+|---|---|---|
+| 电脑本机 | `agent-hub start` | 默认地址 `http://127.0.0.1:7700`，无需 Tailscale |
+| 可信局域网 | `agent-hub start --lan` | 手机与电脑在同一局域网；HTTP 下 PWA 安装能力受限 |
+| 跨网络远程（推荐） | `agent-hub remote` | 电脑、手机安装并登录 Tailscale |
+| 自建网络 / 反向代理 | `agent-hub start` | 沿用自己的网络与鉴权配置，参见 [安全说明](SECURITY.md) 与 [Headscale 指南](docs/HEADSCALE.md) |
+
+源码版 `remote` 另支持 `--lan`、`--no-tailscale`，自启可用 `setup --autostart --no-tailscale` 跳过自动检测；npm `0.3.0-beta.1` 使用上表的 `start` 命令选择本机或局域网。
 
 ### 电脑和手机通过 Tailscale 接入
 
-1. 两端安装 [Tailscale](https://tailscale.com/download)，登录同一账号、连接同一 tailnet，确保电脑上的 `tailscale` 命令可用。若你配置过 ACL，还需允许手机访问这台电脑。
+1. 选择此推荐方案时，两端安装 [Tailscale](https://tailscale.com/download)，登录同一账号、连接同一 tailnet。电脑需要可用的 Tailscale CLI；源码版还会识别 macOS App 内置 CLI 与 Windows 默认安装路径。若你配置过 ACL，还需允许手机访问这台电脑。
 2. 首次使用 Serve 需要开启 MagicDNS / HTTPS 证书。按 CLI 打印的授权地址完成确认，或在管理后台的 DNS 页开启；参见 [Tailscale Serve 官方说明](https://tailscale.com/docs/features/tailscale-serve)。
 3. 电脑运行 `agent-hub remote`。看到 **“Tailscale Serve 已开启（HTTPS）”** 和 `https://<node>.<tailnet>.ts.net` 才表示远程入口已建立。
 4. 手机浏览器打开该 HTTPS 地址。Android Chrome 使用安装入口；iPhone Safari 使用“分享 → 添加到主屏幕”。首次打开可设置应用锁，再进入工作台选择会话。
@@ -162,7 +171,7 @@ pnpm build && pnpm lint && pnpm test   # 全量验证（2000+ 测试，GitHub Ac
 agent-hub setup --autostart   # 全局安装；先停止前台实例，注册后会尝试立即启动
 ```
 
-注册后随用户登录启动，具体平台行为见平台说明。检测到 tailscale 时自启命令自动携带 `--tailscale`（开机自动确保 Tailscale Serve，手机远程开箱即连；纯局域网用 `agent-hub setup --autostart --lan` 覆盖）。日常运维：
+注册后随用户登录启动，具体平台行为见平台说明。检测到 tailscale 时自启命令自动携带 `--tailscale`（启动时尝试确保 Tailscale Serve）；纯局域网用 `agent-hub setup --autostart --lan` 覆盖。Tailscale 本身的安装、登录和首次 HTTPS 授权需先完成。日常运维：
 
 | 操作 | macOS（launchd） | Linux（systemd --user） |
 |---|---|---|

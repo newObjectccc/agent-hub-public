@@ -2,6 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
+import { autostartNetworkArgs } from '../setup.js';
 import {
   buildLaunchdPlist,
   buildSystemdUnit,
@@ -13,6 +14,15 @@ import {
 
 const REPO = '/repo/agent-hub';
 const NODE = '/usr/local/bin/node';
+
+test('自启的 Tailscale 推荐可跳过，显式选择不被自动检测覆盖', () => {
+  const mustNotDetect = () => { throw new Error('explicit choice must not auto-detect'); };
+  assert.deepEqual(autostartNetworkArgs({ tailscale: false }, mustNotDetect), []);
+  assert.deepEqual(autostartNetworkArgs({ tailscale: true }, mustNotDetect), ['--tailscale']);
+  assert.deepEqual(autostartNetworkArgs({ lan: true }, mustNotDetect), ['--lan']);
+  assert.deepEqual(autostartNetworkArgs({}, () => ({ found: false })), []);
+  assert.deepEqual(autostartNetworkArgs({}, () => ({ found: true })), ['--tailscale']);
+});
 
 test('escapeXml: 转义 XML 特殊字符', () => {
   assert.equal(escapeXml('a&b<c>"d"\'e\''), 'a&amp;b&lt;c&gt;&quot;d&quot;&apos;e&apos;');

@@ -1,5 +1,12 @@
 # Changelog
 
+## 未发布（2026-10-22）可选 Tailscale 接入
+
+- Tailscale 明确为推荐的可选远程方案；中英 README 与安装指南补充本机、可信局域网和自建网络入口。
+- 源码版 `remote` 支持 `--lan` / `--no-tailscale`，自启注册支持 `--no-tailscale` 跳过自动检测；npm Beta.1 保留使用 `start` / `start --lan` 的说明。
+- 统一识别 PATH、macOS App 内置 CLI 与 Windows 默认安装路径；macOS 后台调用强制 CLI 模式，缺少客户端时给平台官方安装引导。
+- 未登录/已停止的有效 JSON 状态不再因非零退出码被误报为二进制损坏；不再让过期的 Online 标记覆盖已停止状态；修正控制面域名后缀匹配和畸形 URL 处理。
+
 ## 0.3.0-beta.1（2026-10-22）npm 首次试用发布
 
 - npm 包内置前后端构建，无需用户安装 Git/pnpm 或现场构建；首次 setup 不再递归安装依赖。

@@ -91,8 +91,8 @@ export function rootHelpText() {
            dev mode: server hot reload + web Vite HMR in one command
   start    安装依赖、构建 web/server 并启动面板（配置缺失自动生成）
            install deps, build web/server and start the panel (config auto-generated)
-  remote   一键远程入口：首次自动 setup + 构建 + start --tailscale（幂等）
-           one-command remote entry: auto-setup on first run, build + start --tailscale
+  remote   初始化并启动：推荐 Tailscale，可选 --lan / --no-tailscale（幂等）
+           auto-setup and start: Tailscale recommended, --lan / --no-tailscale optional
   check    只读环境检测报告（doctor 为同义别名）/ read-only environment report
   open     在浏览器打开面板 / open the panel in your browser
 
@@ -158,6 +158,7 @@ export function setupHelpText() {
                            register autostart, platform-adapted; auto-adds --tailscale when tailscale is found
   --lan                    autostart 纯局域网模式（覆盖自动 --tailscale）/ LAN-only autostart
   --tailscale              autostart 显式带 --tailscale / explicitly add --tailscale to autostart
+  --no-tailscale           autostart 跳过 Tailscale（沿用绑定配置）/ skip Tailscale in autostart
   --dry-run                只打印将写入内容，不落盘 / print only, write nothing
   --no-color               禁用彩色 / disable colors
   -h, --help               显示帮助 / show help
@@ -222,14 +223,21 @@ export function remoteHelpText() {
 
 流程 / Pipeline（幂等，可重复执行）:
   1. 初始化检查：缺 config / 依赖时自动跑 setup（已初始化则跳过）
-  2. 构建 web/server 并以 --tailscale 启动（含 tailscale serve 引导）
+  2. 启动面板（源码仓先构建；npm 包直接使用内置产物）
+  3. 默认尝试 Tailscale Serve（推荐，可选）；未就绪时仍启动本机面板并给安装/登录指引
 
 选项 / Options:
+  --tailscale      使用推荐的 Tailscale 远程方案（默认）/ use Tailscale (default)
+  --lan            跳过 Tailscale，开放可信局域网 / LAN access without Tailscale
+  --no-tailscale   跳过 Tailscale，沿用配置绑定地址 / keep configured bind host, skip Tailscale
   --port <n>       覆盖配置端口 / override config port
   --skip-setup     即使未初始化也不跑 setup / never run setup
   --skip-build     跳过 vite build / tsc / skip build steps
   --dry-run        只打印将执行的步骤，不执行 / print steps only, execute nothing
   --no-color       禁用彩色 / disable colors
   -h, --help       显示帮助 / show help
+
+Tailscale 为可选系统客户端，由本人安装并登录；本命令不自动安装 VPN 或更换账号。
+仅本机使用可运行 agent-hub start（默认绑定 127.0.0.1）。
 `;
 }

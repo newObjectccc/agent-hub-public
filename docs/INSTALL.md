@@ -1,12 +1,12 @@
 # 新电脑安装与手机验收（npm Beta）
 
-目标：新电脑安装 npm 包，手机和电脑加入同一 Tailscale 网络后，能从手机打开工作台并让这台电脑上的 agent 工作。npm 包包含构建产物，不需要克隆仓库、安装 pnpm 或本地构建。
+目标：新电脑安装 npm 包后，能打开工作台并让这台电脑上的 agent 工作。跨网络访问推荐可选的 Tailscale；也支持本机、可信局域网和自建网络。npm 包包含构建产物，不需要克隆仓库、安装 pnpm 或本地构建。
 
 ## 1. 电脑准备
 
 - Node.js ≥22.19（自带 npm），检查 `node --version`、`npm --version`。
 - pi、Claude Code、Codex 任选至少一种，先用该电脑的普通用户完成安装、登录，并在原 CLI 中确认能正常对话。模型权限、订阅或 API 额度由相应服务提供，Hub 不代替登录。
-- 电脑和手机安装 Tailscale，登录同一账号并连接；电脑终端能执行 `tailscale status`。自定义 tailnet ACL 需要允许手机访问电脑。
+- 选用 Tailscale 远程访问时，电脑和手机安装官方客户端，登录同一账号并连接；电脑需要可用的 Tailscale CLI。自定义 tailnet ACL 需要允许手机访问电脑。本机或局域网使用不必安装 Tailscale。
 - 电脑保持开机联网；进入睡眠或停止 Hub 后，手机无法让它继续工作。
 
 Codex 接管当前要求二进制 ≥0.162（含对应 alpha），不要求版本号与桌面 App 完全相同。`agent-hub check` 会输出实际所用二进制的诊断；必要时在配置的 `codexBin` 指定路径。模型调用与完整审批的验证边界见 [CODEX_DRIVER.md](CODEX_DRIVER.md)。
@@ -21,7 +21,13 @@ agent-hub remote
 
 临时试用可用 `npx --registry=https://registry.npmjs.org/ @newobjectcccddd/agent-hub@beta remote`。上述命令仅对本次指定 npm 官方源，保留已有公司源设置；安装公开包不需要 npm 登录。不要安装裸名 `agent-hub`，那是第三方包。全局安装遇到 EACCES 时使用用户级 Node/npm 安装或 npm prefix；以你自己的用户运行 Hub，避免误用 root 的空会话目录。
 
-`remote` 自动完成配置初始化、可用的 pi 扩展安装和 Tailscale Serve 引导。全局 pi CLI 是可选项；使用 Claude/Codex 不需要另外安装 pi。只测本机可运行 `agent-hub start`，打开 `http://127.0.0.1:7700`。
+`remote` 自动完成配置初始化、可用的 pi 扩展安装和 Tailscale Serve 引导。全局 pi CLI 是可选项；使用 Claude/Codex 不需要另外安装 pi。
+
+不使用 Tailscale 时，安装 npm 包后运行 `agent-hub start`（默认 `http://127.0.0.1:7700`）；可信局域网用 `agent-hub start --lan`，手机打开电脑的局域网地址。已有 headscale / 反向代理可沿用自己的网络配置，见 [HEADSCALE.md](HEADSCALE.md) 与 [安全说明](../SECURITY.md)。HTTP 局域网地址的 PWA 能力受限。
+
+源码版补充了 `remote --lan` 和 `remote --no-tailscale`，后者只跳过 Tailscale 配置，保留已有绑定地址；`setup --autostart --no-tailscale` 可跳过自启动的 Tailscale 自动检测。npm `0.3.0-beta.1` 仍使用上面的 `start` 命令。
+
+源码版会自动查找 PATH、macOS Tailscale App 内置 CLI 和 Windows 默认安装目录，并在缺失时给出对应平台的官方安装说明。npm 不捆绑或静默安装 VPN 服务；客户端安装、系统网络扩展确认与账号登录由本人完成。可参考 [macOS](https://tailscale.com/docs/install/mac)、[Linux](https://tailscale.com/docs/install/linux)、[Windows](https://tailscale.com/docs/install/windows) 官方步骤；macOS 脚本调用内置 CLI 时使用官方支持的 `TAILSCALE_BE_CLI=1`，见 [CLI 说明](https://tailscale.com/docs/reference/tailscale-cli?tab=macos)。
 
 首次 Serve 需要 MagicDNS 与 HTTPS 证书。CLI 若给出启用地址，使用 tailnet 管理账号打开确认；也可在 Tailscale 管理后台 DNS 页开启。授权后重新执行 `agent-hub remote`。以打印 **“Tailscale Serve 已开启（HTTPS）”** 和 `https://<node>.<tailnet>.ts.net` 为成功信号，单独看到本机地址不代表远程已通。
 
@@ -78,4 +84,4 @@ agent-hub setup --autostart
 
 ## 给安装 agent 的任务
 
-先检查 Node/npm 与选用的 agent CLI；用完整作用域安装 npm Beta，按本文启动并验证本机 HTTP，再引导使用者完成 Tailscale 登录与 HTTPS 授权。保留已有配置和应用锁，不修改模型/权限来绕过失败，不读取或回显凭据文件。先查清 7700 的占用来源，再决定启动方式；完成后报告 npm 版本、HTTP 与 Serve 结果，把手机访问和真实任务回复留给使用者确认。
+先检查 Node/npm 与选用的 agent CLI；用完整作用域安装 npm Beta，按使用者选择的本机、局域网或远程方式启动并验证 HTTP。推荐 Tailscale，但不要把它当作必装依赖；仅在选用它时引导使用者完成客户端安装、登录与 HTTPS 授权。保留已有配置和应用锁，不修改模型/权限来绕过失败，不读取或回显凭据文件。先查清 7700 的占用来源，再决定启动方式；完成后报告 npm 版本、HTTP 与所选网络方案的结果，把手机访问和真实任务回复留给使用者确认。

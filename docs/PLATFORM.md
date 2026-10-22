@@ -43,7 +43,8 @@ session `hub-<id8>`，电脑上运行 `tmux attach -t hub-<id8>` 观看（退出
 ## macOS
 
 ```bash
-brew install tmux ttyd tailscale   # 全部可选
+brew install tmux ttyd            # 可选终端增强
+brew install --cask tailscale     # 可选：推荐的跨网络访问方案
 sudo pmset -c sleep 0              # 插电不睡眠（远程访问需要，可选）
 node cli/setup.js --autostart      # 写入 ~/Library/LaunchAgents/com.agent-hub.plist 并 launchctl load（可选）
 ```
@@ -62,14 +63,14 @@ ttyd（随机高端口 + 仅 127.0.0.1 + 随机 Basic 凭证），浏览器只�
 
 Tailscale Serve（手机远程，`node cli/start.js --tailscale` 会自动引导）：
 ```bash
-/Applications/Tailscale.app/Contents/MacOS/Tailscale serve --bg --https=443 http://127.0.0.1:7700
+TAILSCALE_BE_CLI=1 /Applications/Tailscale.app/Contents/MacOS/Tailscale serve --bg --https=443 http://127.0.0.1:7700
 ```
 
 ## Linux
 
 ```bash
 sudo apt install tmux ttyd         # Debian/Ubuntu；其余发行版用对应包管理器
-curl -fsSL https://tailscale.com/install.sh | sh
+curl -fsSL https://tailscale.com/install.sh | sh  # 可选：选用 Tailscale 时安装
 node cli/setup.js --autostart      # 写入 ~/.config/systemd/user/agent-hub.service 并 systemctl --user enable --now（可选）
 ```
 
@@ -79,7 +80,7 @@ node cli/setup.js --autostart      # 写入 ~/.config/systemd/user/agent-hub.ser
 - tmux 不支持原生 Windows，二选一：
   1. 跳过（chat 功能不受影响）；
   2. 装 WSL：`wsl --install`，然后在 WSL 内 `sudo apt install tmux`。
-- Tailscale 官方安装包：https://tailscale.com/download/windows
+- Tailscale 为可选增强，官方安装包：https://tailscale.com/download/windows
 - 自启：`node cli/setup.js --autostart` 用 schtasks 注册任务计划 `agent-hub`（ONLOGON 启动）；
   失败仅提示，可按输出的确切命令手动注册。
 
@@ -89,7 +90,11 @@ node cli/setup.js --autostart      # 写入 ~/.config/systemd/user/agent-hub.ser
 |---|---|---|
 | 本机 | `node cli/start.js` | 就在电脑前 |
 | 局域网 | `node cli/start.js --lan` | 同一 WiFi 下的手机/平板 |
-| Tailscale | `node cli/start.js --tailscale` | 出门在外（需 Tailscale + Serve） |
+| Tailscale（推荐，可选） | `node cli/start.js --tailscale` | 跨网络访问（需 Tailscale + Serve） |
+
+`node cli/remote.js` 默认推荐 Tailscale，也支持 `--lan` 或 `--no-tailscale`（沿用已有绑定配置）。自启注册可显式选择 `node cli/setup.js --autostart --no-tailscale`，避免自动带上 `--tailscale`。跳过配置不会关闭之前设置的 Serve 或 VPN 连接，它们仍由 Tailscale 管理。
+
+检测优先使用 PATH，找不到时会查 macOS App 内置 CLI 或 Windows `Program Files/Tailscale/tailscale.exe`。macOS 调用使用官方支持的 `TAILSCALE_BE_CLI=1`，避免后台服务误启动 GUI，参见 [官方 CLI 说明](https://tailscale.com/docs/reference/tailscale-cli?tab=macos)。未安装时给出平台官方安装链接；安装、账号登录与系统授权由本人完成，不影响本机或局域网启动。
 
 > 安全：除以上模式外 server 只绑 127.0.0.1。不要把端口直接暴露到公网。
 

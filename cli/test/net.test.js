@@ -32,6 +32,8 @@ test('parseControlUrl / isOfficialControlUrl: 官方 vs 自建 headscale', () =>
   assert.equal(isOfficialControlUrl('https://controlplane.tailscale.com'), true);
   assert.equal(isOfficialControlUrl(''), true); // 未知按官方（主流场景）
   assert.equal(isOfficialControlUrl('https://headscale.example.com'), false);
+  assert.equal(isOfficialControlUrl('https://controlplane.tailscale.com.example.org'), false);
+  assert.equal(isOfficialControlUrl('not a URL'), false);
 });
 
 test('listLanIps: 只取非 internal 的 IPv4', () => {
@@ -127,6 +129,10 @@ test('parseTailscaleStatus: 解析 DNSName 与运行状态', () => {
 
   const stopped = parseTailscaleStatus(JSON.stringify({ BackendState: 'Stopped', Self: {} }));
   assert.equal(stopped.running, false);
+  assert.equal(parseTailscaleStatus('{"BackendState":"Stopped","Self":{"Online":true}}').running, false);
+  for (const text of ['null', '[]', '{}', '{"Self":{"Online":true}}']) {
+    assert.equal(parseTailscaleStatus(text).ok, false);
+  }
 
   assert.deepEqual(parseTailscaleStatus('not json'), { ok: false, loggedIn: false, running: false, dnsName: null, state: null });
   assert.equal(parseTailscaleStatus(JSON.stringify({ BackendState: 'Running', Self: { DNSName: 'x.ts.net.' } })).state, 'Running');
@@ -143,6 +149,9 @@ test('setupTailscaleServe: 未安装 → 打印确切命令，不执行', () => 
   assert.equal(res.ran, false);
   assert.equal(res.command, 'tailscale serve --bg --https=443 http://127.0.0.1:7700');
   assert.match(res.message, /未检测到 tailscale/);
+  assert.match(res.message, /推荐.*可选/);
+  assert.match(res.message, /https:\/\/tailscale.com\/docs\/install\/linux/);
+  assert.match(res.message, /--no-tailscale/);
 });
 
 test('setupTailscaleServe: 未登录 → 引导 tailscale up', () => {
@@ -220,7 +229,47 @@ test('setupTailscaleServe: serve 自动执行失败 → 仍打印确切命令', 
   assert.equal(res.ok, false);
   assert.equal(res.ran, false);
   assert.match(res.message, /手动执行/);
-  assert.equal(res.command, 'tailscale serve --bg --https=443 http://127.0.0.1:7700');
+  assert.equal(res.command, "'/usr/bin/tailscale' serve --bg --https=443 http://127.0.0.1:7700");
+});
+
+for (const state of ['NeedsLogin', 'Stopped']) {
+  test(`setupTailscaleServe: ${state} 的非零退出码按正常状态引导，不执行 Serve`, () => {
+    const calls = [];
+    const res = setupTailscaleServe(7700, {
+      platform: 'linux', env: {}, find: () => ({ found: true, path: '/usr/bin/tailscale' }),
+      run: (cmd, args) => {
+        calls.push([cmd, ...args]);
+        return { ...fail('not connected'), stdout: JSON.stringify({ BackendState: state, Self: { Online: true } }) };
+      },
+    });
+    assert.equal(res.ok, false);
+    assert.match(res.message, state === 'NeedsLogin' ? /尚未登录/ : /已停止/);
+    assert.doesNotMatch(res.message, /二进制损坏/);
+    assert.deepEqual(calls, [['/usr/bin/tailscale', 'status', '--json']]);
+  });
+}
+
+test('setupTailscaleServe: macOS App 不在 PATH 时使用内置 CLI，强制 CLI 模式', () => {
+  const calls = [];
+  const binary = '/Applications/Tailscale.app/Contents/MacOS/Tailscale';
+  const res = setupTailscaleServe(7700, {
+    platform: 'darwin', env: {}, find: () => ({ found: false, path: null }),
+    exists: file => file === binary,
+    run: (cmd, args, options) => {
+      calls.push({ cmd, args, options });
+      return args[0] === 'status'
+        ? ok('{"BackendState":"Running","Self":{"DNSName":"hub.tailnet.ts.net."}}')
+        : ok('{}');
+    },
+  });
+  assert.equal(res.ok, true);
+  assert.equal(res.tsUrl, 'https://hub.tailnet.ts.net');
+  assert.equal(calls.length, 3);
+  for (const call of calls) {
+    assert.equal(call.cmd, binary);
+    assert.equal(call.options.env.TAILSCALE_BE_CLI, '1');
+    assert.equal(call.options.shell, false);
+  }
 });
 
 test('setupTailscaleServe: 自建 headscale 控制面 → 走 tailnet 内 HTTP（无自动证书）', () => {

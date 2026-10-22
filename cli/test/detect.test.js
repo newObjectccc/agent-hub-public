@@ -26,8 +26,9 @@ function mockDeps({ found = true, outputs = {}, platform = 'linux' } = {}) {
     env: {},
     find: (cmd) => (found ? { found: true, path: `/mock/bin/${cmd}` } : { found: false, path: null }),
     run: (cmd, args) => {
-      const key = `${cmd} ${(args ?? []).join(' ')}`.trim();
-      const out = outputs[key] ?? outputs[cmd];
+      const name = cmd.replace(/^\/mock\/bin\//, '');
+      const key = `${name} ${(args ?? []).join(' ')}`.trim();
+      const out = outputs[key] ?? outputs[name];
       return out ?? ok('');
     },
   };
