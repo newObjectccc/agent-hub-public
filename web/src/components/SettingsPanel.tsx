@@ -136,7 +136,7 @@ export function SettingsPanel() {
         </div>
         <div className="settings-about">
           <div className="settings-about-name">Agent Hub</div>
-          <div className="hint-text">pi / claude 双源 agent 会话中枢</div>
+          <div className="hint-text">pi / Claude Code / Codex 会话中枢</div>
           <div className="settings-about-version">
             版本 v{typeof __APP_VERSION__ === "string" ? __APP_VERSION__ : "dev"}
             {typeof __GIT_SHA__ === "string" && __GIT_SHA__ !== "unknown" ? ` (${__GIT_SHA__})` : ""}

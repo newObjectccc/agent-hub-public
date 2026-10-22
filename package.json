@@ -1,9 +1,13 @@
 {
-  "name": "agent-hub",
-  "version": "0.3.0",
+  "name": "@newobjectccc/agent-hub",
+  "version": "0.3.0-beta.1",
   "description": "Cross-platform pi/claude agent session hub: mobile PWA panel + chat + KPI, with Node server, pi extensions and CLI",
   "license": "MIT",
   "author": "newObjectccc",
+  "publishConfig": {
+    "access": "public",
+    "tag": "beta"
+  },
   "bin": {
     "agent-hub": "cli/cli.js"
   },
@@ -11,15 +15,28 @@
     "LICENSE",
     "README.md",
     "README.en.md",
-    "cli",
+    "CHANGELOG.md",
+    "cli/*.js",
+    "cli/package.json",
+    "cli/lib/*.js",
+    "cli/lib/*.d.ts",
     "config/hub.config.example.json",
     "config/kpi-sources.json",
-    "docs",
+    "docs/API_CONTRACT.md",
+    "docs/ARCHITECTURE.md",
+    "docs/CLAUDE_DRIVER.md",
+    "docs/CODEX_DRIVER.md",
+    "docs/PLATFORM.md",
+    "docs/HEADSCALE.md",
     "integrations/claude-perm-bridge/bridge.mjs",
     "integrations/pi-command/command.ts",
     "integrations/pi-live-feed/live-feed.ts",
-    "server/dist",
-    "web/dist"
+    "server/dist/*.js",
+    "server/dist/adapters/*.js",
+    "server/dist/sessions/*.js",
+    "web/dist",
+    "SECURITY.md",
+    "docs/INSTALL.md"
   ],
   "repository": {
     "type": "git",
@@ -39,7 +56,7 @@
     "remote-control"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=22.19"
   },
   "scripts": {
     "build": "pnpm -r build",
@@ -53,7 +70,8 @@
     "remote": "node cli/remote.js",
     "doctor": "node cli/check.js",
     "check": "node cli/check.js",
-    "prepublishOnly": "pnpm -r build"
+    "prepublishOnly": "pnpm -r build && node scripts/pack-smoke.mjs",
+    "test:install": "node scripts/install-smoke.mjs"
   },
   "devDependencies": {
     "typescript": "^5.7.0"
@@ -65,5 +83,12 @@
     "@fastify/static": "^10.1.6",
     "fastify": "^5.2.0",
     "ws": "^8.18.0"
-  }
+  },
+  "workspaces": [
+    "server",
+    "web",
+    "cli",
+    "integrations/pi-live-feed",
+    "integrations/pi-command"
+  ]
 }

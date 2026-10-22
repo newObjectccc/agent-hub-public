@@ -9,6 +9,7 @@
     "token": ""
   },
   "codexBin": "codex",
+  "//codexDriver": "显式权限覆盖先读取 RPC 回显基线、再核对最终设置，只接受可确认的收紧：approvalPolicy ∈ inherit|untrusted|on-request；sandbox ∈ inherit|read-only|workspace-write。inherit = 不覆盖、沿用 ~/.codex/config.toml。never / danger-full-access 已移除，写了会告警并回落 inherit——hub 绝不把 Codex 放到比你自己配置更宽松的权限。",
   "codexDriver": {
     "enabled": true,
     "defaultPolicy": "never",

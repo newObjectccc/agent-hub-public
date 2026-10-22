@@ -31,7 +31,7 @@ pi 终端接管还需要在线的 pi-command 扩展。Claude 接管关闭时仍�
 
 | 目录 | 职责 | 技术 |
 |---|---|---|
-| `server/` | REST + WS、三源适配、进程管理、KPI/通知/用量、只读 git、系统检测 | Node ≥20、TypeScript、Fastify、ws、pi SDK |
+| `server/` | REST + WS、三源适配、进程管理、KPI/通知/用量、只读 git、系统检测 | Node ≥22.19、TypeScript、Fastify、ws、pi SDK |
 | `web/` | PWA：面板首页（KPI+会话列表）、chat 页 | Vite、React、TypeScript（UI 库不限，禁重依赖） |
 | `cli/` | `setup` / `dev` / `start` / `remote` / `check`（doctor 别名）/ `open`，以及投屏渲染器 | Node、跨平台 |
 | `integrations/` | pi live-feed / pi-command、Claude 权限 bridge | pi 扩展、MCP stdio |

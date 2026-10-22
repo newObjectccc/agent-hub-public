@@ -42,14 +42,14 @@ export async function openPanel(argv = [], deps = {}) {
 用法 / Usage:
   node cli/cli.js open [url] [--url <url>]
 
-未给 URL 时读取 config/hub.config.json 拼出面板地址。
+未给 URL 时读取当前用户（npm）或源码仓配置，拼出面板地址。
 平台命令：macOS= open，Linux= xdg-open，Windows= powershell Start-Process。`);
     return 0;
   }
 
   let url = options.url ?? positionals[0];
   if (!url) {
-    const configPath = deps.configPath ?? defaultConfigPath(root);
+    const configPath = deps.configPath ?? defaultConfigPath(root, { home: deps.home });
     if (!fs.existsSync(configPath)) {
       log(`${colors.fail} 配置不存在: ${configPath}，请先运行 agent-hub setup（源码运行：node cli/setup.js），或显式传入 URL。`);
       return 1;

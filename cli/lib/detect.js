@@ -1,5 +1,5 @@
 // 环境检测：node / pi / tmux / ttyd / tailscale。
-// 检测失败=给出平台对应安装建议，不算错误（pi 除外：核心依赖，缺失时明确提示）。
+// 检测失败=给出平台对应安装建议，不算错误（Node 版本过低时明确提示）。
 import { findCommand, runCapture, isWindows } from './process.js';
 
 /** 各工具元数据：检测命令、版本参数、安装建议（按平台）。 */
@@ -8,18 +8,18 @@ export const TOOLS = {
     name: 'node',
     label: 'Node.js',
     required: true,
-    minVersion: '20.0.0',
+    minVersion: '22.19.0',
     versionArgs: ['--version'],
     hints: {
       darwin: 'brew install node  或使用 nvm：curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/master/install.sh',
-      linux: '使用 nvm：curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/master/install.sh && nvm install 20',
-      win32: '官方安装包：https://nodejs.org/（建议 LTS ≥ 20）',
+      linux: '使用 nvm：curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/master/install.sh && nvm install 22',
+      win32: '官方安装包：https://nodejs.org/（建议 LTS ≥ 22）',
     },
   },
   pi: {
     name: 'pi',
-    label: 'pi（@earendil-works/pi-coding-agent）',
-    required: true,
+    label: 'pi（仅使用 pi 时需要全局 CLI）',
+    required: false,
     versionArgs: ['--version'],
     hints: {
       any: 'npm install -g @earendil-works/pi-coding-agent\n         或免全局安装用 npx：npx @earendil-works/pi-coding-agent --version',

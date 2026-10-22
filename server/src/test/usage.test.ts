@@ -283,8 +283,14 @@ describe("usage: UsageService（临时会话目录 + 增量缓存）", () => {
     assert.ok(elapsed < 350, `请求侧限时 100ms，不同步等全量扫描（实测 ${elapsed}ms）`);
     assert.equal(out.sessions.length, 0, "超时先回空窗（UI 走无数据占位降级）");
     // 后台扫描继续 → 下一次查询即拿到全量（最终一致）
+    // 轮询条件必须是「达到期望的 2 条」而不是「非 0」：refresh() 按 SCAN_CONCURRENCY 分批、
+    // 逐文件写缓存，高负载下 fileA 已入缓存而 fileB 的伪造 400ms 读盘还没回来时，轮询会命中
+    // 「1 条」的中间态；旧条件（=== 0）此刻就退出循环，把中间态当最终态，报成假失败 1 !== 2。
+    // 轮询预算同时从 20×100ms=2s 提到 50×100ms=5s：CI runner 负载抖动会拉长定时器与文件 IO
+    // 的完成时刻，2s 在极端负载下不足以等后台扫完（正常路径仍是首轮 ~400ms 就命中，不会变慢）。
+    // 断言未削弱：仍然精确要求最终一致到 2 条会话 + 全部窗口 token > 0。
     let settled = await slow.overview(NOW);
-    for (let i = 0; i < 20 && settled.sessions.length === 0; i += 1) {
+    for (let i = 0; i < 50 && settled.sessions.length < 2; i += 1) {
       await new Promise((r) => setTimeout(r, 100));
       settled = await slow.overview(NOW);
     }

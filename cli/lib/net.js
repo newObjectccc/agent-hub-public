@@ -210,7 +210,7 @@ export function setupTailscaleServe(port, deps = {}) {
 
   if (serveRes.ok) {
     const pwaNote = official
-      ? '手机浏览器打开该地址 → 菜单 →「安装应用」= 无地址栏真 PWA（WebAPK）。'
+      ? '手机浏览器打开该 HTTPS 地址，再使用「安装应用 / 添加到主屏幕」入口。'
       : '说明：自建 headscale 不支持自动 HTTPS 证书，tailnet 内 HTTP 功能完整；\n'
         + '但浏览器视为非安全源，PWA 只能装成简化快捷方式。真 PWA 方案见 docs/HEADSCALE.md。';
     return {
@@ -223,6 +223,14 @@ export function setupTailscaleServe(port, deps = {}) {
     };
   }
 
+  // 首次 HTTPS/Serve 授权地址可能只写 stdout，或等待确认时超时；保留官方链接供本人操作。
+  const consentUrl = `${serveRes.stdout ?? ''}\n${serveRes.stderr ?? ''}`.match(/https:\/\/login\.tailscale\.com\/[^\s<>"'\u001b]+/)?.[0]?.replace(/[).,;]+$/, '');
+  if (consentUrl) {
+    return {
+      ok: false, ran: true, command, tsUrl: null, mode,
+      message: `首次使用需要确认 Tailscale Serve / HTTPS。请本人打开官方授权地址：\n  ${consentUrl}\n完成后重新运行 agent-hub remote。`,
+    };
+  }
   return {
     ok: false,
     ran: false,

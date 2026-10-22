@@ -45,11 +45,11 @@ test('listLanIps: 只取非 internal 的 IPv4', () => {
   assert.deepEqual(ips, [{ name: 'en0', address: '192.168.1.23' }]);
 });
 
-// 真实 netcheck 输出样本（国内家宽实测：无 IPv6、无端口映射、DERP 绕美）
+// netcheck 输出样本（实测结构，地址已换成文档保留段 203.0.113.0/24；无 IPv6、无端口映射）
 const NETCHECK_SAMPLE = `Report:
 \t* Time: 2026-10-08 15:32:18.40027+08:00
 \t* UDP: true
-\t* IPv4: yes, 171.223.196.96:43500
+\t* IPv4: yes, 203.0.113.16:43500
 \t* IPv6: no, but OS has support
 \t* MappingVariesByDestIP: false
 \t* PortMapping: 
@@ -77,7 +77,7 @@ test('parseNetcheck: 解析打洞关键指标（真实样本）', () => {
   const r = parseNetcheck(NETCHECK_SAMPLE);
   assert.equal(r.ok, true);
   assert.equal(r.udp, true);
-  assert.equal(r.ipv4, '171.223.196.96:43500');
+  assert.equal(r.ipv4, '203.0.113.16:43500');
   assert.equal(r.ipv6, null);
   assert.equal(r.ipv6OsSupport, true);
   assert.equal(r.mappingVariesByDestIP, false);
@@ -173,6 +173,39 @@ test('setupTailscaleServe: 自动执行成功 → 返回 ts.net 地址', () => {
   assert.equal(res.ran, true);
   assert.equal(res.tsUrl, 'https://hub.tailnet.ts.net');
   assert.ok(calls.some((c) => c.includes('serve --bg --https=443')));
+  assert.match(res.message, /安装应用 \/ 添加到主屏幕/);
+});
+
+for (const timeout of [false, true]) {
+  test(`setupTailscaleServe: 首次 HTTPS 授权仅写 stdout${timeout ? '并超时' : ''}时仍给出可用引导`, () => {
+    const url = 'https://login.tailscale.com/f/serve?node=demo-node';
+    const res = setupTailscaleServe(7700, {
+      platform: 'linux', env: {}, find: () => ({ found: true, path: '/usr/bin/tailscale' }),
+      run: (_cmd, args) => args[0] === 'status'
+        ? ok(JSON.stringify({ BackendState: 'Running', Self: { DNSName: 'hub.tailnet.ts.net.' } }))
+        : args[0] === 'debug' ? ok('{}')
+          : { ...fail(''), stdout: `Enable HTTPS here:\n${url}\n`, error: timeout ? 'ETIMEDOUT' : null },
+    });
+    assert.equal(res.ok, false);
+    assert.equal(res.tsUrl, null, '授权未完成不能当成远程入口成功');
+    assert.ok(res.message.includes(url));
+    assert.match(res.message, /本人.*官方授权地址/);
+    assert.match(res.message, /重新运行 agent-hub remote/);
+  });
+}
+
+test('setupTailscaleServe: 非官方或仿冒域名不作为功能授权地址', () => {
+  const res = setupTailscaleServe(7700, {
+    platform: 'linux', env: {}, find: () => ({ found: true, path: '/usr/bin/tailscale' }),
+    run: (_cmd, args) => args[0] === 'status'
+      ? ok(JSON.stringify({ BackendState: 'Running', Self: { DNSName: 'hub.tailnet.ts.net.' } }))
+      : args[0] === 'debug' ? ok('{}')
+        : { ...fail('consent required'), stdout: 'https://login.tailscale.com.example.org/f/serve' },
+  });
+  assert.equal(res.ok, false);
+  assert.ok(!res.message.includes('官方授权地址'));
+  assert.ok(!res.message.includes('example.org'));
+  assert.match(res.message, /手动执行/);
 });
 
 test('setupTailscaleServe: serve 自动执行失败 → 仍打印确切命令', () => {

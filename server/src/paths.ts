@@ -3,12 +3,14 @@
  */
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { runtimeDirs } from "../../cli/lib/paths.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
 export const serverRoot = resolve(here, "..");
 export const repoRoot = resolve(here, "../..");
-export const configDir = resolve(repoRoot, "config");
+const runtime = runtimeDirs(repoRoot);
+export const configDir = runtime.configDir;
 export const webDistDir = resolve(repoRoot, "web", "dist");
 /** 运行时状态目录（通知 read 标记等，gitignore 覆盖） */
-export const dataDir = resolve(repoRoot, "data");
+export const dataDir = runtime.dataDir;

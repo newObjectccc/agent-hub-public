@@ -163,7 +163,7 @@ export function setupHelpText() {
   -h, --help               显示帮助 / show help
 
 说明 / Notes:
-  - pi 缺失时只提示安装方式（npm i -g @earendil-works/pi-coding-agent 或 npx），不会自动全局安装。
+  - 使用 Claude/Codex 不要求全局安装 pi；使用 pi 时只提示安装方式（npm i -g @earendil-works/pi-coding-agent 或 npx），不会自动全局安装。
   - pi 扩展（live-feed / pi-command）拷贝到 ~/.pi/agent/extensions/，幂等可重跑。
   - tmux / ttyd / tailscale 为可选增强，缺失不算错误；
     原生 Windows 的 tmux 会给出 WSL 指引。
@@ -186,6 +186,7 @@ export function startHelpText() {
   -h, --help       显示帮助 / show help
 
 流程 / Pipeline:
+  npm 包直接运行内置产物，配置位于 ~/.agent-hub；以下安装/构建仅适用于源码仓。
   1. node_modules 缺失时 pnpm install（pnpm 缺失回退 npm install）
   2. web 构建（vite build，经包管理器 run build）
   3. server 构建（tsc，经包管理器 run build）
@@ -209,7 +210,7 @@ Includes a remote-link latency check (tailscale netcheck parsing + actionable ad
   --no-color   禁用彩色 / disable colors
   -h, --help   显示帮助 / show help
 
-退出码 / Exit code: 核心依赖（node ≥ 20 / pi）齐备为 0，否则为 1。
+退出码 / Exit code: Node.js ≥ 22.19 为 0，否则为 1；各 agent 需自行安装并登录。
 `;
 }
 

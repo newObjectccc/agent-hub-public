@@ -131,9 +131,23 @@ test("retryable error notification does not settle a turn before completion", (t
   assert(result.artifact.processes[0].events.some((event) => event.method === "error" && event.willRetry === true));
 });
 
-for (const [mode, codes] of [["unknown-request", ["UNKNOWN_SERVER_REQUEST"]], ["unknown-with-completion", ["UNKNOWN_SERVER_REQUEST"]], ["hang-turn", ["WAIT_TIMEOUT", "REQUEST_TIMEOUT"]]]) {
+// 超时预算按模式分开给，因为「超时是不是被测行为」两种模式并不一样：
+// - hang-turn：1000ms 就是被测行为本身（fake 永不补全 turn，必须走超时路径），保持 1000ms 不动。
+// - unknown-request / unknown-with-completion：被测行为是「未知 ServerRequest → 非零退出 +
+//   error.code 精确为 UNKNOWN_SERVER_REQUEST」，1000ms 只是顺手带的紧值。负载下这条链路要串起
+//   3 个 node 进程（--version 探测、app-server 启动、initialize/thread/start/turn/start 握手），
+//   任一请求超过 1000ms 就先触发 REQUEST_TIMEOUT/WAIT_TIMEOUT，而 lab.mjs 的 _abort 用
+//   `this.failure ??= error`（先到先得）并停止解析 stdout，于是 UNKNOWN_SERVER_REQUEST 永远轮不到，
+//   精确 code 断言变成假失败（实测重负载 60 次里 6 次拿到 REQUEST_TIMEOUT；放宽到 10000ms 后 60/60 正确）。
+// 这里只增加等待预算（1000ms → 10000ms，仍远低于 harness 的 20s spawnSync 上限），
+// 断言一字未改：仍然精确要求 UNKNOWN_SERVER_REQUEST，不接受其它 code。
+for (const [mode, codes, timeoutMs] of [
+  ["unknown-request", ["UNKNOWN_SERVER_REQUEST"], "10000"],
+  ["unknown-with-completion", ["UNKNOWN_SERVER_REQUEST"], "10000"],
+  ["hang-turn", ["WAIT_TIMEOUT", "REQUEST_TIMEOUT"], "1000"],
+]) {
   test(`CLI ${mode} is a nonzero failure with a machine artifact`, (t) => {
-    const result = setup(t).run("exp.mjs", ["x2b", "--run"], { CODEX_LAB_FAKE_MODE: mode, CODEX_LAB_TIMEOUT_MS: "1000" });
+    const result = setup(t).run("exp.mjs", ["x2b", "--run"], { CODEX_LAB_FAKE_MODE: mode, CODEX_LAB_TIMEOUT_MS: timeoutMs });
     assert.equal(result.status, 1, result.output);
     assert.equal(result.artifact.status, "failed");
     assert(codes.includes(result.artifact.error.code));

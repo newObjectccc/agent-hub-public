@@ -1,6 +1,7 @@
 // 路径工具：`~` 展开、跨平台分隔符、仓库根定位。纯 Node，零依赖。
 import os from 'node:os';
 import path from 'node:path';
+import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 /**
@@ -52,9 +53,25 @@ export function repoRoot() {
   return path.dirname(cliDir());
 }
 
-/** 相对仓库根解析配置文件位置 */
-export function defaultConfigPath(root = repoRoot()) {
-  return path.join(root, 'config', 'hub.config.json');
+/** 发包布局无需源码构建；npm 安装的依赖可能被提升到包目录之外。 */
+export function isPublishedLayout(root, exists = fs.existsSync) {
+  return !exists(path.join(root, 'server', 'package.json'))
+    && !exists(path.join(root, 'web', 'package.json'))
+    && exists(path.join(root, 'server', 'dist', 'index.js'))
+    && exists(path.join(root, 'web', 'dist', 'index.html'));
+}
+
+/** npm/npx 的配置与状态独立于安装目录，升级或清缓存不会抹掉应用锁及用户配置。
+ * 源码仓继续使用仓库内 config/data。
+ */
+export function runtimeDirs(root = repoRoot(), { home = os.homedir(), exists = fs.existsSync } = {}) {
+  const base = isPublishedLayout(root, exists) ? path.join(home, '.agent-hub') : root;
+  return { configDir: path.join(base, 'config'), dataDir: path.join(base, 'data') };
+}
+
+/** CLI 与 server 共用运行时目录规则。 */
+export function defaultConfigPath(root = repoRoot(), options = {}) {
+  return path.join(runtimeDirs(root, options).configDir, 'hub.config.json');
 }
 
 /**

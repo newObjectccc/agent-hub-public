@@ -8,7 +8,8 @@ import { pathToFileURL } from 'node:url';
 import { isDirectRun as isDirectRunCheck } from './lib/entry.js';
 import { createColors } from './lib/color.js';
 import { parseCliArgs, startHelpText } from './lib/args.js';
-import { defaultConfigPath, defaultConfigTemplatePath, repoRoot } from './lib/paths.js';
+import { defaultConfigPath, defaultConfigTemplatePath, repoRoot, isPublishedLayout } from './lib/paths.js';
+import { versionAtLeast } from './lib/detect.js';
 import { ensureConfig, loadConfig } from './lib/config.js';
 import {
   assertPort,
@@ -32,12 +33,7 @@ export function depsInstalled(root, exists = fs.existsSync) {
  * 且 server/dist/index.js 与 web/dist/index.html 产物都在 → true。
  * 此布局下依赖随 npm 安装（解析到包根 node_modules）、产物随包发布，install/build 两步必然无意义且必败。
  */
-export function isPublishedLayout(root, exists = fs.existsSync) {
-  return !exists(path.join(root, 'server', 'package.json'))
-    && !exists(path.join(root, 'web', 'package.json'))
-    && exists(path.join(root, 'server', 'dist', 'index.js'))
-    && exists(path.join(root, 'web', 'dist', 'index.html'));
-}
+export { isPublishedLayout };
 
 /** 面板 URL（host=0.0.0.0 时回退 127.0.0.1 展示本机入口）。 */
 export function panelUrl(config) {
@@ -85,9 +81,13 @@ export async function main(argv = [], deps = {}) {
   const colors = createColors({ enabled: options.color !== false && deps.useColor !== false });
   const root = deps.root ?? repoRoot();
   const dryRun = Boolean(options.dryRun);
-  const configPath = deps.configPath ?? defaultConfigPath(root);
+  const configPath = deps.configPath ?? defaultConfigPath(root, { home: deps.home });
 
   log(colors.bold('agent-hub start') + colors.dim(` (platform=${platform}${dryRun ? ', dry-run' : ''})`));
+  if (!versionAtLeast(deps.nodeVersion ?? process.versions.node, '22.19.0')) {
+    log(`${colors.fail} 需要 Node.js ≥ 22.19；请升级 Node 后重试。`);
+    return 1;
+  }
 
   // 1. 配置：缺失自愈（从模板生成）；--port / --lan 覆盖写入（server 读 config/hub.config.json）
   let config;
@@ -132,7 +132,7 @@ export async function main(argv = [], deps = {}) {
     // 2. 依赖安装（node_modules 缺失时 pnpm install，pnpm 缺失回退 npm）
     const pm = resolvePackageManager({ platform, env });
     if (!pm.available) {
-      log(`${colors.fail} 未找到 pnpm / npm。请先安装 Node.js ≥ 20（自带 npm）。`);
+      log(`${colors.fail} 未找到 pnpm / npm。请先安装 Node.js ≥ 22.19（自带 npm）。`);
       return 1;
     }
     if (!depsInstalled(root)) {
@@ -204,12 +204,16 @@ export async function main(argv = [], deps = {}) {
   if (options.tailscale) {
     log('');
     log(colors.bold('== Tailscale 远程访问 / Tailscale remote =='));
-    const ts = setupTailscaleServe(port, { platform, env });
-    for (const line of ts.message.split('\n')) {
-      log(ts.ok ? `${colors.ok} ${line}` : `${colors.warn} ${line}`);
+    if (dryRun) {
+      log(colors.dim(`  [dry-run] 将检查 Tailscale 并配置 Serve：${tailscaleServeCommand(port)}；本次不执行。`));
+    } else {
+      const ts = setupTailscaleServe(port, { platform, env });
+      for (const line of ts.message.split('\n')) {
+        log(ts.ok ? `${colors.ok} ${line}` : `${colors.warn} ${line}`);
+      }
+      if (ts.ok && ts.tsUrl) log(`  ${colors.bold(ts.tsUrl)}`);
+      if (!ts.ran && ts.command) log(`  确切命令 / exact command: ${colors.bold(ts.command)}`);
     }
-    if (ts.tsUrl) log(`  ${colors.bold(ts.tsUrl)}`);
-    if (!ts.ran && ts.command) log(`  确切命令 / exact command: ${colors.bold(ts.command)}`);
   }
 
   // 6. 启动 server（node server/dist/index.js，继承 stdio）

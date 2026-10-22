@@ -7,7 +7,7 @@ import { isDirectRun as isDirectRunCheck } from './lib/entry.js';
 import { createColors } from './lib/color.js';
 import { parseCliArgs, remoteHelpText } from './lib/args.js';
 import { defaultConfigPath, repoRoot } from './lib/paths.js';
-import { depsInstalled } from './start.js';
+import { depsInstalled, isPublishedLayout } from './start.js';
 
 /** 计划原因 → 展示文案。 */
 export const PLAN_REASON_LABELS = {
@@ -68,7 +68,7 @@ export async function main(argv = [], deps = {}) {
   const colors = createColors({ enabled: colorOn });
   const root = deps.root ?? repoRoot();
   const dryRun = Boolean(options.dryRun);
-  const configPath = deps.configPath ?? defaultConfigPath(root);
+  const configPath = deps.configPath ?? defaultConfigPath(root, { home: deps.home });
 
   log(colors.bold('agent-hub remote') + colors.dim(` (platform=${platform}${dryRun ? ', dry-run' : ''})`));
 
@@ -82,7 +82,7 @@ export async function main(argv = [], deps = {}) {
   // [1/2] 初始化检查：缺 config / 依赖 → 首次自动 setup（幂等，已初始化则跳过）
   const plan = remotePlan({
     hasConfig: fs.existsSync(configPath),
-    hasDeps: depsInstalled(root),
+    hasDeps: isPublishedLayout(root) || depsInstalled(root),
     skipSetup: options.skipSetup === true,
   });
   if (plan.runSetup) {

@@ -1,11 +1,13 @@
 # 平台集成细则
 
-## 通用（三平台一致）
+npm 全局安装 / npx 用户先看 [新电脑安装指南](INSTALL.md)：包内已含构建产物，运行配置位于 `~/.agent-hub`。下面的 `node cli/...` 命令针对源码仓；全局安装可改用对应的 `agent-hub` 子命令。
 
-1. 安装 Node.js ≥ 20（Windows 建议官方安装包，macOS/Linux 建议 nvm）。
+## 通用（三平台设计一致；Windows 待真机验收）
+
+1. 安装 Node.js ≥ 22.19（Windows 建议官方安装包，macOS/Linux 建议 nvm）。
 2. `node cli/setup.js && node cli/start.js`。
    - `setup`：环境检测（node/pi/tmux/ttyd/tailscale）+ 生成 `config/hub.config.json` + 安装 pi 扩展；
-     pi 缺失只提示 `npm i -g @earendil-works/pi-coding-agent` 或 npx 方式，不自动安装。
+     全局 pi 为可选，缺失只提示 `npm i -g @earendil-works/pi-coding-agent` 或 npx 方式，不自动安装。
    - 源码仓的 `start`：依赖缺失时自动安装，再构建 web 与 server，最后启动 `server/dist/index.js`。
      npm/npx 发布包已含构建产物且由 npm 安装依赖，跳过这两步直接启动。
 3. 浏览器打开 `http://127.0.0.1:7700`。
@@ -73,7 +75,7 @@ node cli/setup.js --autostart      # 写入 ~/.config/systemd/user/agent-hub.ser
 
 ## Windows
 
-- 核心功能 **PowerShell / CMD 原生可用**（server、web、pi 均为 Node）。
+- 核心功能按 **PowerShell / CMD 原生运行**设计，尚待 Windows 真机验收（server、web、pi 均为 Node）。
 - tmux 不支持原生 Windows，二选一：
   1. 跳过（chat 功能不受影响）；
   2. 装 WSL：`wsl --install`，然后在 WSL 内 `sudo apt install tmux`。

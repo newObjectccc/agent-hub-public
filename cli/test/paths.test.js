@@ -8,6 +8,7 @@ import {
   resolvePath,
   defaultConfigPath,
   repoRoot,
+  runtimeDirs,
 } from '../lib/paths.js';
 
 const HOME = '/home/tester';
@@ -57,4 +58,25 @@ test('defaultConfigPath / repoRoot 指向仓库结构', () => {
   assert.equal(defaultConfigPath('/repo'), path.join('/repo', 'config', 'hub.config.json'));
   assert.equal(typeof repoRoot(), 'string');
   assert.ok(repoRoot().length > 0);
+});
+
+test('npm/npx 换安装目录后仍使用同一用户配置和状态，不写包目录', () => {
+  const home = path.join(path.sep, 'users', 'tester');
+  const roots = ['global-install', 'npx-cache-new-version'].map(name => path.join(path.sep, name));
+  for (const root of roots) {
+    const built = new Set([path.join(root, 'server', 'dist', 'index.js'), path.join(root, 'web', 'dist', 'index.html')]);
+    const options = { home, exists: p => built.has(p) };
+    assert.equal(defaultConfigPath(root, options), path.join(home, '.agent-hub', 'config', 'hub.config.json'));
+    assert.deepEqual(runtimeDirs(root, options), {
+      configDir: path.join(home, '.agent-hub', 'config'), dataDir: path.join(home, '.agent-hub', 'data'),
+    });
+  }
+});
+
+test('源码仓即使有构建产物仍使用仓库内配置，与 npm 用户配置隔离', () => {
+  const root = path.join(path.sep, 'source');
+  const built = new Set(['server/package.json', 'web/package.json', 'server/dist/index.js', 'web/dist/index.html'].map(p => path.join(root, ...p.split('/'))));
+  assert.deepEqual(runtimeDirs(root, { home: HOME, exists: p => built.has(p) }), {
+    configDir: path.join(root, 'config'), dataDir: path.join(root, 'data'),
+  });
 });

@@ -85,7 +85,8 @@ Tailscale Serve 已开启（tailnet 内 HTTP）：http://<node>.<tailnet>:8080
 
 1. **换官方 Tailscale**（推荐）：免费额度内，把设备登到官方控制面，`--tailscale` 自动走 HTTPS + 自动证书，手机装真 WebAPK。
 2. **公网域名直连**：用 Caddy / Nginx + Let's Encrypt 或 Cloudflare Tunnel 把面板暴露成 `https://hub.example.com`，
-   **务必**在 `config/hub.config.json` 开启 `auth.enabled` + 强 token（面板会暴露公网）。
+   **务必在反代层加鉴权**（basic auth / OAuth2 等）。注意：`auth.token` 只服务 API/CLI 调用方，
+   与自带 PWA 面板不兼容（见 README 安全须知），不能单靠它保护公网部署。
 3. **进阶**：Caddy DNS-01 挑战为 MagicDNS 名签证书 + hosts 指向 100.x 地址（复杂度高，收益有限，不展开）。
 
 ## 6. 运维备忘

@@ -1,18 +1,25 @@
-# CI：build + lint + test 全量验证（Node 20/22 × Ubuntu/macOS 矩阵，与 engines >= 20 对齐；
+# CI：build + lint + test 全量验证（Node 22 × Ubuntu/macOS 矩阵，与 engines >= 22.19 对齐；
+# pi-coding-agent 依赖 Node 22 的 fs.globSync，Node 20 无法运行；
 # 不加 Windows：win32 走降级路径且测试含 POSIX 假设）
 name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'codex/release-*']
   pull_request:
+
+# 最小 token 权限：本 workflow 只读仓库内容，不写任何东西
+permissions:
+  contents: read
 
 jobs:
   verify:
     strategy:
+      # 单腿失败不取消另一腿：让 OS 差异的失败各自可见，而不是只剩第一个失败
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-        node-version: [20, 22]
+        node-version: [22]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -37,6 +44,10 @@ jobs:
 
       - run: pnpm -r lint
       - run: pnpm test
+
+      - name: installed package smoke / 真实 npm 安装冒烟
+        if: matrix.os == 'ubuntu-latest'
+        run: pnpm test:install
 
       # 依赖漏洞门禁：--prod 只看运行时依赖；--audit-level=high 只挡 high/critical
       #（宽松级别防传递性 moderate 噪音卡 CI）

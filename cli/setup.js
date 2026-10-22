@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // agent-hub setup — 一键准备：环境检测 → 安装依赖 → 生成 config → 可选安装 pi 扩展 → --autostart 平台适配。
-// pi 缺失只提示安装方式（不自动全局安装）；tmux/ttyd/tailscale 缺失=建议，不算错误。
+// 全局 pi 只服务 pi 终端，缺失不影响 Claude/Codex；增强工具仅给安装建议。
 import { pathToFileURL } from 'node:url';
 import { isDirectRun as isDirectRunCheck } from './lib/entry.js';
 import { createColors } from './lib/color.js';
@@ -11,7 +11,7 @@ import { ensureConfig } from './lib/config.js';
 import { installAutostart } from './lib/autostart.js';
 import { installExtensions } from './lib/extensions.js';
 import { installDeps, isWindows, resolvePackageManager, findCommand, runCapture } from './lib/process.js';
-import { depsInstalled } from './start.js';
+import { depsInstalled, isPublishedLayout } from './start.js';
 import { printReport } from './check.js';
 
 export async function main(argv = [], deps = {}) {
@@ -48,14 +48,16 @@ export async function main(argv = [], deps = {}) {
   // 2. 依赖安装（node_modules 缺失时 pnpm install，pnpm 缺失回退 npm；--skip-deps 跳过）
   log('');
   log(colors.bold('== 依赖安装 / Dependencies =='));
-  if (options.skipDeps) {
+  if (isPublishedLayout(root)) {
+    log(`${colors.ok} npm 包已包含构建产物，依赖由 npm 安装，无需在包目录重复安装。`);
+  } else if (options.skipDeps) {
     log(`${colors.info} --skip-deps：跳过依赖安装`);
   } else if (depsInstalled(root)) {
     log(`${colors.ok} 依赖已就绪（node_modules 完整）`);
   } else {
     const pm = resolvePackageManager({ platform, env });
     if (!pm.available) {
-      log(`${colors.fail} 未找到 pnpm / npm。请先安装 Node.js ≥ 20（自带 npm），或用 --skip-deps 跳过。`);
+      log(`${colors.fail} 未找到 pnpm / npm。请先安装 Node.js ≥ 22.19（自带 npm），或用 --skip-deps 跳过。`);
     } else if (dryRun) {
       log(colors.dim(`  [dry-run] 将执行: ${pm.name} install (cwd=${root})`));
     } else {
@@ -80,7 +82,7 @@ export async function main(argv = [], deps = {}) {
       workspaceRoot: options.workspaceRoot,
     };
     const res = ensureConfig({
-      configPath: deps.configPath ?? defaultConfigPath(root),
+      configPath: deps.configPath ?? defaultConfigPath(root, { home: deps.home }),
       templatePath: deps.templatePath ?? defaultConfigTemplatePath(root),
       overrides,
       dryRun,
@@ -160,7 +162,7 @@ export async function main(argv = [], deps = {}) {
   log(colors.bold('== 汇总 / Summary =='));
   log(coreOk
     ? `${colors.ok} 核心环境就绪`
-    : `${colors.fail} 核心依赖缺失（见上方提示；pi 不会自动安装，请手动执行建议命令）`);
+    : `${colors.fail} Node.js 环境未就绪（见上方提示）`);
   const missing = report.optional.filter((t) => !t.found);
   if (missing.length) {
     log('');
@@ -176,7 +178,7 @@ export async function main(argv = [], deps = {}) {
     log(colors.info(' 原生 Windows：tmux 请走 WSL（wsl --install）或跳过。'));
   }
   log('');
-  log(`下一步 / Next: ${colors.bold('npm run start')}（一键远程 ${colors.bold('npm run remote')}；或 node cli/start.js；--lan 局域网 / --tailscale 远程）`);
+  log(`下一步 / Next: ${colors.bold(isPublishedLayout(root) ? 'agent-hub remote' : 'npm run remote')}（本机使用 start；先完成所用 agent 的安装与登录）。`);
   return coreOk ? 0 : 1;
 }
 

@@ -16,8 +16,8 @@
  *   （CI 中在 `pnpm -r build` 之后跑，保证 server/dist、web/dist 已产出）
  */
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { readFileSync, existsSync } from "node:fs";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // 仓库根目录（scripts/ 的上一级）
@@ -29,6 +29,7 @@ const REQUIRED_FILES = [
   "integrations/pi-command/command.ts",
   "integrations/pi-live-feed/live-feed.ts",
   "cli/cli.js",
+  "cli/package.json",
   "cli/mirror.js",
   // config 运行时必需：模板被 cli/lib/paths.js defaultConfigTemplatePath +
   // cli/lib/config.js ensureConfig 引用；kpi-sources.json 被 server/src/kpi.ts 读取
@@ -45,6 +46,7 @@ const REQUIRED_FILES = [
   "cli/lib/extensions.js",
   "cli/lib/net.js",
   "cli/lib/paths.js",
+  "cli/lib/paths.d.ts",
   "cli/lib/process.js",
   "server/dist/index.js",
   "server/dist/adapters/claude-driver.js",
@@ -56,6 +58,8 @@ const REQUIRED_FILES = [
   "server/dist/adapters/claude-mirror.js",
   "docs/CLAUDE_DRIVER.md",
   "docs/CODEX_DRIVER.md",
+  "docs/INSTALL.md",
+  "SECURITY.md",
   "web/dist/index.html",
   "LICENSE",
 ];
@@ -94,12 +98,37 @@ const { paths, filename } = packReport();
 const pkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8"));
 
 const missingFiles = REQUIRED_FILES.filter((p) => !paths.has(p));
+// 入口存在还不够：沿实际编译代码的相对 import 核对依赖闭包，防止漏打 sessions 等子目录。
+const visited = new Set();
+const queue = ["server/dist/index.js", "cli/cli.js"];
+while (queue.length) {
+  const file = queue.pop();
+  if (visited.has(file)) continue;
+  visited.add(file);
+  if (!paths.has(file)) missingFiles.push(file);
+  const absolute = resolve(repoRoot, file);
+  if (!existsSync(absolute) || !/\.(?:m?js)$/.test(file)) continue;
+  const code = readFileSync(absolute, "utf8");
+  const imports = [
+    ...code.matchAll(/\b(?:import|export)\s+(?:[^;"']+?\s+from\s*)?["'](\.[^"']+)["']/g),
+    ...code.matchAll(/\b(?:import|require)\s*\(\s*["'](\.[^"']+)["']/g),
+  ];
+  for (const match of imports) {
+    const dependency = relative(repoRoot, resolve(dirname(absolute), match[1])).replaceAll("\\", "/");
+    if (dependency.startsWith("../")) throw Error("运行时 import 超出发布根目录");
+    queue.push(dependency);
+  }
+}
 const missingDeps = REQUIRED_DEPS.filter((d) => !(pkg.dependencies && d in pkg.dependencies));
+const forbidden = [...paths].filter(p => /(^|\/)(node_modules|\.git|\.claude|evidence|data|test)(\/|$)|\.map$|\.src\.(png|gif)$|(^|\/)\.env(?:\.|$)|(^|\/)(auth|hub\.config(?:\.local)?)\.json$/.test(p));
+const invalidName = !/^@[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*$/.test(pkg.name);
 
-if (missingFiles.length > 0 || missingDeps.length > 0) {
+if (missingFiles.length > 0 || missingDeps.length > 0 || forbidden.length > 0 || invalidName) {
   console.error("pack smoke 失败 / failed：发布物不完整");
   for (const p of missingFiles) console.error(`  - 包内缺文件 / missing in pack: ${p}`);
   for (const d of missingDeps) console.error(`  - 根 dependencies 缺依赖 / missing in root dependencies: ${d}`);
+  for (const p of forbidden) console.error(`  - 包内含运行状态、测试或隐私文件 / forbidden: ${p}`);
+  if (invalidName) console.error("  - npm 包名必须是全小写且属于发布账号的作用域");
   console.error("（检查 root package.json 的 files 白名单 / dependencies 声明）");
   process.exit(1);
 }

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.0-beta.1（2026-10-22）npm 首次试用发布
+
+- npm 包内置前后端构建，无需用户安装 Git/pnpm 或现场构建；首次 setup 不再递归安装依赖。
+- npm/npx 的配置与应用锁状态保存到 `~/.agent-hub`，更换安装目录与升级后继续保留；源码仓路径不变。
+- 保留首次 Serve/HTTPS 授权输出在 stdout 的官方链接；dry-run 不再执行 Serve 配置。
+- Node 最低版本与依赖对齐为 22.19；全局 pi CLI 改为可选，Claude/Codex 用户无需安装。
+- 修正安装包名、Tailscale HTTPS 首次授权步骤、真实审批验证范围及发布物隐私排除；增加真实 npm 安装、换安装目录、HTTP/WS 和应用锁保留冒烟。
+- Beta：另一台电脑、手机实际连接与模型任务由用户继续验收；Tailscale 受控 CLI 测试不能代替跨设备验证。
+
 ## 未发布（2026-10-16）Codex 接管 MVP 与兼容性
 
 - 新增 Codex app-server 接管：原生发送/插话、中止、本地排队、手机命令/文件/权限审批、真实图片输入、退出清理和断线快照；默认仅手动接管，保留 native writer 互斥，不自动回退 exec。
@@ -21,7 +30,7 @@
 - **「假接管」不再吞消息**：心跳 TTL 是 90s，用户关掉终端后的这 90s 里 `isOnline` 仍为 true → 前端自动接管并提示“终端在线，已默认接管终端” → 消息入队却没人取 → 60s 后一条小字提示 → detach 取消指令，而消息**既不入离线队列也不回落平行**，输入框已清空 = 文本彻底消失。现 server 记录扩展长轮询活性（`POLL_TTL_MS=45s`，比心跳硬得多）并下发 `terminal.responsive`：`attach` 与 `/message` 在**入队前**就拒绝死终端（`ATTACH_UNAVAILABLE`，文案明说“这条消息没有发出去”）；前端 `responsive===false` 不自动接管；`command_ack{ok:false}` 与 `ATTACH_UNAVAILABLE` 都把原文退回离线队列并切回 📱 平行（前者标**手动**重试——无法排除“终端其实执行了、只是回执丢了”，自动重发会重复执行；后者标自动重试——server 入队前就拒了，明确未投递）。
 - **中止竞态**：实例建成前点「停止」此前是空操作（`abort` 撞上 `live.get(id)===undefined` 直接 return，任务照样跑完整轮）。现登记中止请求 + 立即恢复 UI + 实例建成后跳过执行。
 - **幂等占位期不再伪报成功**：同 `clientMessageId` 的上一次提交还在 flight 时，此前直接回 `accepted:true`（`modeOf` 为 null 时还伪报 `mode:"prompt"`）；若首发最终 409/500，重发方已以为成功 → 消息静默消失。现回 409 `PROMPT_IN_FLIGHT`，前端归入自动重试（幂等键保证不双执行）。
-- **浏览器真机验证抓到并修复的三个闸门/保留缺陷**（ego-browser + 独立验证实例，非单测能覆盖）：
+- **浏览器真机验证抓到并修复的三个闸门/保留缺陷**（真实浏览器 + 独立验证实例，非单测能覆盖）：
   1. **闸门被 tail 启发式回写绕过**：WS 握手启动文件 tail，tail 对「只有 user 消息、尚无 assistant 回复」的文件启发式收尾置 idle 并回写 `statuses`；闸门的 own 判据不分来源时会把这个 idle 当成本进程登记 → 同一 60s 窗口内先 409 后 202，消息真的被执行。现 `statuses` 条目带 `source: "own"|"tail"`，闸门只信 `own`，且 tail 回写不覆盖本进程权威登记。
   2. **`live.has` 无条件放行让闸门失效 10 分钟**：abort 只中止 run 不删实例（空闲 10min 才逐出），期间外部写盘完全拦不住。现改为比较「文件 mtime vs 本进程实例最后活动时刻 + 5s 容差」：run 进行中放行（steer/followUp 不自锁），实例空闲后外部写入仍能拦。
   3. **对账先于入队的竞态清掉失败气泡**：发送被拒前 ~10ms 的一次 GET 对账会 reconcile 掉 local-* 占位（那时消息还没入队，既有保留逻辑救不了），队列里的文本因此在界面上没有重试入口。现入队时若占位已不在列表则补回失败气泡（含图片预览重建）。
@@ -40,7 +49,7 @@
 
 ### 本次验证
 - `server` **802 passed / 0 fail**（基线 747，新增 55：外部活跃闸门 14、轮询活性 7、缓存分键 6、节流与背压 9、claude 快照缓存 18、中止竞态 1）；`web` **961 passed / 0 fail**（基线 930，新增 31：错误渲染与分类 14、错误透传 7、假接管与知情权 9、幂等分类 1）。双端 `tsc --noEmit` 干净；cli 84、integrations lint 全绿。
-- **浏览器真机验证**（ego-browser + 独立验证实例：独立 config/data/端口，未触碰线上 `server/dist` 与 `web/dist`）：
+- **浏览器真机验证**（真实浏览器 + 独立验证实例：独立 config/data/端口，未触碰线上 `server/dist` 与 `web/dist`）：
   - 真实历史会话（含 `You have no credits remaining…` / `Connection error.` / `Operation aborted`）→ 错误条正确渲染、原文完整、「（无内容）」清零；aborted 中性语气不带 alert 角色
   - 终端离线打开历史会话 → 双模式说明 sheet 弹出且明示「真实执行且无人工批准」；claude 源给 manual 准确语义
   - 320/390/768 三档视口无横向溢出

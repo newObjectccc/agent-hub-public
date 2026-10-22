@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { isPublishedLayout, depsInstalled } from '../start.js';
+import { isPublishedLayout, depsInstalled, main } from '../start.js';
 
 const ROOT = path.join(path.sep, 'fake', 'hub');
 
@@ -63,4 +63,11 @@ test('depsInstalled: 三处 node_modules 齐全才 true（源码仓布局依赖�
   assert.equal(depsInstalled(ROOT, missingWeb), false);
   const none = existsOf();
   assert.equal(depsInstalled(ROOT, none), false);
+});
+
+test('Node 20 在写配置或启动子进程前明确拒绝', async () => {
+  const lines = [];
+  const result = await main([], { nodeVersion: '20.20.0', log: value => lines.push(value), useColor: false });
+  assert.equal(result, 1);
+  assert.ok(lines.some(line => line.includes('22.19')));
 });

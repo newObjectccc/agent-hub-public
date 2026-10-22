@@ -64,7 +64,7 @@ export function reportConfig(configPath, colors, log) {
   log('');
   log(colors.bold('-- 配置 / Config --'));
   if (!fs.existsSync(configPath)) {
-    log(`${colors.warn} ${configPath} 不存在，运行 \`npm run setup\`（或 node cli/setup.js）生成`);
+    log(`${colors.warn} ${configPath} 不存在，运行 \`agent-hub setup\`（源码可用 node cli/setup.js）生成`);
     return 'codex';
   }
   try {
@@ -139,7 +139,7 @@ export async function main(argv = [], deps = {}) {
   const root = deps.root ?? repoRoot();
   const report = detectAll({ platform: deps.platform, env: deps.env });
   const coreOk = printReport(report, colors, { platform: deps.platform ?? process.platform });
-  const codexBin = reportConfig(deps.configPath ?? defaultConfigPath(root), colors, console.log);
+  const codexBin = reportConfig(deps.configPath ?? defaultConfigPath(root, { home: deps.home }), colors, console.log);
   await reportCodexRuntime(colors, console.log, {
     codexBin,
     env: deps.env ?? process.env,

@@ -63,7 +63,7 @@ export async function main(argv = [], deps = {}) {
   const log = deps.log ?? console.log;
   const colors = createColors({ enabled: options.color !== false && deps.useColor !== false });
   const root = deps.root ?? repoRoot();
-  const configPath = deps.configPath ?? defaultConfigPath(root);
+  const configPath = deps.configPath ?? defaultConfigPath(root, { home: deps.home });
 
   log(colors.bold('agent-hub dev') + colors.dim(` (platform=${platform})`));
 
@@ -98,7 +98,7 @@ export async function main(argv = [], deps = {}) {
   // 2. 依赖：node_modules 缺失时安装（pnpm 优先，缺失回退 npm）
   const pm = resolvePackageManager({ platform, env });
   if (!pm.available) {
-    log(`${colors.fail} 未找到 pnpm / npm。请先安装 Node.js ≥ 20（自带 npm）。`);
+    log(`${colors.fail} 未找到 pnpm / npm。请先安装 Node.js ≥ 22.19（自带 npm）。`);
     return 1;
   }
   if (!depsInstalled(root)) {

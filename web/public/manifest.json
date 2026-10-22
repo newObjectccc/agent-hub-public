@@ -1,7 +1,7 @@
 {
   "name": "Agent Hub",
   "short_name": "Agent Hub",
-  "description": "pi agent 会话中枢：工作台 + chat",
+  "description": "pi / Claude Code / Codex 会话中枢：工作台 + chat",
   "lang": "zh-CN",
   "dir": "ltr",
   "start_url": "/",

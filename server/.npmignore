@@ -1,1 +1,3 @@
-node_modules
+# npm files 白名单不被根 .npmignore 过滤；子目录 .npmignore 生效——排除测试产物与 sourcemap
+dist/test/
+**/*.map

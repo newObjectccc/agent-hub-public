@@ -80,9 +80,12 @@ test('detectTool: 未命中命令 → found=false，可选 ok=true / 必选 ok=f
 
   const pi = detectTool('pi', mockDeps({ found: false }));
   assert.equal(pi.found, false);
-  assert.equal(pi.ok, false); // 核心依赖缺失
+  assert.equal(pi.ok, true); // 仅使用 pi 时才需要全局 CLI
   assert.match(pi.hint, /@earendil-works\/pi-coding-agent/);
   assert.match(pi.hint, /npx/);
+  const node = detectTool('node', mockDeps({ found: false }));
+  assert.equal(node.found, false);
+  assert.equal(node.ok, false); // Node 才是启动面板的核心依赖
 });
 
 test('detectTool: node 版本过低时 ok=false 并提示升级', () => {
@@ -90,7 +93,7 @@ test('detectTool: node 版本过低时 ok=false 并提示升级', () => {
   assert.equal(t.found, true);
   assert.equal(t.version, '18.20.0');
   assert.equal(t.ok, false);
-  assert.match(t.hint, /20\.0\.0/);
+  assert.match(t.hint, /22\.19\.0/);
 });
 
 test('detectTool: tailscale 用 `tailscale version` 检测', () => {
@@ -154,7 +157,7 @@ test('repairAdvice: tailscale 给 tailscale up + 重装，其余给重装', () =
 test('printReport: broken 的可选工具显示 ⚠ 与修复建议（不显示 [OK]）', () => {
   const report = detectAll(mockDeps({
     outputs: {
-      'node --version': ok('v20.11.0'),
+      'node --version': ok('v22.20.0'),
       'pi --version': ok('pi version 0.87.1'),
       'tailscale version': ok(TAILSCALE_CRASH),
     },
@@ -186,12 +189,12 @@ test('detectTool: 命令输出在 stderr 也可解析（如 tmux -V）', () => {
 test('detectAll: 核心/可选分组正确', () => {
   const report = detectAll(mockDeps({
     outputs: {
-      'node --version': ok('v20.11.0'),
+      'node --version': ok('v22.20.0'),
       'pi --version': ok('pi version 0.87.1'),
     },
   }));
-  assert.equal(report.core.length, 2);
-  assert.equal(report.optional.length, 3);
+  assert.equal(report.core.length, 1);
+  assert.equal(report.optional.length, 4);
   assert.equal(report.allCoreOk, true);
   assert.ok(report.tools.some((t) => t.name === 'tailscale'));
 });
@@ -217,4 +220,14 @@ test('hintFor 覆盖三平台安装建议', () => {
   assert.match(TOOLS.tailscale.hints.linux, /tailscale\.com\/install\.sh/);
   assert.match(TOOLS.tailscale.hints.win32, /download\/windows/);
   assert.match(TOOLS.ttyd.hints.darwin, /brew install ttyd/);
+});
+
+// Claude/Codex 用户不必安装全局 pi；空面板同样可启动。
+test('detectAll: 缺少全局 pi 不再把 Node 就绪误报为核心环境失败', () => {
+  const deps = mockDeps({ outputs: { 'node --version': ok('v22.20.0') } });
+  deps.find = cmd => cmd === 'node' ? { found: true, path: '/mock/bin/node' } : { found: false, path: null };
+  const report = detectAll(deps);
+  assert.equal(TOOLS.pi.required, false);
+  assert.equal(report.tools.find(tool => tool.name === 'pi').found, false);
+  assert.equal(report.allCoreOk, true);
 });
