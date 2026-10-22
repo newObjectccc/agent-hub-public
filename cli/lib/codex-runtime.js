@@ -135,6 +135,8 @@ async function sampleHistory(roots, context, limits) {
       }
     } catch (error) {
       if (error?.code !== 'ENOENT') result.unreadable = true;
+      // 定时器可能略早于毫秒时钟触发；I/O 已超时就不再启动下一次采样。
+      if (error?.code === 'ETIMEDOUT') { result.limited = true; return result; }
     } finally {
       if (handle) void handle.close().catch(() => {});
     }
@@ -160,8 +162,9 @@ async function sampleHistory(roots, context, limits) {
           const row = JSON.parse(bytes.subarray(0, lineEnd < 0 ? bytesRead : lineEnd).toString('utf8'));
           const version = row?.type === 'session_meta' ? versionFrom(row.payload?.cli_version) : null;
           if (version && (result.version === null || compareCodexVersions(version, result.version) === 1)) result.version = version;
-        } catch {
+        } catch (error) {
           result.unreadable = true;
+          if (error?.code === 'ETIMEDOUT') { result.limited = true; return result; }
         } finally {
           if (fileHandle) void fileHandle.close().catch(() => {});
         }

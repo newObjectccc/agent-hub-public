@@ -157,6 +157,36 @@ test('Codex history I/O obeys the total budget and closes a handle acquired afte
   } finally { await f.cleanup(); }
 });
 
+test('Codex history I/O timeout stops further sampling even if the clock still has budget', async () => {
+  const f = await fixture();
+  try {
+    await f.history('0.159.0', { name: 'one' });
+    await f.history('0.160.0', { name: 'two' });
+    for (const stage of ['directory', 'open', 'read']) {
+      let directoryCalls = 0; let fileCalls = 0; let closed = 0;
+      const timeout = () => Object.assign(new Error('SECRET TIMEOUT PAYLOAD'), { code: 'ETIMEDOUT' });
+      const result = await inspectCodexRuntime({ ...f.options, deps: {
+        ...f.options.deps,
+        // 模拟定时器已超时、毫秒时钟仍略早的边界，避免依赖调度速度。
+        now: () => 0,
+        ...(stage === 'directory' ? { opendir: async () => { directoryCalls += 1; throw timeout(); } } : {}),
+        open: async () => {
+          fileCalls += 1;
+          if (stage === 'open') throw timeout();
+          return { read: async () => { throw timeout(); }, close: async () => { closed += 1; } };
+        },
+      } });
+      assert.equal(result.runtimeVersion, '0.159.0', stage);
+      assert.equal(result.historyVersion, null, stage);
+      assert.equal(result.historyLimited, true, stage);
+      assert.equal(directoryCalls, stage === 'directory' ? 1 : 0, stage);
+      assert.equal(fileCalls, stage === 'directory' ? 0 : 1, stage);
+      assert.equal(closed, stage === 'read' ? 1 : 0, stage);
+      assert.doesNotMatch(JSON.stringify(result), /SECRET TIMEOUT PAYLOAD/);
+    }
+  } finally { await f.cleanup(); }
+});
+
 test('Codex formatting/check extracts only codexBin and never prints tokens or parser excerpts', async () => {
   const f = await fixture(); const logs = []; const colors = createColors({ enabled: false });
   try {

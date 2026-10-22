@@ -358,7 +358,7 @@ no rollout found for thread id <uuid>
 
 `defaultPolicy` 默认 never，只手动接管；可选 active-only / always，但真实占用仍受 native writer 和静默窗检查。`approvalPolicy` 可显式设置 `untrusted` / `on-request`，`sandbox` 可显式设置 `read-only` / `workspace-write`；`never` 与 `danger-full-access` 已移除，写了会告警并回落 `inherit`。手机不会把一次允许升级为永久允许。
 
-`agent-hub doctor` 与 server 启动执行只读版本诊断：解析实际二进制、调用 `--version`，在正常/归档目录有限采样 rollout 头的 cli_version。默认最多 32 个文件、每个 64 KiB、2.5 秒总预算，版本查询 1.5 秒；失败只告警，不读 auth.json、不调用模型、不阻塞服务启动。版本 compatible 只表示数字版本比较没有发现落后，不等于模型、认证或 provider 已验证可用。
+`agent-hub doctor` 与 server 启动执行只读版本诊断：解析实际二进制、调用 `--version`，在正常/归档目录有限采样 rollout 头的 cli_version。默认最多 32 个文件、每个 64 KiB、2.5 秒总预算，版本查询 1.5 秒；历史 I/O 一旦超时即停止余下采样并标记受限，超时后才取得的句柄仍会释放。失败只告警，不读 auth.json、不调用模型、不阻塞服务启动。版本 compatible 只表示数字版本比较没有发现落后，不等于模型、认证或 provider 已验证可用。
 
 ## 复现与验收
 
