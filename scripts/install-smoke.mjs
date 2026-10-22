@@ -132,7 +132,7 @@ else process.exitCode=1;
   check('PWA service worker 可加载', worker.ok && /javascript/.test(worker.headers.get('content-type') ?? ''));
   const sessions = await fetch(base + '/api/sessions');
   const sessionList = await sessions.json();
-  check('首次空会话 API 正常且没有继承个人历史', sessions.ok && Array.isArray(sessionList) && sessionList.length === 0);
+  check('首次空会话 API 正常且没有继承个人历史', sessions.ok && Array.isArray(sessionList.sessions) && sessionList.sessions.length === 0);
   const requireInstalled = createRequire(join(first, 'package.json'));
   const { WebSocket } = requireInstalled('ws');
   await new Promise((done, reject) => {
