@@ -10,6 +10,7 @@
  *   故 bridge 是唯一官方应答通道；bypass 环境不产生请求，bridge 空转无害。
  */
 import { ErrorCodes, HubError } from "../errors.js";
+import { CLAUDE_PERMISSION_MODES } from "../config.js";
 
 /** MCP bridge server 名与工具名（全名 mcp__<server>__<tool>，E2 实测必须全名） */
 export const PERM_MCP_SERVER = "permhook";
@@ -21,14 +22,25 @@ export const ENV_LIVE_URL = "AGENT_HUB_LIVE_URL";
 export const ENV_LIVE_TOKEN = "AGENT_HUB_LIVE_TOKEN";
 export const ENV_SESSION_ID = "AGENT_HUB_SESSION_ID";
 
-/** 驱动 spawn 参数组装（固定安全集：绝不带 --dangerously-skip-permissions / --allowedTools / --bare） */
+/**
+ * 驱动 spawn 参数组装。危险 flag 红线（与权限档位无关，任何档位都成立）：
+ * 绝不带 --dangerously-skip-permissions / --allowedTools / --bare——提权只走官方
+ * --permission-mode 档位通道（白名单校验，防任意字符串透传 CLI）。
+ */
 export interface DriverArgsInput {
   sessionId: string;
-  /** permission-prompt-tool bridge 脚本绝对路径；null = 不挂 bridge（bypass 环境） */
+  /** permission-prompt-tool bridge 脚本绝对路径；null = 不挂 bridge（bypass 运行） */
   bridgeScriptPath: string | null;
-  /** 显式 --permission-mode 覆盖；undefined = 继承 settings（推荐，与终端体验一致） */
+  /**
+   * 显式 --permission-mode 档位（白名单见 CLAUDE_PERMISSION_MODES，"inherit" 不是 CLI 档位）；
+   * undefined = 不下发 flag（配置 permissionMode=inherit 时，沿用用户 settings）。
+   * hub 默认显式下发 bypassPermissions（最高权限）。
+   */
   permissionMode?: string;
 }
+
+/** CLI 真实接受的 --permission-mode 档位（CLAUDE_PERMISSION_MODES 去掉 hub 专属的 inherit） */
+const CLI_PERMISSION_MODES: readonly string[] = CLAUDE_PERMISSION_MODES.filter((m) => m !== "inherit");
 
 export function buildDriverArgs(input: DriverArgsInput): string[] {
   const args = [
@@ -53,6 +65,13 @@ export function buildDriverArgs(input: DriverArgsInput): string[] {
     );
   }
   if (input.permissionMode !== undefined && input.permissionMode !== "") {
+    if (!CLI_PERMISSION_MODES.includes(input.permissionMode)) {
+      throw new HubError(
+        ErrorCodes.INTERNAL,
+        `非法 --permission-mode 档位 "${input.permissionMode}"（白名单：${CLI_PERMISSION_MODES.join(" | ")}）`,
+        500,
+      );
+    }
     args.push("--permission-mode", input.permissionMode);
   }
   return args;

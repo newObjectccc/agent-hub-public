@@ -7,7 +7,7 @@ Base URL: `http://<host>:<port>/api`（默认端口 7700）
 所有响应 `Content-Type: application/json`。错误统一为：
 `{ "error": { "code": string, "message": string } }`，HTTP 4xx/5xx。
 
-`auth.enabled=true` 且 token 非空时，HTTP 需 Bearer token；WS upgrade 支持 Authorization、
+`auth.enabled=true` 时，HTTP 需 Bearer token（空 token、非法 auth 结构/类型或未知字段会在监听前报 `CONFIG_INVALID`）；WS upgrade 支持 Authorization、
 `bearer.<token>`（亦支持 token/access_token）子协议或兼容的 `?token=` 参数，并检查 Origin/Host。
 浏览器优先使用子协议，避免 token 进 URL。
 应用锁另行校验解锁令牌，范围见应用锁一节；两层同时启用时须分别满足。
@@ -63,9 +63,11 @@ header 的 `parentSession`（文件路径）解析出的父会话 id（文件名
 `lastDrivenBy` 为驱动来源标注契约字段（列表项与详情里的 `session` 均带，可缺省）：
 `"panel" | "terminal"`。`POST /api/sessions/:id/prompt` 接受成功后 server 把会话记入
 “面板驱动过”集合（持久化 `data/panel-driven.json`，重启不丢；只增不减，claude 会话同理），
-命中即 `"panel"`，否则 `"terminal"`；缺省按 `"terminal"` 容错。这是“曾经由面板平行驱动”的标记，
+命中即 `"panel"`；未命中但有实质消息（`messageCount > 0`）为 `"terminal"`（消息是终端写的）；
+无消息的空会话（如刚创建）为**无驱动史**：不下发该字段，前端不据此默认接管（手机新建的会话
+永远从 📱 平行模式开始）。这是“曾经由面板平行驱动”的标记，
 不是对当前进程所有者的探测。平行模式由 server 的 SDK/CLI 向同一上下文追加；原终端需重新 resume
-才能看到，前端按其渲染来源提示，也用它判断 Claude 默认接管策略。
+才能看到，前端按其渲染来源提示（无驱动史不渲染徽章），也用它判断 Claude 默认接管策略。
 
 `archived` 为归档会话标注契约字段（列表项与详情里的 `session` 均带，可缺省）：codex 归档
 目录 `~/.codex/archived_sessions/` 扫描出的会话为 `true`（任一分段在归档目录即视为归档），
@@ -173,10 +175,11 @@ cwd、消息历史；**原会话文件只读，完全不受影响**，新旧会�
 实际输出走 WebSocket 事件流。
 
 claude 会话：server 本地 spawn
-`claude -p <text> --resume <session-id> --output-format stream-json --verbose --include-partial-messages --permission-mode manual`，
+`claude -p <text> --resume <session-id> --output-format stream-json --verbose --include-partial-messages --permission-mode <claudeDriver.permissionMode>`，
 解析 stream-json 事件映射到 WS 事件；本服务启动的 run 正忙时，`steer`/`followUp` 均排队（进程 close 后自动发送，附件随队列保留）；
 若是未接管的外部终端正在运行，平行模式三种 mode 均返回 `409 SESSION_BUSY`，不受理无法投递的队列；
-平行通道显式使用 `--permission-mode manual`（覆盖用户的默认权限模式；具体工具许可仍由 CLI 配置决定），
+平行通道的权限档位由 `claudeDriver.permissionMode` 配置驱动（默认 `bypassPermissions` 最高权限、工具自动执行无人工审批；
+`inherit` 时不下发 `--permission-mode`、沿用用户 settings；具体工具许可仍由 CLI 配置决定），
 不使用 `--dangerously-skip-permissions` / `--allowedTools`。
 
 历史会话无需原终端在线即可 resume；打开页面本身不发送历史任务。Claude 发送在异步环境准备结束后，
@@ -825,10 +828,14 @@ Multiply coordinates …]`）不展示为额外用户消息；stdout 即使丢�
   （死终端），客户端不得据此自动接管（否则消息入队无人取）。缺省（老 server）按 true 容错。
   详见 §12 的 `terminal.responsive` 一节。
 - `defaultPolicy`（v0.3 新增，可选）：智能默认接管策略，取自 `config.claudeDriver.defaultPolicy`
-  并随 terminal 下发（Codex 取 `config.codexDriver.defaultPolicy`，默认 never，只手动）：
+  并随 terminal 下发。**Codex 恒为 `"never"`（2026-10-23 产品规则）**：进入会话默认 📱 平行继续——
+  接管有「须先退出桌面 ChatGPT app 对应会话」的写者互斥前提，默认接管几乎必失败；
+  与 pi/claude（active-only：电脑上活跃 → 默认接管）刻意区分；`config.codexDriver.defaultPolicy`
+  保留仅兼容、不影响默认通道，手动切换/pin 仍可接管：
   `"active-only"` = pi 扩展在线时默认接管，Claude 在 `status === "running"` 或
   `lastDrivenBy === "terminal"` 时默认尝试接管（后者也可能是空闲历史会话）；`"always"` = 打开即尝试，
-  pi 仍须 `online === true`；`"never"` = 只手动切换。Claude 实际 attach 仍受开关、静默窗和并发上限约束。
+  pi 仍须 `online === true`；`"never"` = 只手动切换。**空会话闸门（与策略无关）**：无任何消息且
+  非 `running` 的会话（`messageCount === 0`，如刚创建）任何策略下都不默认接管（手机新建 ≠ 接管电脑）。Claude 实际 attach 仍受开关、静默窗和并发上限约束。
   **老 server 缺省该字段 → 前端按 `"active-only"` 容错**（行为与历史一致）；用户手动选择（pin）
   永远优先于该策略。
 - `effectivePolicy`（可选，Codex 接管会话）：生效权限策略 `{ approval, sandbox, bypass }`，
@@ -932,23 +939,23 @@ Codex 的 steer 使用当前 expectedTurnId，followUp 在本地等前轮完成�
 
 ### host 权限请求（Claude / Codex 手机批权限）
 
-非 bypass 环境下工具需确认时，驱动进程经 `--permission-prompt-tool` MCP bridge 回连：
+非 bypass 环境下工具需确认时，执行进程（接管驱动或平行 spawn）经 `--permission-prompt-tool` MCP bridge 回连（两路径共用同一审批通道与手机卡片）：
 
 - `POST /api/agents/host-requests`（bridge → server，仅本机回环 + token）：
   请求 `{ "sessionId", "requestId", "toolName", "toolUseId", "input", "description?" }`；
   **挂起**至人工应答/超时后返回 `{ "behavior": "allow|deny", "message" }`（bridge 据此回注
   PermissionResult）。超时/收尾一律 `deny`（**绝不自动 allow**）。
 - `GET /api/sessions/:id/host-requests`（手机）→ `{ "requests": HostRequestDto[] }`
-  （断线重连兜底拉取，防 WS 丢事件卡死）。无审批通道的会话（pi 源，权限在终端里确认）按
+  （断线重连兜底拉取，防 WS 丢事件卡死；接管与平行模式均适用）。无审批通道的会话（pi 源，权限在终端里确认）按
   「空列表」语义回落 200 `{ "requests": [] }`，不报 400（只读端点向后兼容；写路径应答仍 400）。
-- `POST /api/sessions/:id/host-requests/:requestId`（手机）：`{ "outcome": "allow|deny", "message"? }`
-  → `{ "resolved": true, "outcome" }`；未知 → 404 `HOST_REQUEST_NOT_FOUND`；已决 → 409 `HOST_REQUEST_RESOLVED`
+- `POST /api/sessions/:id/host-requests/:requestId`（手机）：body 二选一：`{ "outcome": "allow|deny", "message"? }`（审批卡片）或 `{ "answers": { "<questionId>": ["text", ...] } }`（问答卡片 `kind:"question"`，对应 `item/tool/requestUserInput` / elicitation）
+  → `{ "resolved": true, "outcome" }`；未知 → 404 `HOST_REQUEST_NOT_FOUND`；已决 → 409 `HOST_REQUEST_RESOLVED`；问答的未知 questionId / 空答案 → 400 `INVALID_REQUEST`（请求保留可重试）。问答超时/收尾不代答：服务端以 respondError 明确告知模型「用户未回答」
   （已决 id 短期记忆 TTL 约 5 分钟、上限约 200 条，过期/淘汰后回 404）。
 
 `HostRequestDto`：`{ id, sessionId, kind: "permission"|"question", title, detail, toolName?, allowAlways?, createdAt, expiresAt, requestType?, turnId?, itemId?, permissions? }`。
 
 Codex 原生三类 `requestType` 为 commandExecution / fileChange / permissions，复用上述手机列表/应答端点，无 MCP bridge。允许仅限当前操作；permissions 仅返回原请求的子集且 scope=turn。问题/elicitation 未提供选择 UI 时安全拒绝，未知服务请求明确 unsupported；认证刷新不经过手机。超时/中止/退出/崩溃清理审批。serverRequest/resolved 仅表示已清理，不推断为用户允许。
-bypassPermissions 环境不产生请求（全自动放行）；headless 无 AskUserQuestion（模型文字化提问）。
+bypassPermissions 环境不产生请求（全自动放行，hub 默认即此档位——默认无审批卡片属预期行为）；headless 无 AskUserQuestion（模型文字化提问）。
 
 ### 冲突保护
 

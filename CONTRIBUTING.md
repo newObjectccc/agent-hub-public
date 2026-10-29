@@ -36,3 +36,7 @@
 - **代码与测试**：各自提交（共享文件按 hunk 拆分 stage，不裹挟他人在途改动）
 - **构建与部署单点化**：验证用 `npm test` / `tsc --noEmit`，**不要在工作区跑 `npm run build`**——server 静态托管实时读 `web/dist`，工作区构建会把半成品产物直接发上线（实测踩坑：手机黑屏）
 - 发布构建/重启由单一发布流程执行（构建前确认工作区干净）
+
+## 发布依赖锁
+
+源码开发使用 `pnpm-lock.yaml`；npm CLI 发布物同时使用 `npm-shrinkwrap.json` 并预打包生产依赖，固定实际验证过的运行时依赖。上游 SDK 自带旧锁，单独写 npm `overrides` 不能保证安装包得到修补版；`patches/` 中的元数据补丁同步修正 SDK 的 Undici 版本和内嵌锁，许可证说明见 `THIRD_PARTY_NOTICES.md`。修改运行时依赖后，在冻结安装完成的独立 worktree 执行 `pnpm release:shrinkwrap`，再跑构建、测试、`node scripts/pack-smoke.mjs` 与 `pnpm test:install`。安装冒烟会检查 SDK 实际解析到的 Undici 版本。两个锁文件和对应依赖声明需一起提交；发布命令始终显式指定 npm 官方源。

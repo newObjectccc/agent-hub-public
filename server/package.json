@@ -1,6 +1,6 @@
 {
   "name": "@agent-hub/server",
-  "version": "0.3.0-beta.1",
+  "version": "0.3.0-beta.2",
   "private": true,
   "type": "module",
   "description": "agent-hub 后端：REST + WS、pi/claude 会话扫描与驱动、KPI 聚合、系统检测（Fastify）",
@@ -31,7 +31,7 @@
     "@fastify/compress": "^9.2.0",
     "@fastify/cors": "^10.0.0",
     "@fastify/static": "^10.1.6",
-    "fastify": "^5.2.0",
+    "fastify": "^5.12.7",
     "ws": "^8.18.0"
   },
   "devDependencies": {

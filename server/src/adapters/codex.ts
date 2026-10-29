@@ -18,7 +18,11 @@
  *    （~/.codex/auth.json 绝不读内容，TOKEN 等仅随子进程 env 继承传递，绝不打印）。
  * 2. 不传 `--dangerously-bypass-approvals-and-sandbox` / `--dangerously-bypass-hook-trust`
  *    等任何绕过权限或危险 flag；sandbox/approval 策略继承用户 ~/.codex/config.toml
- *    （与用户在终端跑 codex 同口径，绝不更宽松）。
+ *    （与用户在终端跑 codex 同口径，绝不更宽松）。唯一例外是 `--skip-git-repo-check`：
+ *    它只豁免「cwd 必须是 git 仓库或已信任目录」的入口防呆（实测 0.163 下
+ *    `Not inside a trusted directory and --skip-git-repo-check was not specified.`
+ *    会拒收所有非 git 会话的消息，config 的 trust_level 条目对 exec 无效），
+ *    不触碰审批/沙箱；2026-10-23 用户策略明确为「默认最高权限、完全信任」。
  * 3. 模型输出的 stderr 只保留尾部截断预览用于错误提示，不落盘。
  * ─────────────────────────────────────────────────────────────────────────
  */
@@ -602,8 +606,10 @@ export class CodexAdapter implements SessionAdapter {
       throw new HubError(ErrorCodes.INTERNAL, "server 正在关闭", 503);
     }
     // spawn 参数固定安全集：不传 --dangerously-bypass-approvals-and-sandbox 等危险 flag
-    // （见文件头安全约束）；prompt 作位置参数（resume help：PROMPT 位置参数或 stdin 二选一）
-    const args = ["exec", "resume", "--json", session.id, text];
+    // （见文件头安全约束）；prompt 作位置参数（resume help：PROMPT 位置参数或 stdin 二选一）。
+    // --skip-git-repo-check：豁免 cwd 的 git/信任目录入口检查（安全约束 2 的唯一例外），
+    // 否则非 git 会话的平行消息 100% 被拒收（手机端只剩「发送即报错」）。
+    const args = ["exec", "resume", "--json", "--skip-git-repo-check", session.id, text];
     const child = this.spawnFn(this.codexBin, args, {
       cwd: session.cwd !== "" ? session.cwd : undefined,
       stdio: ["ignore", "pipe", "pipe"],

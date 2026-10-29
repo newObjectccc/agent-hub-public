@@ -174,10 +174,10 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
   sessionQueueRef.current = sessionQueue;
   /** 待发送队列浮层（📶 徽章点击展开，逐条重试/删除） */
   const [queueOpen, setQueueOpen] = useState(false);
-  /** 会话最后驱动来源（心理预期管理）：面板驱动过 → panel */
-  const [drivenBy, setDrivenBy] = useState<"panel" | "terminal">(() => {
+  /** 会话最后驱动来源（心理预期管理）：面板驱动过 → panel；无驱动史（空会话）→ null 不渲染 */
+  const [drivenBy, setDrivenBy] = useState<"panel" | "terminal" | null>(() => {
     const storage = safeStorage();
-    return storage?.getItem(`agent-hub.panelHint.v1:${sessionId}`) === "1" ? "panel" : "terminal";
+    return storage?.getItem(`agent-hub.panelHint.v1:${sessionId}`) === "1" ? "panel" : null;
   });
   /** 预期提示条（面板驱动过的会话首次进入显示，"知道了"后记住关闭） */
   const [driverHint, setDriverHint] = useState(false);
@@ -481,15 +481,16 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
         }      }
       setLoadError(null);
       void reconcileAttachReceipts(sessionId);
-      // host 权限请求兜底拉取（断线/刷新防 WS 丢事件卡死：未决卡片必须回来）
-      if (detail.session.terminal?.driver === "hub") {
-        api
-          .listHostRequests(sessionId)
-          .then((r) => setHostRequests(r.requests ?? []))
-          .catch(() => undefined);
-      }
-      // 驱动来源标注（心理预期管理）：server 持久集合为准，本地 panelHint 仅旧版兼容兑底
-      const driven = detail.session.lastDrivenBy === "panel" ? "panel" : "terminal";
+      // host 权限请求兜底拉取（断线/刷新防 WS 丢事件卡死：未决卡片必须回来）。
+      // 不限接管路径：📱 平行模式非 bypass 档位同样有手机审批卡片（两路径同一审批通道）；
+      // 无审批通道的源（pi）服务端返回空列表。Promise 包裹容错：同步异常不打断本 effect 后续流程。
+      void Promise.resolve()
+        .then(() => api.listHostRequests(sessionId))
+        .then((r) => setHostRequests(r.requests ?? []))
+        .catch(() => undefined);
+      // 驱动来源标注（心理预期管理）：server 持久集合为准，本地 panelHint 仅旧版兼容兑底；
+      // 无驱动史（空会话/老 server 无字段）→ null，徽章不渲染（不再误标“终端驱动”）
+      const driven = detail.session.lastDrivenBy ?? null;
       setDrivenBy((prev) => (prev === "panel" ? "panel" : driven));
       if (driven === "panel" && safeStorage()?.getItem(`agent-hub.driverHint.v1:${sessionId}`) !== "1") {
         setDriverHint(true);
@@ -1223,7 +1224,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
           const req = event.request as HostRequestDto | undefined;
           if (req && typeof req.id === "string") {
             setHostRequests((prev) => (prev.some((r) => r.id === req.id) ? prev : [...prev, req]));
-            setNotice(`需要你批准：${req.title}`);
+            setNotice(req.kind === "question" ? `需要你回答：${req.title}` : `需要你批准：${req.title}`);
           }
           break;
         }
@@ -2095,18 +2096,25 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
             key={r.id}
             request={r}
             respondingId={hostRespondingId}
-            onRespond={(requestId, outcome) => {
+            onRespond={(requestId, body) => {
               setHostRespondingId(requestId);
-              api
-                .respondHostRequest(sessionId, requestId, outcome)
+              return api
+                .respondHostRequest(sessionId, requestId, body)
                 .then(() => {
                   setHostRequests((prev) => prev.filter((x) => x.id !== requestId));
                   setHostRespondingId(null);
-                  setNotice(outcome === "allow" ? "已允许该操作" : "已拒绝该操作");
+                  setNotice(
+                    "outcome" in body
+                      ? body.outcome === "allow"
+                        ? "已允许该操作"
+                        : "已拒绝该操作"
+                      : "已提交回答",
+                  );
                 })
                 .catch((e: unknown) => {
                   setHostRespondingId(null);
                   setNotice(`应答失败：${e instanceof Error ? e.message : "未知错误"}`);
+                  throw e; // 回传卡片内联报错：卡片保留、用户输入不丢、可重试
                 });
             }}
           />

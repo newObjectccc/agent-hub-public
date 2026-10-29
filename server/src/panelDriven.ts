@@ -4,6 +4,8 @@
  * 电脑终端 pi 进程看不到（需 pi --resume 重开）。POST /api/sessions/:id/prompt
  * 成功时把会话记入「面板驱动过」集合（持久化 data/panel-driven.json，重启不丢）；
  * 集合只增不减（简化口径：驱动过即 lastDrivenBy=panel，claude 会话同理）。
+ * 未驱动过面板的会话再按消息数分流：有实质消息 = 终端驱动过（terminal）；
+ * 从未有任何消息（刚创建的空会话）= 无驱动史（不下发字段，前端不据此默认接管）。
  *
  * 纯函数（parse/serialize）可单测；文件 IO 收敛在 PanelDrivenStore 薄封装，
  * 保存失败静默（标注只是预期管理，绝不阻断发送主链路）。
@@ -44,9 +46,18 @@ export function serializePanelDriven(ids: Iterable<string>): string {
   return `${JSON.stringify(stored, null, 2)}\n`;
 }
 
-/** 驱动来源判定（纯函数）：面板驱动过 → panel，否则 terminal */
-export function drivenByOf(store: Pick<PanelDrivenStoreLike, "has">, sessionId: string): SessionDrivenBy {
-  return store.has(sessionId) ? "panel" : "terminal";
+/** 驱动来源判定（纯函数）：
+ * - 面板驱动过 → "panel"（持久集合只增不减）
+ * - 有实质消息但未被面板驱动过 → "terminal"（消息是电脑终端写的）
+ * - 从未有任何消息（刚创建的空会话）→ undefined（无驱动史，DTO 不下发字段）
+ */
+export function drivenByOf(
+  store: Pick<PanelDrivenStoreLike, "has">,
+  sessionId: string,
+  messageCount: number,
+): SessionDrivenBy | undefined {
+  if (store.has(sessionId)) return "panel";
+  return messageCount > 0 ? "terminal" : undefined;
 }
 
 /**

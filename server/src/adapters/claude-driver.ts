@@ -12,6 +12,8 @@
  *
  * 安全约束（与 ClaudeAdapter 文件头一致的底线）：
  * - spawn 固定安全集，绝不传 --dangerously-skip-permissions / --allowedTools / --bare；
+ *   权限档位经官方 --permission-mode 表达（claudeDriver.permissionMode，与 parallel 路径
+ *   共用，默认 bypassPermissions 最高权限、全自动无人审批）；
  * - 权限应答永不自动 allow（超时/异常一律 deny）；
  * - 异常静默隔离，绝不拖垮 hub 主进程。
  */
@@ -21,20 +23,20 @@ import { stat, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { ErrorCodes, HubError } from "../errors.js";
+import type { ClaudePermissionMode } from "../config.js";
 import type { HostRequestDto, ServerEvent, TerminalAttachInfo } from "../types.js";
 import { ClaudeJsonlReader, ClaudeStreamTranslator } from "./claude-stream.js";
 import { mergeClaudeEnv } from "./claude-env.js";
+import { HostRequestRegistry, type HostRequestDecision } from "./host-request-registry.js";
 import {
   buildDriverArgs,
   encodeInterrupt,
   encodeUserMessage,
-  hostRequestTitle,
   parseDriverMode,
   ENV_LIVE_TOKEN,
   ENV_LIVE_URL,
   ENV_SESSION_ID,
   type BridgeHostRequestBody,
-  type PermissionBehavior,
 } from "./claude-host-protocol.js";
 
 export type EmitFn = (sessionId: string, event: ServerEvent) => void;
@@ -47,10 +49,9 @@ export interface DriverCommand {
   mode: DriverCommandMode;
 }
 
-export interface HostRequestDecision {
-  behavior: PermissionBehavior;
-  message: string;
-}
+// HostRequestDecision 已迁至 host-request-registry.ts（attach/parallel 两路径共用）；
+// 此处 re-export 保持既有 import 路径（routes/测试）不变。
+export type { HostRequestDecision };
 
 /** 路由/测试注入用结构接口（对齐 agents.ts AgentLinkLike 风格） */
 export interface ClaudeDriverLinkLike {
@@ -89,8 +90,18 @@ export interface ClaudeDriverOptions {
   idleDetachMs?: number;
   /** attach 前 sessionFile 静默窗（外部写入检测，防双写） */
   externalQuietMs?: number;
-  /** 权限请求人工应答超时（超时一律 deny，绝不自动 allow） */
+  /** 权限请求人工应答超时（超时一律 deny，绝不自动 allow）；仅自建 registry 时生效 */
   hostRequestTtlMs?: number;
+  /**
+   * 共享权限请求登记表（attach 与 parallel 两路径共用同一审批通道，手机端同一套 UI）。
+   * 缺省自建（单测/独立使用）；index.ts 装配时注入与 ClaudeAdapter 同一实例。
+   */
+  hostRequests?: HostRequestRegistry;
+  /**
+   * parallel run 活跃判定（index.ts 注入 `(id) => claudeAdapter.hasActiveRun(id)`）：
+   * 权限请求只在「有人在环」（attach 中或 parallel run 中）时挂起，未知会话伪造请求一律 deny。
+   */
+  parallelActive?: (id: string) => boolean;
   /** 测试注入 */
   spawnFn?: typeof spawn;
   /** 测试注入：settings 探测（返回 settings JSON 或 null） */
@@ -100,16 +111,17 @@ export interface ClaudeDriverOptions {
   /** 测试注入：投屏启停（缺省走 claude-mirror 真实现） */
   startMirror?: (sessionId: string, sessionFile: string) => Promise<boolean>;
   stopMirror?: (sessionId: string) => void;
+  /**
+   * 权限档位（与 parallel 路径共用同一配置，默认 bypassPermissions 最高权限）。
+   * 非 inherit 显式下发 --permission-mode；inherit 沿用用户 settings 判 bridge。
+   */
+  permissionMode?: ClaudePermissionMode;
 }
 
 const DEFAULT_MAX_CONCURRENT = 3;
 const DEFAULT_IDLE_DETACH_MS = 30 * 60_000;
 const DEFAULT_EXTERNAL_QUIET_MS = 3_000;
 const DEFAULT_HOST_REQUEST_TTL_MS = 5 * 60_000;
-/** 已决权限请求记忆 TTL（契约 §12「已决 → 409」判定窗口，过后回 404） */
-const RESOLVED_HOST_REQUEST_TTL_MS = 5 * 60_000;
-/** 已决记忆上限（防膨胀：超限淘汰最旧） */
-const MAX_RESOLVED_HOST_REQUESTS = 200;
 const KILL_GRACE_MS = 2_000;
 const STDERR_PREVIEW_LIMIT = 500;
 /** clientMessageId 幂等缓存 TTL（对齐 agents.ts） */
@@ -121,19 +133,6 @@ interface QueuedMessage {
   mode: DriverCommandMode;
 }
 
-interface HostRequestEntry {
-  sessionId: string;
-  requestId: string;
-  toolName: string;
-  title: string;
-  detail: string | null;
-  input: unknown;
-  createdAt: number;
-  expiresAt: number;
-  resolve: (decision: HostRequestDecision) => void;
-  timer: ReturnType<typeof setTimeout>;
-}
-
 interface DriverEntry {
   sessionId: string;
   cwd: string;
@@ -143,7 +142,6 @@ interface DriverEntry {
   turnActive: boolean;
   failed: boolean;
   queue: QueuedMessage[];
-  hostRequests: Map<string, HostRequestEntry>;
   /** clientMessageId → commandId */
   byClient: Map<string, string>;
   idleTimer: ReturnType<typeof setTimeout> | null;
@@ -161,10 +159,14 @@ export class ClaudeDriverHub {
   private readonly maxConcurrent: number;
   private readonly idleDetachMs: number;
   private readonly externalQuietMs: number;
-  private readonly hostRequestTtlMs: number;
+  /** 权限请求登记表（attach/parallel 共用；缺省自建） */
+  private readonly hostRequests: HostRequestRegistry;
+  private readonly parallelActive: (id: string) => boolean;
   private readonly spawnFn: typeof spawn;
   private readonly readSettings: (sessionCwd: string) => Promise<unknown>;
   private readonly mirrorMode: "tmux" | "off";
+  /** 权限档位（默认 bypassPermissions；inherit = 不下发 flag、沿用 settings） */
+  private readonly permissionMode: ClaudePermissionMode;
   private readonly startMirrorFn: (sessionId: string, sessionFile: string) => Promise<boolean>;
   private readonly stopMirrorFn: (sessionId: string) => void;
   private readonly drivers = new Map<string, DriverEntry>();
@@ -174,10 +176,13 @@ export class ClaudeDriverHub {
   }>();
   /** 全局 clientMessageId 幂等（跨 attach 生命周期，防完成后重复注入） */
   private readonly clientSeen = new Map<string, { commandId: string; at: number }>();
-  /** 已决权限请求记忆（requestId → 过期时间）：契约 §12「已决 → 409」可判，防双重应答被误报 404 */
-  private readonly resolvedHostRequests = new Map<string, number>();
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
   private disposed = false;
+  /** registry 挂起请求决出 → 重置空闲 detach 计时（与旧 finishHostRequest.touchIdle 同语义） */
+  private readonly onHostRequestSettled = (sessionId: string): void => {
+    const entry = this.drivers.get(sessionId);
+    if (entry) this.touchIdle(entry);
+  };
 
   constructor(options: ClaudeDriverOptions) {
     this.emit = options.emit;
@@ -188,10 +193,15 @@ export class ClaudeDriverHub {
     this.maxConcurrent = options.maxConcurrent ?? DEFAULT_MAX_CONCURRENT;
     this.idleDetachMs = options.idleDetachMs ?? DEFAULT_IDLE_DETACH_MS;
     this.externalQuietMs = options.externalQuietMs ?? DEFAULT_EXTERNAL_QUIET_MS;
-    this.hostRequestTtlMs = options.hostRequestTtlMs ?? DEFAULT_HOST_REQUEST_TTL_MS;
+    this.parallelActive = options.parallelActive ?? (() => false);
+    this.hostRequests =
+      options.hostRequests ??
+      new HostRequestRegistry({ emit: this.emit, hostRequestTtlMs: options.hostRequestTtlMs ?? DEFAULT_HOST_REQUEST_TTL_MS });
+    this.hostRequests.addSettledListener(this.onHostRequestSettled);
     this.spawnFn = options.spawnFn ?? spawn;
     this.readSettings = options.readSettings ?? readClaudeDriverSettings;
     this.mirrorMode = options.mirror ?? "tmux";
+    this.permissionMode = options.permissionMode ?? "bypassPermissions";
     this.startMirrorFn =
       options.startMirror ??
       (async (sid, sfile) => {
@@ -256,11 +266,18 @@ export class ClaudeDriverHub {
   ): Promise<{ attached: true; driver: "hub"; mirror: boolean }> {
     await this.assertExternalQuiet(opts.sessionFile, now);
     const settings = await this.readSettings(opts.cwd).catch(() => null);
-    const bypass = settings !== null && isBypass(settings);
+    // 权限档位由配置决定（与 parallel 路径共用，默认 bypassPermissions）：
+    // - 显式档位直接下发 --permission-mode；bypass 运行不产生权限请求（E2 实测），bridge 不挂；
+    // - inherit = 不下发 flag、沿用 settings，bridge 判定维持「settings 显式 bypass 才不挂」
+    //   （settings 缺失/损坏按非 bypass 处理、挂 bridge 兜底）。
+    const mode = this.permissionMode;
+    const bypassRun =
+      mode === "bypassPermissions" || (mode === "inherit" && settings !== null && isBypass(settings));
     const args = buildDriverArgs({
       sessionId: id,
-      // bypass 环境不产生权限请求（E2 实测），bridge 可不挂；非 bypass 挂 bridge 走手机批权限
-      bridgeScriptPath: bypass ? null : this.bridgeScriptPath,
+      // 需确认档位挂 bridge 走手机批权限；bypass 运行不挂
+      bridgeScriptPath: bypassRun ? null : this.bridgeScriptPath,
+      permissionMode: mode === "inherit" ? undefined : mode,
     });
     const env: NodeJS.ProcessEnv = {
       ...(await mergeClaudeEnv(process.env)),
@@ -290,7 +307,6 @@ export class ClaudeDriverHub {
       turnActive: false,
       failed: false,
       queue: [],
-      hostRequests: new Map(),
       byClient: new Map(),
       idleTimer: null,
       intentionalStop: false,
@@ -320,9 +336,7 @@ export class ClaudeDriverHub {
     for (const msg of entry.queue.splice(0)) {
       this.pushAck(id, msg.commandId, false, "已退出接管模式，指令取消");
     }
-    for (const req of [...entry.hostRequests.values()]) {
-      this.finishHostRequest(entry, req, { behavior: "deny", message: "已退出接管模式" }, "cancelled");
-    }
+    this.hostRequests.cancelSession(id, "已退出接管模式", "cancelled");
     this.killChild(entry.child);
     this.clearIdle(entry);
     this.stopMirrorFn(id);
@@ -413,100 +427,32 @@ export class ClaudeDriverHub {
   // ---- 权限请求（bridge 机器通道 + 手机应答）----
 
   /**
-   * bridge 注册权限请求并挂起等待人工应答（HTTP 长挂起）。
-   * 超时一律 deny（安全默认，绝不自动 allow）；detach/崩溃收尾同样 deny。
+   * bridge 注册权限请求并挂起等人工应答（HTTP 长挂起）。
+   * 守卫：只在「有人在环」时挂起——attach 中（hub 驱动进程存活）或 parallel run 中；
+   * 否则（伪造/过期请求）一律 deny（安全默认，绝不自动 allow）。
    */
-  registerHostRequest(body: BridgeHostRequestBody, now = Date.now()): Promise<HostRequestDecision> {
-    const entry = this.drivers.get(body.sessionId);
-    if (!entry || entry.child.killed) {
+  registerHostRequest(body: BridgeHostRequestBody, now?: number): Promise<HostRequestDecision> {
+    if (!this.isAttached(body.sessionId) && !this.parallelActive(body.sessionId)) {
       return Promise.resolve({ behavior: "deny", message: "session not attached" });
     }
-    // 幂等：同一 requestId 重复上报（bridge 重试）复用同一挂起
-    const existing = entry.hostRequests.get(body.requestId);
-    if (existing) {
-      return new Promise((resolve) => {
-        const prev = existing.resolve;
-        existing.resolve = (d) => {
-          prev(d);
-          resolve(d);
-        };
-      });
-    }
-    return new Promise((resolve) => {
-      const req: HostRequestEntry = {
-        sessionId: body.sessionId,
-        requestId: body.requestId,
-        toolName: body.toolName,
-        title: hostRequestTitle(body.toolName, body.input),
-        detail: body.description ?? previewInput(body.input),
-        input: body.input,
-        createdAt: now,
-        expiresAt: now + this.hostRequestTtlMs,
-        resolve,
-        timer: setTimeout(() => {
-          const cur = entry.hostRequests.get(body.requestId);
-          if (cur) this.finishHostRequest(entry, cur, { behavior: "deny", message: "approval timed out" }, "timeout");
-        }, this.hostRequestTtlMs),
-      };
-      req.timer.unref?.();
-      entry.hostRequests.set(body.requestId, req);
-      this.touchIdle(entry);
-      this.emit(body.sessionId, {
-        type: "host_request",
-        request: {
-          id: req.requestId,
-          sessionId: req.sessionId,
-          kind: "permission",
-          title: req.title,
-          detail: req.detail,
-          toolName: req.toolName,
-          allowAlways: false,
-          createdAt: req.createdAt,
-          expiresAt: req.expiresAt,
-        },
-      });
-    });
+    return this.hostRequests.register(body, now);
   }
 
   listHostRequests(id: string): HostRequestDto[] {
-    const entry = this.drivers.get(id);
-    if (!entry) return [];
-    return [...entry.hostRequests.values()].map((r) => ({
-      id: r.requestId,
-      sessionId: r.sessionId,
-      kind: "permission" as const,
-      title: r.title,
-      detail: r.detail,
-      toolName: r.toolName,
-      allowAlways: false,
-      createdAt: r.createdAt,
-      expiresAt: r.expiresAt,
-    }));
+    return this.hostRequests.list(id);
   }
 
   /** 手机应答；未知 id 返回 false（路由转 404），已决同样 false（路由凭 isResolvedHostRequest 转 409） */
   respondHostRequest(id: string, requestId: string, decision: HostRequestDecision): boolean {
-    const entry = this.drivers.get(id);
-    if (!entry) return false;
-    const req = entry.hostRequests.get(requestId);
-    if (!req) return false;
-    this.finishHostRequest(entry, req, decision, decision.behavior === "allow" ? "allow" : "deny");
-    return true;
+    return this.hostRequests.respond(id, requestId, decision);
   }
 
   /**
    * 已决 id 记忆（契约 §12：已决 → 409 HOST_REQUEST_RESOLVED）：
-   * finishHostRequest 记入短期记忆（TTL 5 分钟、上限 200 条防膨胀），过期/超限淘汰后回 false（路由转 404）。
-   * 只覆盖「决出」（allow/deny/timeout/cancelled）的请求，双重应答与移动端幂等回放据此拿到 409 而非 404。
+   * 详见 HostRequestRegistry.isResolved（TTL 5 分钟、上限 200 条防膨胀）。
    */
   isResolvedHostRequest(requestId: string, now = Date.now()): boolean {
-    const expiresAt = this.resolvedHostRequests.get(requestId);
-    if (expiresAt === undefined) return false;
-    if (expiresAt <= now) {
-      this.resolvedHostRequests.delete(requestId);
-      return false;
-    }
-    return true;
+    return this.hostRequests.isResolved(requestId, now);
   }
 
   // ---- 清扫/关闭 ----
@@ -522,9 +468,7 @@ export class ClaudeDriverHub {
     for (const [key, seen] of this.clientSeen) {
       if (now - seen.at > CLIENT_IDEMPOTENT_TTL_MS) this.clientSeen.delete(key);
     }
-    for (const [id, expiresAt] of this.resolvedHostRequests) {
-      if (expiresAt <= now) this.resolvedHostRequests.delete(id);
-    }
+    this.hostRequests.sweep(now);
   }
 
   disposeAll(): void {
@@ -533,11 +477,11 @@ export class ClaudeDriverHub {
       clearInterval(this.sweepTimer);
       this.sweepTimer = null;
     }
+    this.hostRequests.removeSettledListener(this.onHostRequestSettled);
     for (const id of [...this.drivers.keys()]) {
       this.detach(id);
     }
     this.clientSeen.clear();
-    this.resolvedHostRequests.clear();
   }
 
   // ---- 内部 ----
@@ -652,9 +596,7 @@ export class ClaudeDriverHub {
     for (const msg of entry.queue.splice(0)) {
       this.pushAck(entry.sessionId, msg.commandId, false, "接管进程已退出，指令取消");
     }
-    for (const req of [...entry.hostRequests.values()]) {
-      this.finishHostRequest(entry, req, { behavior: "deny", message: "driver exited" }, "cancelled");
-    }
+    this.hostRequests.cancelSession(entry.sessionId, "driver exited", "cancelled");
     const preview = entry.stderrTail.trim();
     if (preview !== "") {
       this.emit(entry.sessionId, {
@@ -667,35 +609,6 @@ export class ClaudeDriverHub {
     this.stopMirrorFn(entry.sessionId);
     this.drivers.delete(entry.sessionId);
     this.emit(entry.sessionId, { type: "attach_state", attached: false, terminalOnline: false });
-  }
-
-  private finishHostRequest(
-    entry: DriverEntry,
-    req: HostRequestEntry,
-    decision: HostRequestDecision,
-    outcome: "allow" | "deny" | "timeout" | "cancelled",
-  ): void {
-    clearTimeout(req.timer);
-    entry.hostRequests.delete(req.requestId);
-    // 已决记忆（契约 §12）：从 hostRequests 删除后仍可判 409，双重应答不再误报 404
-    this.rememberResolvedHostRequest(req.requestId);
-    this.emit(req.sessionId, { type: "host_request_resolved", requestId: req.requestId, outcome });
-    req.resolve(decision);
-    this.touchIdle(entry);
-  }
-
-  /** 记入已决记忆：TTL 约 5 分钟；超限淘汰最旧（Map 插入序），顺带清过期条目防膨胀 */
-  private rememberResolvedHostRequest(requestId: string, now = Date.now()): void {
-    this.resolvedHostRequests.delete(requestId);
-    this.resolvedHostRequests.set(requestId, now + RESOLVED_HOST_REQUEST_TTL_MS);
-    for (const [id, expiresAt] of this.resolvedHostRequests) {
-      if (expiresAt <= now) this.resolvedHostRequests.delete(id);
-    }
-    while (this.resolvedHostRequests.size > MAX_RESOLVED_HOST_REQUESTS) {
-      const oldest = this.resolvedHostRequests.keys().next().value;
-      if (oldest === undefined) break;
-      this.resolvedHostRequests.delete(oldest);
-    }
   }
 
   private killChild(child: ChildProcess): void {
@@ -719,8 +632,8 @@ export class ClaudeDriverHub {
     if (this.idleDetachMs <= 0) return;
     entry.idleTimer = setTimeout(() => {
       entry.idleTimer = null;
-      // 到点再查一次活跃状态（turn 中/有挂起请求则顺延）
-      if (entry.turnActive || entry.hostRequests.size > 0) {
+      // 到点再查一次活跃状态（turn 中/有挂起权限请求则顺延）
+      if (entry.turnActive || this.hostRequests.hasPending(entry.sessionId)) {
         this.touchIdle(entry);
         return;
       }
@@ -742,15 +655,6 @@ function isBypass(settings: unknown): boolean {
   const perms = (settings as Record<string, unknown>).permissions;
   if (typeof perms !== "object" || perms === null) return false;
   return (perms as Record<string, unknown>).defaultMode === "bypassPermissions";
-}
-
-function previewInput(input: unknown): string | null {
-  try {
-    const s = JSON.stringify(input);
-    return s.length > 300 ? `${s.slice(0, 297)}...` : s;
-  } catch {
-    return null;
-  }
 }
 
 /** bridge 选择所需的 settings：用户级 < 项目级 < 项目本地，未声明的权限字段继续继承。 */

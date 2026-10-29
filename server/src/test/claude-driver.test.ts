@@ -71,7 +71,7 @@ function makeHub(overrides: Partial<ConstructorParameters<typeof ClaudeDriverHub
 
 const sessionOpts = { cwd: "/w", sessionFile: "/tmp/claude-driver-test-missing.jsonl" };
 
-describe("权限配置继承与 bridge 选择", () => {
+describe("权限配置继承与 bridge 选择（permissionMode=inherit 沿用 settings）", () => {
   const cases = [
     { name: "项目 default 覆盖用户 bypass，仍挂手机审批 bridge", user: { permissions: { defaultMode: "bypassPermissions" } }, project: { permissions: { defaultMode: "default" } }, local: null, bridge: true },
     { name: "项目 bypass 覆盖用户 default", user: { permissions: { defaultMode: "default" } }, project: { permissions: { defaultMode: "bypassPermissions" } }, local: null, bridge: false },
@@ -91,6 +91,7 @@ describe("权限配置继承与 bridge 选择", () => {
       if (testCase.local) await writeFile(join(cwd, ".claude", "settings.local.json"), JSON.stringify(testCase.local));
       let args: string[] = [];
       const t = makeHub({
+        permissionMode: "inherit",
         readSettings: () => readClaudeDriverSettings(cwd, userHome),
         spawnFn: ((_bin: string, spawnArgs: string[]) => { args = spawnArgs; return new FakeChild(); }) as unknown as typeof import("node:child_process").spawn,
       });
@@ -98,12 +99,56 @@ describe("权限配置继承与 bridge 选择", () => {
         await t.hub.attach("s1", { cwd, sessionFile: join(dir, "missing.jsonl") });
         assert.equal(args.includes("--permission-prompt-tool"), testCase.bridge);
         assert.equal(args.includes("--permission-prompts"), testCase.bridge);
+        assert.ok(!args.includes("--permission-mode"), "inherit 不下发 --permission-mode flag");
       } finally {
         t.hub.disposeAll();
         await rm(dir, { recursive: true, force: true });
       }
     });
   }
+});
+
+describe("显式权限档位（配置是唯一权威，settings 不降级）", () => {
+  const tiers: Array<{ name: string; mode: string; bridge: boolean; settings?: unknown }> = [
+    { name: "默认 bypassPermissions：无论 settings 都不挂 bridge、显式下发 flag", mode: "bypassPermissions", bridge: false },
+    { name: "bypassPermissions：settings 显式 manual 也不降级", mode: "bypassPermissions", bridge: false, settings: { permissions: { defaultMode: "default" } } },
+    { name: "manual：无论 settings 都挂手机审批 bridge", mode: "manual", bridge: true },
+    { name: "manual：settings 显式 bypass 也不放行", mode: "manual", bridge: true, settings: { permissions: { defaultMode: "bypassPermissions" } } },
+  ];
+  for (const tier of tiers) {
+    it(tier.name, async () => {
+      let args: string[] = [];
+      const t = makeHub({
+        permissionMode: tier.mode as "manual",
+        readSettings: async () => tier.settings ?? null,
+        spawnFn: ((_bin: string, spawnArgs: string[]) => { args = spawnArgs; return new FakeChild(); }) as unknown as typeof import("node:child_process").spawn,
+      });
+      try {
+        await t.hub.attach("s1", sessionOpts);
+        assert.equal(args.includes("--permission-prompt-tool"), tier.bridge);
+        assert.equal(args.includes("--permission-prompts"), tier.bridge);
+        const i = args.indexOf("--permission-mode");
+        assert.ok(i > 0, "显式档位必须下发 --permission-mode");
+        assert.equal(args[i + 1], tier.mode);
+      } finally {
+        t.hub.disposeAll();
+      }
+    });
+  }
+
+  it("默认构造（未传 permissionMode）即 bypassPermissions 最高权限", async () => {
+    let args: string[] = [];
+    const t = makeHub({
+      spawnFn: ((_bin: string, spawnArgs: string[]) => { args = spawnArgs; return new FakeChild(); }) as unknown as typeof import("node:child_process").spawn,
+    });
+    try {
+      await t.hub.attach("s1", sessionOpts);
+      assert.deepEqual(args.slice(args.indexOf("--permission-mode"), args.indexOf("--permission-mode") + 2), ["--permission-mode", "bypassPermissions"]);
+      assert.ok(!args.includes("--permission-prompt-tool"), "bypass 运行不挂 bridge");
+    } finally {
+      t.hub.disposeAll();
+    }
+  });
 });
 
 describe("attach/detach 生命周期", () => {
@@ -374,6 +419,23 @@ describe("权限请求（bridge 挂起 → 手机应答）", () => {
     const t = makeHub();
     const decision = await t.hub.registerHostRequest(body);
     assert.equal(decision.behavior, "deny");
+  });
+
+  it("parallel run 在环（parallelActive）时未 attach 会话同样挂起审批（与接管同一套手机卡片）", async () => {
+    const t = makeHub({ parallelActive: (id) => id === "s1" });
+    const pending = t.hub.registerHostRequest(body);
+    assert.ok(t.events.some((e) => e.event.type === "host_request"), "parallel 会话的权限请求广播到手机");
+    assert.equal(t.hub.listHostRequests("s1").length, 1, "断线重连兜底拉取可见");
+    assert.equal(t.hub.respondHostRequest("s1", "call_1", { behavior: "allow", message: "" }), true);
+    assert.equal((await pending).behavior, "allow");
+    assert.equal(t.hub.isResolvedHostRequest("call_1"), true, "已决记忆与接管路径同语义");
+  });
+
+  it("parallel run 不在环（伪造请求）register 仍 deny，不产生卡片", async () => {
+    const t = makeHub({ parallelActive: () => false });
+    const decision = await t.hub.registerHostRequest(body);
+    assert.equal(decision.behavior, "deny");
+    assert.ok(!t.events.some((e) => e.event.type === "host_request"));
   });
 
   it("已决记忆：应答后 isResolvedHostRequest 为 true，重复应答返回 false（路由据此 409）", async () => {

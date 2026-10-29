@@ -96,12 +96,13 @@ agent-hub/
 ## 安全
 
 - `auth.enabled` + 非空 `auth.token` 开启 HTTP 与 WS 鉴权；WS upgrade 同时检查来源和可信 Host。
-  默认鉴权关闭，面向私有网络；配置开启但 token 为空时启动会告警。
+  默认鉴权关闭，面向私有网络；配置开启但 token 为空、auth 字段拼错或类型错误时拒绝启动。
 - 应用锁（PIN / WebAuthn）另有 HTTP/WS 操作门禁，不能代替网络鉴权。
 - pi 反向指令、live ingest 和 Claude 权限 bridge 限本机回环，配置 token 后须携带 token。
 - 文件/git API 只读；上传限定允许的 cwd 与上传根，并检查 realpath。工具图片仅在匹配用户上传引用时回填预览。
-- Claude 平行进程使用 manual 权限；接管进程遵循解析后的权限配置，非 bypass 模式通过手机审批，
-  超时或退出默认拒绝。具体协议和限制见 [CLAUDE_DRIVER.md](CLAUDE_DRIVER.md)。
+- Claude 平行与接管进程的权限档位由 `claudeDriver.permissionMode` 统一决定（默认 bypassPermissions
+  最高权限、工具自动执行）；非 bypass 需确认档位：**两条路径都走手机审批**（同一套 MCP bridge 与
+  审批卡片，超时或进程退出默认拒绝）。具体协议和限制见 [CLAUDE_DRIVER.md](CLAUDE_DRIVER.md)。
 - 真实配置、上传、运行数据不入库；KPI source 的 header 可用 `${ENV_VAR}` 引用密钥。
 - server 默认只绑回环，通配绑定需显式 `allowLan`；跨域访问使用 `allowOrigins` 精确白名单。
 

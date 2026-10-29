@@ -13,7 +13,7 @@ data/
 config/hub.config.json
 config/hub.config.local.json
 
-# 过程产物：验收截图 / 取证日志（不入库，历史可从 git 记录恢复）
+# 过程产物：验收截图 / 取证日志（仅本地保留，不进入公开历史）
 evidence/
 web/evidence/
 

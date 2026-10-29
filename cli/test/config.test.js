@@ -12,6 +12,29 @@ function tmpDir(t) {
   return dir;
 }
 
+test('loadConfig: 损坏 JSON 不回显配置内容，带覆盖参数也不改写原文件', (t) => {
+  const dir = tmpDir(t);
+  const configPath = path.join(dir, 'hub.config.json');
+  const marker = 'SENSITIVE_CONFIG_CONTENT_FOR_TEST_ONLY';
+  const content = `{"auth":{"token":"${marker}"`;
+  fs.writeFileSync(configPath, content);
+  assert.throws(() => loadConfig(configPath), error => {
+    assert.match(error.message, /不是合法 JSON/);
+    assert.ok(!error.message.includes(marker));
+    return true;
+  });
+  assert.throws(() => ensureConfig({ configPath, overrides: { port: '7001' } }));
+  assert.equal(fs.readFileSync(configPath, 'utf8'), content);
+});
+
+test('loadConfig: null、数组和其他非对象顶层均拒绝', (t) => {
+  const configPath = path.join(tmpDir(t), 'hub.config.json');
+  for (const value of [null, [], 'manual', 42, true]) {
+    fs.writeFileSync(configPath, JSON.stringify(value));
+    assert.throws(() => loadConfig(configPath), /顶层必须是对象/);
+  }
+});
+
 test('applyOverrides: 覆盖 port / sessionDir / workspaceRoot，未知字段保留', () => {
   const base = { ...DEFAULT_CONFIG, customFlag: true };
   const next = applyOverrides(base, {

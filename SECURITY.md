@@ -30,10 +30,21 @@ agent-hub 是**自托管**工具：它能读取你的会话记录并驱动你机
 
 **当前已知的边界限制（请在评估风险时纳入）**：
 
-- `auth.token` 与自带 PWA 面板不兼容（web 端无 Bearer 输入能力）；它只服务 API/CLI 调用方
+- `auth.token` 与自带 PWA 面板不兼容（web 端无 Bearer 输入能力）；它只服务 API/CLI 调用方。显式开启但 token 为空，以及 auth 字段拼错、结构/类型错误均拒绝启动，避免鉴权静默失效。
 - 应用锁（PIN / WebAuthn）是 UI + 业务请求门禁，不能替代网络层边界
+- **hub 通道 = 对本机 agent 的全权遥控**：Claude 会话默认 `claudeDriver.permissionMode: "bypassPermissions"`，
+  工具（读写文件、执行命令）自动执行、无人工审批门禁，仅适用于信任的仓库与设备；
+  改回 `manual` 等需确认档位后，平行与接管两路径均恢复手机审批卡片（超时或进程退出默认拒绝）
 - 部分只读文件接口（`/api/fs/tree`、`/api/git/*`、`/api/files/content`）尚未强制 `workspaceRoot` 根约束
 - 同源判定对本机回环端口有开发期放宽
+
+**权限与交互配置**：
+
+- Codex 的 `inherit` 沿用使用者自己的本机权限与沙箱设置；Hub 不预设本机账户的具体值。
+- Claude 的合法权限档位可显式选择，默认 `bypassPermissions`；需要人工确认时配置 `claudeDriver.permissionMode: "manual"`。pi 平行通道工具真实执行、无审批。
+- 非法 Claude 权限值、拼错/放错位置的字段，以及损坏或非对象配置会在启动前报 `CONFIG_INVALID`；配置内容不随错误回显。缺少配置文件时仍支持首次默认初始化，`//` 注释键继续允许。
+- 工具提问与 MCP elicitation 通过手机问答卡片应答；超时、取消或收尾时明确告知模型用户未回答，不代答。
+- 凭据与认证类请求不上手机，保留现有审批超时与收尾拒绝规则。
 
 ## Security Invariants（我们维护的硬规则）
 

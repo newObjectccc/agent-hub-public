@@ -18,6 +18,7 @@ import { VERSION } from "@earendil-works/pi-coding-agent";
 import { AgentCommandHub } from "./agents.js";
 import { ClaudeAdapter } from "./adapters/claude.js";
 import { ClaudeDriverHub } from "./adapters/claude-driver.js";
+import { HostRequestRegistry } from "./adapters/host-request-registry.js";
 import { CodexAdapter } from "./adapters/codex.js";
 import { CodexDriverHub } from "./adapters/codex-driver.js";
 import { inspectCodexRuntime, formatCodexRuntimeDiagnostics } from "../../cli/lib/codex-runtime.js";
@@ -46,7 +47,7 @@ import {
   type TerminalRuntime,
 } from "./terminal.js";
 import { UsageService } from "./usage.js";
-import type { ServerEvent } from "./types.js";
+import type { ServerEvent, SessionStatus } from "./types.js";
 import { WsHub, type WsSessionHub } from "./ws.js";
 
 /**
@@ -438,20 +439,31 @@ export async function startHub(): Promise<StartedHub> {
     // 此时 server 内 SDK 实例再 append 会让 JSONL 分叉（EXTERNAL_ACTIVE，契约 §12）
     externalActive: (id) => agents.isOnline(id),
   });
+  // claude 权限请求登记表（契约 §12）：attach 与 parallel 两路径共用同一审批通道，
+  // 手机端同一套 HostRequestCard。bridge 回连挂起、手机应答解结、超时/收尾一律 deny。
+  const claudeHostRequests = new HostRequestRegistry({ emit });
   // claude hub 驱动接管（docs/CLAUDE_DRIVER.md）：attach 期间持有长驻 claude -p 进程，
-  // stdin 注入真用户 turn；权限经 MCP bridge 回连手机批/拒。
+  // stdin 注入真用户 turn；非 bypass 档位权限经 MCP bridge 回连手机批/拒（默认 bypass 全自动）。
   // config.claudeDriver.enabled=false（总开关，修复死旋钮）：不构造 driver → claude 接管路由回 400，
-  // 前端回落 parallel（routes 的 requireClaudeDriver 对 deps 缺失已有 400 路径，无需另改）
+  // 前端回落 parallel（routes 的 requireClaudeDriver 对 deps 缺失已有 400 路径，无需另改）。
+  // enabled=false 同时关掉审批通道（bridge 不挂、请求不登记）：本开关是 claude 增强通道总闸。
+  const claudeBridgePath = config.claudeDriver.enabled
+    ? join(repoRoot, "integrations", "claude-perm-bridge", "bridge.mjs")
+    : null;
   const claudeDriver = config.claudeDriver.enabled
     ? new ClaudeDriverHub({
         emit,
         liveUrl: `http://127.0.0.1:${config.port}`,
         liveToken: config.auth.token,
-        bridgeScriptPath: join(repoRoot, "integrations", "claude-perm-bridge", "bridge.mjs"),
+        bridgeScriptPath: claudeBridgePath!,
         maxConcurrent: config.claudeDriver.maxConcurrent,
         idleDetachMs: config.claudeDriver.idleDetachMs,
         externalQuietMs: config.claudeDriver.externalQuietMs,
         mirror: config.claudeDriver.mirror,
+        permissionMode: config.claudeDriver.permissionMode,
+        hostRequests: claudeHostRequests,
+        // 权限请求只在「有人在环」时挂起：attach 中或 parallel run 中；未知伪造请求一律 deny
+        parallelActive: (id): boolean => claudeAdapter.hasActiveRun(id),
       })
     : null;
   // Claude Code 会话来源：~/.claude/projects/<encoded-cwd>/<uuid>.jsonl + history.jsonl
@@ -462,8 +474,15 @@ export async function startHub(): Promise<StartedHub> {
     historyFile: claudeHistoryFile,
     emit,
     // 防双写加固（D8）：hub 驱动接管中的会话按 busy 拒绝 parallel 发送（driver 未启用 = 恒不忙）
-    driverBusy: (id) => claudeDriver?.isAttached(id) ?? false,
-    driverStatus: (id) => claudeDriver?.runStatusFor(id) ?? null,
+    driverBusy: (id): boolean => claudeDriver?.isAttached(id) ?? false,
+    driverStatus: (id): SessionStatus | null => claudeDriver?.runStatusFor(id) ?? null,
+    // 权限档位与 driver 接管路径共用同一配置（默认 bypassPermissions，attach/detach 不跳变）
+    permissionMode: config.claudeDriver.permissionMode,
+    // 审批通道与接管路径共用（同一 registry → 同一套手机审批卡片）：非 bypass 档位 spawn 挂 bridge
+    hostRequests: claudeHostRequests,
+    bridgeScriptPath: claudeBridgePath,
+    liveUrl: `http://127.0.0.1:${config.port}`,
+    liveToken: config.auth.token,
   });
   // Codex 会话来源：~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl + session_index.jsonl（与桌面 app/CLI 共享）
   // 归档会话：~/.codex/archived_sessions/（平铺，列表标注归档并排尾）

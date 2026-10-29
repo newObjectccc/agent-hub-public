@@ -7,18 +7,27 @@ import { randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
 import { setTimeout as wait } from "node:timers/promises";
 import { ErrorCodes, HubError } from "../errors.js";
-import type { EffectivePolicyDto, HostRequestDto, HostRequestOutcome, MessageDto, MessageImage, ServerEvent, TerminalAttachInfo, ToolCallDto } from "../types.js";
+import type { EffectivePolicyDto, HostRequestDto, HostRequestOutcome, HostUserQuestion, MessageDto, MessageImage, ServerEvent, TerminalAttachInfo, ToolCallDto } from "../types.js";
 import {
-  APPROVAL_METHODS, approvalItemPreview, buildApprovalResult, buildDriverArgs, buildResumeParams, buildTurnInput,
-  codexMessageId, hostRequestPreview, parseDriverMode, parseEffectivePolicy, safePreview, snapshotRequestedPermissions,
-  type CodexApprovalItemPreview, type CodexApprovalPolicy, type CodexApprovalType, type CodexDriverMode, type CodexSandbox, type CodexUserInput,
+  APPROVAL_METHODS, approvalItemPreview, buildApprovalResult, buildDriverArgs, buildElicitationAccept, buildResumeParams, buildTurnInput,
+  buildUserInputResult, codexMessageId, declinedRpcReply, hostRequestPreview, parseDriverMode, parseEffectivePolicy,
+  parseElicitationQuestions, parseUserInputQuestions, questionCardPreview, safePreview, serverRequestKind, snapshotRequestedPermissions,
+  unansweredRpcReply, validateQuestionAnswers,
+  type CodexApprovalItemPreview, type CodexApprovalPolicy, type CodexApprovalType, type CodexDriverMode, type CodexRpcReply, type CodexSandbox, type CodexUserInput,
+  type ElicitationValueType, type HostRequestKind,
 } from "./codex-host-protocol.js";
 import { planPolicyOverrides, assertPolicyNotWeaker, type PolicyOverrides } from "./codex-policy.js";
 import { CodexRpc, CodexRpcError, isRecord, isRpcId, type CodexNotification, type CodexRpcId, type CodexServerRequest } from "./codex-rpc.js";
 
 export type EmitFn = (sessionId: string, event: ServerEvent) => void;
 export interface CodexDriverCommand { id: string; mode: CodexDriverMode }
-export interface CodexHostRequestDecision { outcome: "allow" | "deny"; message?: string }
+/**
+ * 手机应答（union）：审批用 outcome；问答（kind===question）用 answers（键 = questions[].id）。
+ * outcome:"deny" 对问答的语义 = 用户拒绝回答（仍绝不代答）；二者互斥，不得混用。
+ */
+export type CodexHostRequestDecision =
+  | { outcome: "allow" | "deny"; message?: string }
+  | { answers: Record<string, string[]> };
 export interface CodexCommandStatus { state: "pending" | "accepted" | "failed"; error: string | null }
 export interface CodexDriverSendInput { text: unknown; mode?: unknown; clientMessageId?: unknown; images?: readonly unknown[] }
 export interface CodexDriverLinkLike {
@@ -116,9 +125,14 @@ interface TurnState {
 interface HostRequestEntry {
   id: string;
   nativeId: CodexRpcId;
-  type: CodexApprovalType;
+  /** rpc 应答通道：审批三类 / requestUserInput 问答 / MCP elicitation */
+  kind: HostRequestKind;
+  /** 审批类型（kind==="approval"）；问答/elicitation 为 null */
+  type: CodexApprovalType | null;
   turnId: string;
   permissions: Record<string, unknown>;
+  /** elicitation 属性类型表：accept 时按它归一 content 值（string/number/boolean） */
+  elicitationTypes: Record<string, ElicitationValueType>;
   dto: HostRequestDto;
   timer: ReturnType<typeof setTimeout>;
 }
@@ -608,7 +622,7 @@ export class CodexDriverHub implements CodexDriverLinkLike {
       const phoneId = entry.nativeRequests.get(nativeTurnKey(params.requestId, turnId));
       const request = phoneId ? entry.hostRequests.get(phoneId) : undefined;
       // 此事件只说明请求已清理，不能据此推断已经批准。
-      if (request) this.finishHostRequest(entry, request, "deny", "cancelled", false);
+      if (request) this.finishHostRequest(entry, request, "cancelled", null, false);
       return;
     }
     if (event.method === "thread/status/changed") {
@@ -742,14 +756,11 @@ export class CodexDriverHub implements CodexDriverLinkLike {
   }
 
   private handleServerRequest(entry: DriverEntry, request: CodexServerRequest): void {
-    const type = Object.hasOwn(APPROVAL_METHODS, request.method) ? APPROVAL_METHODS[request.method] : undefined;
-    if (!type) {
-      // token 刷新绝不转给手机；不替未作答的用户选择任何选项。
-      const message = request.method === "item/tool/requestUserInput"
-        ? "This client does not support interactive questions; the user has not answered or granted consent"
-        : "This client does not support this server request";
-      if (request.method === "mcpServer/elicitation/request") void entry.rpc.respond(request.id, { action: "decline", content: null }).catch(() => undefined);
-      else void entry.rpc.respondError(request.id, -32601, message).catch(() => undefined);
+    const kind = serverRequestKind(request.method);
+    const type = kind === "approval" ? APPROVAL_METHODS[request.method] : null;
+    if (!kind) {
+      // token 刷新 / attestation / 未知方法绝不转给手机（安全红线）；也不替未作答的用户选择任何选项。
+      void entry.rpc.respondError(request.id, -32601, "This client does not support this server request").catch(() => undefined);
       return;
     }
     const params = isRecord(request.params) ? request.params : {};
@@ -758,30 +769,56 @@ export class CodexDriverHub implements CodexDriverLinkLike {
       this.buffer(entry, turn, { kind: "request", value: request });
       return;
     }
-    const valid = !entry.stopped && entry.ready && turn && !turn.aborted && params.threadId === entry.id && params.turnId === turn.id && typeof params.itemId === "string";
+    // 问答先归一化题面（脱敏 + 截断）；无法映射时不建卡不挂起，安全拒绝。
+    let questions: HostUserQuestion[] | null = null;
+    let elicitationTypes: Record<string, ElicitationValueType> = {};
+    if (kind === "userInput") questions = parseUserInputQuestions(params);
+    else if (kind === "elicitation") {
+      const parsed = parseElicitationQuestions(params);
+      if (parsed) { questions = parsed.questions; elicitationTypes = parsed.types; }
+    }
+    if (kind !== "approval" && !questions) {
+      // 形状无法安全映射：requestUserInput 用 unsupported 让模型改文字提问；elicitation 保持现状 decline。
+      if (kind === "userInput") void entry.rpc.respondError(request.id, -32601, "This client does not support interactive questions; the user has not answered or granted consent").catch(() => undefined);
+      else void entry.rpc.respond(request.id, { action: "decline", content: null }).catch(() => undefined);
+      return;
+    }
+    // 归属校验：审批与 requestUserInput 必须绑定当前 turn 的确切 id；
+    // elicitation 的 params 只保证 message/requestedSchema，threadId/turnId 可能缺省 → 存在则必须匹配
+    // （归属由本会话独占的 app-server 进程决定，缺省不放宽任何审批语义）。
+    const threadOk = params.threadId === entry.id || (kind === "elicitation" && params.threadId === undefined);
+    const turnIdOk = turn !== null && (params.turnId === turn.id || (kind === "elicitation" && params.turnId === undefined));
+    const valid = !entry.stopped && entry.ready && turn && turn.id !== null && !turn.aborted
+      && threadOk && turnIdOk && (kind !== "approval" || typeof params.itemId === "string");
     if (!valid) {
-      void entry.rpc.respond(request.id, buildApprovalResult(type, "deny", {}, true)).catch(() => undefined);
+      // 未建卡就失效：未获回答的统一收尾，问答回 -32800（绝不代答），elicitation 保持现状 decline。
+      this.replyRpc(entry, request.id, unansweredRpcReply(kind, type));
       return;
     }
     const native = nativeTurnKey(request.id, turn.id!);
     const previous = entry.nativeRequests.get(native);
     if (previous) {
-      if (!entry.hostRequests.has(previous)) void entry.rpc.respond(request.id, buildApprovalResult(type, "deny", {}, true)).catch(() => undefined);
+      if (!entry.hostRequests.has(previous)) this.replyRpc(entry, request.id, unansweredRpcReply(kind, type));
       return;
     }
     const now = Date.now();
     const ttl = this.options.hostRequestTtlMs ?? 5 * 60_000;
     const id = `codex-host-${randomUUID()}`;
-    const preview = hostRequestPreview(type, params, turn.approvalPreviews.get(params.itemId as string));
-    const dto: HostRequestDto & { requestType: CodexApprovalType; turnId: string; itemId: string } = {
-      id, sessionId: entry.id, kind: "permission", requestType: type,
+    const preview = kind === "approval"
+      ? hostRequestPreview(type!, params, turn.approvalPreviews.get(params.itemId as string))
+      : questionCardPreview(kind, questions!);
+    const dto: HostRequestDto = {
+      id, sessionId: entry.id, kind: kind === "approval" ? "permission" : "question",
       title: preview.title, detail: preview.detail, toolName: preview.toolName,
-      turnId: turn.id!, itemId: params.itemId as string, allowAlways: false,
+      ...(type ? { requestType: type } : {}),
+      turnId: turn.id!, ...(typeof params.itemId === "string" ? { itemId: params.itemId } : {}),
+      ...(kind === "approval" ? { allowAlways: false } : { questions: questions! }),
       createdAt: now, expiresAt: now + ttl,
     };
     const host: HostRequestEntry = {
-      id, nativeId: request.id, type, turnId: turn.id!, permissions: snapshotRequestedPermissions(params.permissions), dto,
-      timer: setTimeout(() => this.finishHostRequest(entry, host, "deny", "timeout"), ttl),
+      id, nativeId: request.id, kind, type, turnId: turn.id!,
+      permissions: snapshotRequestedPermissions(params.permissions), elicitationTypes, dto,
+      timer: setTimeout(() => this.finishHostRequest(entry, host, "timeout", null), ttl),
     };
     host.timer.unref?.();
     entry.hostRequests.set(id, host);
@@ -803,18 +840,48 @@ export class CodexDriverHub implements CodexDriverLinkLike {
     const entry = this.drivers.get(id);
     const request = entry?.hostRequests.get(requestId);
     if (!entry || !request) return false;
-    if (decision.outcome !== "allow" && decision.outcome !== "deny") throw new HubError(ErrorCodes.INVALID_REQUEST, "outcome 必须为 allow|deny");
+    // 应答校验先行且不消费请求：非法 answers 一律 400 并保留卡片，让用户可以重新作答。
+    let answers: Record<string, string[]> | null = null;
+    let outcome: "allow" | "deny";
+    if ("answers" in decision) {
+      if (request.kind === "approval") throw new HubError(ErrorCodes.INVALID_REQUEST, "该请求是审批卡，请用 outcome 应答");
+      validateQuestionAnswers(request.dto.questions ?? [], decision.answers);
+      answers = decision.answers;
+      outcome = "allow";
+    } else {
+      if (decision.outcome !== "allow" && decision.outcome !== "deny") throw new HubError(ErrorCodes.INVALID_REQUEST, "outcome 必须为 allow|deny");
+      if (decision.outcome === "allow" && request.kind !== "approval") {
+        throw new HubError(ErrorCodes.INVALID_REQUEST, "问答请求请提交 answers（或 outcome:deny 拒绝回答）");
+      }
+      outcome = decision.outcome;
+    }
     const current = entry.ready && !entry.stopped && entry.turn?.id === request.turnId && !entry.turn.aborted;
     const expired = (request.dto.expiresAt ?? 0) <= Date.now();
     if (!current || expired) {
-      this.finishHostRequest(entry, request, "deny", expired ? "timeout" : "cancelled");
+      // 应答时 turn 已失效/已超时：一律按未回答收尾（问答回 -32800），绝不冒充用户回答。
+      this.finishHostRequest(entry, request, expired ? "timeout" : "cancelled", null);
       return false;
     }
-    this.finishHostRequest(entry, request, decision.outcome, decision.outcome);
+    if (answers !== null) {
+      const reply: CodexRpcReply = request.kind === "userInput"
+        ? { result: buildUserInputResult(answers) }
+        : { result: buildElicitationAccept(request.elicitationTypes, answers) };
+      this.finishHostRequest(entry, request, "allow", reply);
+      return true;
+    }
+    if (outcome === "deny") {
+      this.finishHostRequest(entry, request, "deny", declinedRpcReply(request.kind, request.type, request.permissions));
+      return true;
+    }
+    this.finishHostRequest(entry, request, "allow", { result: buildApprovalResult(request.type!, "allow", request.permissions) });
     return true;
   }
 
-  private finishHostRequest(entry: DriverEntry, request: HostRequestEntry, decision: "allow" | "deny", outcome: HostRequestOutcome, send = true): void {
+  /**
+   * 移除卡片并发送 rpc 应答。reply=null 表示未获用户回答（TTL 超时/turn 失效/清理）：
+   * 按请求类型给安全收尾（问答回 -32800、elicitation decline、审批 cancel），绝不代答。
+   */
+  private finishHostRequest(entry: DriverEntry, request: HostRequestEntry, outcome: HostRequestOutcome, reply: CodexRpcReply | null, send = true): void {
     if (entry.hostRequests.get(request.id) !== request) return;
     clearTimeout(request.timer);
     entry.hostRequests.delete(request.id);
@@ -822,10 +889,24 @@ export class CodexDriverHub implements CodexDriverLinkLike {
     this.touchTurn(entry);
     this.resolvedHostRequests.set(request.id, Date.now() + RESOLVED_TTL_MS);
     trimMap(this.resolvedHostRequests, 200);
-    if (send) void entry.rpc.respond(request.nativeId, buildApprovalResult(request.type, decision, request.permissions, outcome === "cancelled")).catch((error: unknown) => {
-      if (!entry.stopped) this.failEntry(entry, asError(error));
-    });
+    if (send) {
+      const payload = reply ?? unansweredRpcReply(request.kind, request.type, request.permissions, outcome === "cancelled");
+      const pending = "rpcError" in payload
+        ? entry.rpc.respondError(request.nativeId, payload.rpcError.code, payload.rpcError.message)
+        : entry.rpc.respond(request.nativeId, payload.result);
+      void pending.catch((error: unknown) => {
+        if (!entry.stopped) this.failEntry(entry, asError(error));
+      });
+    }
     this.emit(entry.id, { type: "host_request_resolved", requestId: request.id, outcome });
+  }
+
+  /** 安全拒绝通道：未建卡/缓冲清理时直接回安全结果，失败不拉胯整个进程。 */
+  private replyRpc(entry: DriverEntry, id: CodexRpcId, reply: CodexRpcReply): void {
+    const pending = "rpcError" in reply
+      ? entry.rpc.respondError(id, reply.rpcError.code, reply.rpcError.message)
+      : entry.rpc.respond(id, reply.result);
+    void pending.catch(() => undefined);
   }
 
   isResolvedHostRequest(requestId: string, now = Date.now()): boolean {
@@ -836,12 +917,12 @@ export class CodexDriverHub implements CodexDriverLinkLike {
   }
 
   private rejectHostRequests(entry: DriverEntry, outcome: "timeout" | "cancelled"): void {
-    for (const request of [...entry.hostRequests.values()]) this.finishHostRequest(entry, request, "deny", outcome);
+    for (const request of [...entry.hostRequests.values()]) this.finishHostRequest(entry, request, outcome, null);
     const buffered = entry.turn?.buffered ?? [];
     for (const item of buffered) {
       if (item.kind === "request") {
-        const type = Object.hasOwn(APPROVAL_METHODS, item.value.method) ? APPROVAL_METHODS[item.value.method] : undefined;
-        if (type) void entry.rpc.respond(item.value.id, buildApprovalResult(type, "deny", {}, true)).catch(() => undefined);
+        const kind = serverRequestKind(item.value.method);
+        if (kind) this.replyRpc(entry, item.value.id, unansweredRpcReply(kind, kind === "approval" ? APPROVAL_METHODS[item.value.method] : null));
       }
     }
     if (entry.turn) entry.turn.buffered = buffered.filter((item) => item.kind !== "request");

@@ -91,6 +91,21 @@ function fixture(t: TestContext, overrides: Partial<CodexDriverOptions> = {}, co
 function approval(child: FakeChild, id: number, method = "item/commandExecution/requestApproval", extra: Record<string, unknown> = {}) {
   child.request(id, method, { threadId: "s1", turnId: `turn-${child.nextTurn}`, itemId: `item-${id}`, command: "ls", ...extra });
 }
+const defaultQuestions = [
+  { id: "language", header: "Language", question: "Which language?", options: [{ label: "TypeScript", description: "typed" }, { label: "JavaScript", description: null }] },
+];
+function questionRequest(child: FakeChild, id: number, questions: unknown = defaultQuestions, extra: Record<string, unknown> = {}) {
+  child.request(id, "item/tool/requestUserInput", {
+    threadId: "s1", turnId: `turn-${child.nextTurn}`, itemId: `question-${id}`, isBlocking: true, questions, ...extra,
+  });
+}
+function elicitationRequest(child: FakeChild, id: number, extra: Record<string, unknown> = {}) {
+  child.request(id, "mcpServer/elicitation/request", {
+    threadId: "s1", turnId: `turn-${child.nextTurn}`, message: "Need deploy info",
+    requestedSchema: { properties: { level: { type: "number", description: "Number of copies" }, mode: { type: "string", enum: ["fast", "safe"], description: "Mode" } } },
+    ...extra,
+  });
+}
 
 describe("Codex attach preparation and writer ownership", () => {
   it("shares concurrent attach, waits for resume readiness, and never emits running at initialization", async (t) => {
@@ -906,17 +921,144 @@ describe("Codex native ServerRequests", () => {
     assert.equal(f.events.some((event) => event.type === "host_request_resolved" && event.outcome === "allow"), false);
   });
 
-  it("rejects questions, declines elicitation and answers every unknown request without exposing tokens", async (t) => {
+  it("answers interactive questions via phone cards and unsafe requests stay rejected without exposing tokens", async (t) => {
     const f = fixture(t);
     await f.hub.attach("s1", opts);
     for (const [index, method] of ["item/tool/requestUserInput", "mcpServer/elicitation/request", "account/chatgptAuthTokens/refresh", "item/tool/call", "attestation/generate", "unknown/method", "toString"].entries()) {
       f.child().request(index, method, { accessToken: "do-not-send", questions: [{ id: "q", options: [{ label: "Allow" }] }] });
     }
     await tick();
+    // elicitation 缺 message/requestedSchema → 保持现状 decline（安全取消）
     assert.deepEqual(f.child().frames.find((frame) => frame.id === 1)?.result, { action: "decline", content: null });
-    for (const index of [0, 2, 3, 4, 5, 6]) assert.equal(f.child().frames.find((frame) => frame.id === index)?.error?.code, -32601);
+    // requestUserInput 无有效 turn：未获回答回 -32800（绝不代答），不再是 unsupported 假象
+    assert.equal(f.child().frames.find((frame) => frame.id === 0)?.error?.code, -32800);
+    assert.equal(f.child().frames.find((frame) => frame.id === 0)?.result, undefined);
+    for (const index of [2, 3, 4, 5, 6]) assert.equal(f.child().frames.find((frame) => frame.id === index)?.error?.code, -32601);
     assert.equal(f.events.some((event) => event.type === "host_request"), false);
     assert.equal(JSON.stringify(f.events).includes("do-not-send"), false);
+  });
+
+  it("requestUserInput becomes a question host request and answers map to the nested rpc shape", async (t) => {
+    const f = fixture(t);
+    await f.hub.attach("s1", opts);
+    f.hub.send("s1", { text: "begin" });
+    await tick();
+    questionRequest(f.child(), 1);
+    await tick();
+    const requests = f.hub.listHostRequests("s1");
+    assert.equal(requests.length, 1);
+    const request = requests[0];
+    assert.equal(request.kind, "question");
+    assert.deepEqual(request.questions, [
+      { id: "language", header: "Language", question: "Which language?", options: [{ label: "TypeScript", description: "typed" }, { label: "JavaScript", description: null }] },
+    ]);
+    assert.equal(f.events.some((event) => event.type === "host_request" && event.request.kind === "question"), true);
+    assert.equal(f.hub.respondHostRequest("s1", request.id, { answers: { language: ["TypeScript"] } }), true);
+    await tick();
+    // 应答形状：双层嵌套，绝不写成 answers 数组
+    const result = f.child().frames.find((frame) => frame.id === 1 && frame.result !== undefined)?.result;
+    assert.deepEqual(result, { answers: { language: { answers: ["TypeScript"] } } });
+    assert.equal(f.events.some((event) => event.type === "host_request_resolved" && event.outcome === "allow"), true);
+    assert.equal(f.hub.isResolvedHostRequest(request.id), true);
+  });
+
+  it("rejects unknown question ids and empty answer arrays without consuming the request", async (t) => {
+    const f = fixture(t);
+    await f.hub.attach("s1", opts);
+    f.hub.send("s1", { text: "begin" });
+    await tick();
+    questionRequest(f.child(), 1);
+    await tick();
+    const request = f.hub.listHostRequests("s1")[0];
+    assert.throws(() => f.hub.respondHostRequest("s1", request.id, { answers: { nope: ["x"] } }), (error: unknown) => {
+      assert.equal((error as { code: string; statusCode: number }).code, "INVALID_REQUEST");
+      assert.equal((error as { statusCode: number }).statusCode, 400);
+      return true;
+    });
+    assert.throws(() => f.hub.respondHostRequest("s1", request.id, { answers: { language: [] } }), (error: unknown) => (error as { code: string }).code === "INVALID_REQUEST");
+    assert.throws(() => f.hub.respondHostRequest("s1", request.id, { outcome: "allow" }), /answers/);
+    // 非法应答不消费请求：卡片仍在，仍可正常作答
+    assert.equal(f.hub.listHostRequests("s1").length, 1);
+    assert.equal(f.child().frames.some((frame) => frame.id === 1 && !frame.method), false);
+    assert.equal(f.hub.respondHostRequest("s1", request.id, { answers: { language: ["JavaScript"] } }), true);
+    await tick();
+    assert.deepEqual(f.child().frames.find((frame) => frame.id === 1 && frame.result !== undefined)?.result, { answers: { language: { answers: ["JavaScript"] } } });
+  });
+
+  it("times out and on turn end answers questions with -32800, never on behalf of the user", async (t) => {
+    const f = fixture(t, { hostRequestTtlMs: 10 });
+    await f.hub.attach("s1", opts);
+    f.hub.send("s1", { text: "begin" });
+    await tick();
+    questionRequest(f.child(), 1);
+    await delay(20);
+    assert.equal(f.hub.listHostRequests("s1").length, 0);
+    assert.equal(f.events.some((event) => event.type === "host_request_resolved" && event.outcome === "timeout"), true);
+    const timedOut = f.child().frames.find((frame) => frame.id === 1 && !frame.method);
+    assert.equal(timedOut?.error?.code, -32800);
+    assert.equal(timedOut?.result, undefined);
+    // turn 终态清理同口径
+    questionRequest(f.child(), 2);
+    await tick();
+    f.child().done();
+    await tick();
+    const cancelled = f.child().frames.find((frame) => frame.id === 2 && !frame.method);
+    assert.equal(cancelled?.error?.code, -32800);
+    assert.equal(cancelled?.result, undefined);
+    // 绝不代答回归：全程没有发出任何 answers 形状的 rpc 应答
+    assert.equal(f.child().frames.some((frame) => (frame.result as { answers?: unknown } | undefined)?.answers !== undefined), false);
+    assert.equal(f.events.some((event) => event.type === "host_request_resolved" && event.outcome === "allow"), false);
+  });
+
+  it("redacts secrets in question header, text and option fields before they reach the phone", async (t) => {
+    const f = fixture(t);
+    await f.hub.attach("s1", opts);
+    f.hub.send("s1", { text: "begin" });
+    await tick();
+    questionRequest(f.child(), 1, [
+      { id: "q1", header: "MY_API_KEY = head-secret-value", question: "Use sk-super-secret-token here?", options: [{ label: "LABEL_TOKEN=label-secret-value", description: "AUTH_TOKEN=desc-secret-value" }] },
+      { id: "q2", question: "OPENAI_API_KEY=question-secret-value fallback" },
+    ]);
+    await tick();
+    const request = f.hub.listHostRequests("s1")[0];
+    const json = JSON.stringify(request);
+    for (const secret of ["head-secret-value", "sk-super-secret-token", "label-secret-value", "desc-secret-value", "question-secret-value"]) {
+      assert.equal(json.includes(secret), false, `泄漏秘密：${secret}`);
+    }
+    assert.match(request.questions![0].question, /redacted/);
+    assert.match(request.questions![0].options![0].description!, /redacted/);
+    assert.equal(JSON.stringify(f.events).includes("super-secret-token"), false);
+  });
+
+  it("maps elicitation to a question card: typed accept content and decline on refusal", async (t) => {
+    const f = fixture(t);
+    await f.hub.attach("s1", opts);
+    f.hub.send("s1", { text: "begin" });
+    await tick();
+    elicitationRequest(f.child(), 1);
+    await tick();
+    const request = f.hub.listHostRequests("s1")[0];
+    assert.equal(request.kind, "question");
+    assert.deepEqual(request.questions, [
+      { id: "level", header: "Need deploy info", question: "Number of copies", options: null },
+      { id: "mode", header: "Need deploy info", question: "Mode", options: [{ label: "fast", description: null }, { label: "safe", description: null }] },
+    ]);
+    assert.equal(f.hub.respondHostRequest("s1", request.id, { answers: { level: ["3"], mode: ["fast"] } }), true);
+    await tick();
+    // accept + content（值按 schema type 归一：number → 3）
+    assert.deepEqual(f.child().frames.find((frame) => frame.id === 1 && frame.result !== undefined)?.result, { action: "accept", content: { level: 3, mode: "fast" } });
+    // 用户拒绝 → decline（不带任何 content）
+    elicitationRequest(f.child(), 2);
+    await tick();
+    const second = f.hub.listHostRequests("s1")[0];
+    assert.equal(f.hub.respondHostRequest("s1", second.id, { outcome: "deny" }), true);
+    await tick();
+    assert.deepEqual(f.child().frames.find((frame) => frame.id === 2 && frame.result !== undefined)?.result, { action: "decline", content: null });
+    // schema 形状无法安全映射（嵌套 object）→ 保持现状 decline，不建卡不挂起
+    elicitationRequest(f.child(), 3, { requestedSchema: { properties: { nested: { type: "object", description: "no" } } } });
+    await tick();
+    assert.deepEqual(f.child().frames.find((frame) => frame.id === 3 && frame.result !== undefined)?.result, { action: "decline", content: null });
+    assert.equal(f.hub.listHostRequests("s1").length, 0);
   });
 
   it("declines stale or foreign approvals without creating phone cards, and detach releases the process", async (t) => {

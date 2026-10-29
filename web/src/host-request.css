@@ -116,3 +116,105 @@
   font-size: 11px;
   color: var(--muted-foreground);
 }
+
+/* ---------- 问答卡片（kind === "question"：Codex 工具提问 / MCP elicitation） ---------- */
+
+.host-request-q {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+}
+
+.host-request-q-header {
+  font-family: var(--nb-font-head);
+  font-weight: 900;
+  font-size: 12px;
+  color: var(--card-foreground);
+}
+
+.host-request-q-text {
+  margin-top: 4px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--card-foreground);
+  word-break: break-all;
+}
+
+.host-request-q-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.host-request-q-option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-height: 44px; /* 触控标准 */
+  padding: 6px 10px;
+  text-align: left;
+  background: var(--card);
+  color: var(--card-foreground);
+  border: 2px solid var(--border);
+  border-radius: var(--nb-radius);
+  box-shadow: var(--nb-shadow-xs);
+  cursor: pointer;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+
+.host-request-q-option.selected {
+  background: var(--primary);
+  color: var(--primary-foreground);
+  box-shadow: var(--nb-shadow-sm, var(--nb-shadow-xs));
+}
+
+.host-request-q-option:active:not(:disabled) {
+  transform: translate(1px, 1px);
+  box-shadow: none;
+}
+
+.host-request-q-option:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.host-request-q-option-label {
+  font-family: var(--nb-font-head);
+  font-weight: 900;
+  font-size: 12.5px;
+}
+
+.host-request-q-option-desc {
+  font-size: 10.5px;
+  opacity: 0.8;
+}
+
+.host-request-q-input {
+  width: 100%;
+  min-height: 44px; /* 触控标准 */
+  margin-top: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+  color: var(--card-foreground);
+  background: var(--card);
+  border: 2px solid var(--border);
+  border-radius: var(--nb-radius);
+}
+
+.host-request-q-input:focus {
+  outline: none;
+  border-color: var(--primary);
+}
+
+.host-request-error {
+  margin-top: 8px;
+  padding: 6px 8px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--card-foreground);
+  background: color-mix(in srgb, var(--destructive) 14%, transparent);
+  border: 1px dashed var(--destructive);
+  border-radius: var(--nb-radius);
+}

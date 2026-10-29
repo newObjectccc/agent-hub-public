@@ -6,6 +6,7 @@ import { currentLockHeaders } from "../utils/appLock";
 import type {
   AttachMessageResult,
   AttachResult,
+  HostRequestBody,
   HostRequestDto,
   CommandList,
   DashboardStats,
@@ -294,18 +295,28 @@ export const api = {
     return request(`/api/sessions/${encodeURIComponent(id)}/host-requests`);
   },
 
-  /** POST /api/sessions/:id/host-requests/:requestId：手机应答（allow|deny） */
+  /**
+   * POST /api/sessions/:id/host-requests/:requestId：手机应答。
+   * body 二选一：审批 `{ outcome: "allow" | "deny" }`（兼容旧调用直接传 "allow"/"deny" 字符串）
+   * 或问答 `{ answers: { [questionId]: string[] } }`。
+   */
   respondHostRequest(
     id: string,
     requestId: string,
-    outcome: "allow" | "deny",
+    body: "allow" | "deny" | HostRequestBody,
     message?: string,
   ): Promise<{ resolved: boolean; outcome: string }> {
+    const payload: Record<string, unknown> =
+      typeof body === "string"
+        ? message !== undefined
+          ? { outcome: body, message }
+          : { outcome: body }
+        : body;
     return request(
       `/api/sessions/${encodeURIComponent(id)}/host-requests/${encodeURIComponent(requestId)}`,
       {
         method: "POST",
-        body: JSON.stringify(message !== undefined ? { outcome, message } : { outcome }),
+        body: JSON.stringify(payload),
       },
     );
   },

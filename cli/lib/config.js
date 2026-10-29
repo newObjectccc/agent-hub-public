@@ -51,8 +51,12 @@ export function loadConfig(configPath) {
   let parsed;
   try {
     parsed = JSON.parse(raw);
-  } catch (e) {
-    throw new Error(`配置文件不是合法 JSON: ${configPath}\n${e.message}`);
+  } catch {
+    // JSON.parse 的错误可能携带原文片段，配置中的 auth.token 不得随错误回显。
+    throw new Error(`配置文件不是合法 JSON: ${configPath}；请修复后重试。`);
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error(`配置文件顶层必须是对象: ${configPath}`);
   }
   return parsed;
 }

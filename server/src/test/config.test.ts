@@ -4,10 +4,10 @@
  * 2. CORS 同源/白名单判定（不反射任意 Origin）
  * 3. loadHubConfig：通配 host 回落 127.0.0.1；allowLan 显式 opt-in 放行；allowOrigins 白名单解析
  * 4. loadHubConfig claudeDriver：enabled===false 解析生效；defaultPolicy 非法值回 active-only
- * 5. loadHubConfig auth：enabled=true 且 token 空（含非字符串吞成空串）→ fail-open 明确告警
+ * 5. loadHubConfig auth：非法结构/类型与 enabled=true 但 token 空 → 启动前拒绝
  */
 import { strict as assert } from "node:assert";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -172,63 +172,107 @@ describe("config: loadHubConfig claudeDriver 开关与默认策略解析", () =>
     }
   });
 
-  it("claudeDriver 非对象 → 告警并回默认；数值字段非法回默认", () => {
-    const bad = loadWith({ claudeDriver: "on" });
-    assert.ok(bad.warnings.some((w) => w.includes("claudeDriver")), "必须有 claudeDriver 非法告警");
-    assert.deepEqual(bad.config.claudeDriver, DEFAULT_CLAUDE_DRIVER_CONFIG);
+  it("claudeDriver 非对象（含数组）→ 拒绝加载；数值字段非法仍回默认", () => {
+    for (const badInput of ["on", [], 42, null]) {
+      assert.throws(() => loadWith({ claudeDriver: badInput }), { code: "CONFIG_INVALID" });
+    }
     const nums = loadWith({ claudeDriver: { idleDetachMs: -1, maxConcurrent: 0, externalQuietMs: "x" } });
     assert.equal(nums.config.claudeDriver.idleDetachMs, DEFAULT_CLAUDE_DRIVER_CONFIG.idleDetachMs);
     assert.equal(nums.config.claudeDriver.maxConcurrent, DEFAULT_CLAUDE_DRIVER_CONFIG.maxConcurrent);
     assert.equal(nums.config.claudeDriver.externalQuietMs, DEFAULT_CLAUDE_DRIVER_CONFIG.externalQuietMs);
   });
+
+  it("permissionMode：六档合法值解析生效；缺省即最高权限 bypassPermissions", () => {
+    assert.equal(loadWith({}).config.claudeDriver.permissionMode, "bypassPermissions", "缺省 = 最高权限");
+    for (const mode of ["bypassPermissions", "manual", "default", "acceptEdits", "plan", "inherit"]) {
+      assert.equal(
+        loadWith({ claudeDriver: { permissionMode: mode } }).config.claudeDriver.permissionMode,
+        mode,
+        `合法档位 ${mode} 必须原样生效`,
+      );
+    }
+  });
+
+  it("permissionMode：非法值拒绝加载，不回落到 bypassPermissions", () => {
+    for (const bad of ["manul", "mannual", "BypassPermissions", "manual ", "", 42, null, true, [], {}]) {
+      assert.throws(() => loadWith({ claudeDriver: { permissionMode: bad } }), {
+        code: "CONFIG_INVALID", message: /claudeDriver\.permissionMode/,
+      });
+    }
+  });
+
+  it("权限键拼错或放错位置时拒绝加载，注释键仍被允许", () => {
+    assert.throws(() => loadWith({ claudeDriver: { permisionMode: "manual" } }), { code: "CONFIG_INVALID" });
+    assert.throws(() => loadWith({ permissionMode: "manual" }), { code: "CONFIG_INVALID" });
+    assert.throws(() => loadWith({ claudDriver: { permissionMode: "manual" } }), { code: "CONFIG_INVALID" });
+    const commented = loadWith({ claudeDriver: { "//note": "x", permissionMode: "manual" } });
+    assert.ok(!commented.warnings.some((w) => w.includes("未知键")), "注释键不应告警");
+    assert.equal(commented.config.claudeDriver.permissionMode, "manual");
+  });
 });
 
-describe("config: auth.enabled 空 token fail-open 告警（D4）", () => {
+describe("config: 读取或结构错误在启动前失败，不吞掉权限设置", () => {
+  it("损坏 JSON、非对象顶层均返回固定配置错误，不回显内容", () => {
+    const marker = "SENSITIVE_CONFIG_CONTENT_FOR_TEST_ONLY";
+    for (const content of [`{\"auth\":{\"token\":\"${marker}\"`, "null", "[]", '"manual"']) {
+      const dir = mkdtempSync(join(tmpdir(), "hub-config-invalid-"));
+      writeFileSync(join(dir, "hub.config.json"), content);
+      assert.throws(() => loadHubConfig(dir, "/example/home"), (error: unknown) => {
+        assert.equal((error as { code?: string }).code, "CONFIG_INVALID");
+        assert.ok(!(error as Error).message.includes(marker));
+        return true;
+      });
+    }
+  });
+
+  it("配置存在但不可读取时拒绝加载，缺少文件时仍可使用默认配置", () => {
+    const dir = mkdtempSync(join(tmpdir(), "hub-config-read-error-"));
+    mkdirSync(join(dir, "hub.config.json"));
+    assert.throws(() => loadHubConfig(dir), { code: "CONFIG_INVALID" });
+    const missing = mkdtempSync(join(tmpdir(), "hub-config-missing-"));
+    assert.equal(loadHubConfig(missing).config.claudeDriver.permissionMode, "bypassPermissions");
+  });
+
+  it("未知顶层键不会被吞掉；顶层注释仍可使用", () => {
+    const dir = mkdtempSync(join(tmpdir(), "hub-config-unknown-"));
+    writeFileSync(join(dir, "hub.config.json"), JSON.stringify({ permission_mode: "manual" }));
+    assert.throws(() => loadHubConfig(dir), { code: "CONFIG_INVALID" });
+    writeFileSync(join(dir, "hub.config.json"), JSON.stringify({ "//note": "comment", claudeDriver: { permissionMode: "bypassPermissions" } }));
+    assert.equal(loadHubConfig(dir).config.claudeDriver.permissionMode, "bypassPermissions");
+  });
+});
+
+describe("config: auth 错误配置拒绝启动", () => {
   function loadWith(json: Record<string, unknown>): ReturnType<typeof loadHubConfig> {
     const dir = mkdtempSync(join(tmpdir(), "hub-config-"));
     writeFileSync(join(dir, "hub.config.json"), JSON.stringify(json), "utf8");
     return loadHubConfig(dir);
   }
 
-  it("auth.enabled=true 且 token 空/缺失 → 明确告警（鉴权不会生效）", () => {
-    for (const auth of [{ enabled: true }, { enabled: true, token: "" }]) {
-      const { warnings } = loadWith({ auth });
-      assert.ok(
-        warnings.some((w) => w.includes("auth.enabled=true") && w.includes("token 为空")),
-        `auth ${JSON.stringify(auth)} 必须告警 fail-open`,
-      );
+  it("开启鉴权但 token 为空、缺失或只有空白时拒绝加载", () => {
+    for (const auth of [{ enabled: true }, { enabled: true, token: "" }, { enabled: true, token: "   " }]) {
+      assert.throws(() => loadWith({ auth }), { code: "CONFIG_INVALID" });
     }
   });
 
-  it("auth.enabled=true 且 token 非字符串（被吞成空串）→ 同一告警", () => {
-    for (const token of [42, null, true, { t: 1 }]) {
-      const { warnings, config } = loadWith({ auth: { enabled: true, token } });
-      assert.equal(config.auth.token, "", "非字符串 token 必须吞成空串");
-      assert.ok(
-        warnings.some((w) => w.includes("auth.enabled=true") && w.includes("token 为空")),
-        `token=${JSON.stringify(token)} 必须告警 fail-open`,
-      );
+  it("非法 auth 结构、类型和拼错的键均拒绝加载且不回显内容", () => {
+    const marker = "SENSITIVE_AUTH_VALUE_FOR_TEST_ONLY";
+    for (const auth of [null, [], marker, { enabled: "true", token: marker },
+      { enabled: true, token: 42 }, { enabled: true, token: null },
+      { enabled: false, token: {} }, { enabld: true, token: marker },
+      { enabled: true, toekn: marker }, { [marker]: true }]) {
+      assert.throws(() => loadWith({ auth }), (error: unknown) => {
+        assert.equal((error as { code?: string }).code, "CONFIG_INVALID");
+        assert.ok(!(error as Error).message.includes(marker));
+        return true;
+      });
     }
   });
 
-  it("auth.enabled=false 或 token 非空 → 无此告警", () => {
-    const off = loadWith({ auth: { enabled: false, token: "" } });
-    assert.equal(
-      off.warnings.some((w) => w.includes("token 为空")),
-      false,
-      "enabled=false 时不应有 fail-open 告警",
-    );
-    const on = loadWith({ auth: { enabled: true, token: "s3cret" } });
-    assert.equal(
-      on.warnings.some((w) => w.includes("token 为空")),
-      false,
-      "token 已填时不应告警",
-    );
-    const bare = loadWith({});
-    assert.equal(
-      bare.warnings.some((w) => w.includes("token 为空")),
-      false,
-      "默认零配置（未配置 auth）不应告警",
-    );
+  it("默认关闭、显式关闭与有效 token 保持可用；保留 token 原文和注释", () => {
+    assert.deepEqual(loadWith({}).config.auth, { enabled: false, token: "" });
+    assert.deepEqual(loadWith({ auth: { enabled: false, token: "" } }).config.auth, { enabled: false, token: "" });
+    assert.deepEqual(loadWith({ auth: { enabled: true, token: "valid-test-token", "//note": "comment" } }).config.auth,
+      { enabled: true, token: "valid-test-token" });
   });
 });

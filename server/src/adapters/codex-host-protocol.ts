@@ -2,7 +2,7 @@
 import { realpathSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import { ErrorCodes, HubError } from "../errors.js";
-import type { EffectivePolicyDto } from "../types.js";
+import type { EffectivePolicyDto, HostUserQuestion } from "../types.js";
 import { isUnderRoot, uploadRootsFor } from "../uploads.js";
 import { isRecord } from "./codex-rpc.js";
 
@@ -58,6 +58,187 @@ export const APPROVAL_METHODS: Readonly<Record<string, CodexApprovalType>> = Obj
   "item/fileChange/requestApproval": "fileChange",
   "item/permissions/requestApproval": "permissions",
 });
+
+/** 服务请求的手机交互通道：审批三类 / requestUserInput 问答 / MCP elicitation（其余不下发手机） */
+export type HostRequestKind = "approval" | "userInput" | "elicitation";
+
+/** 分流 server request；返回 null = 不提供手机交互（token 刷新/attestation/未知方法，安全红线保持现状） */
+export function serverRequestKind(method: string): HostRequestKind | null {
+  if (Object.hasOwn(APPROVAL_METHODS, method)) return "approval";
+  if (method === "item/tool/requestUserInput") return "userInput";
+  if (method === "mcpServer/elicitation/request") return "elicitation";
+  return null;
+}
+
+/* ===== 交互式问答（item/tool/requestUserInput + mcpServer/elicitation/request）===== */
+
+/** 卡片题目上限：超过无法在手机上安全展示（拒绝建卡，绝不悄悄丢题造成“部分回答”歧义） */
+export const QUESTION_MAX = 20;
+/** 每题文本字段（question/header/label/description）上限：脱敏后截断到 4KB */
+export const QUESTION_TEXT_MAX_BYTES = 4 * 1024;
+/** 应答形状上限：每题元素数与单元素长度（与题面文本同口径） */
+export const ANSWER_MAX_PER_QUESTION = 20;
+/** 交互式提问未获用户回答：协议规定用 -32800（requestUserInput 专用），绝不代答 */
+export const USER_INPUT_UNANSWERED_CODE = -32800;
+const USER_INPUT_UNANSWERED_MESSAGE = "user input timed out/cancelled without an answer";
+const USER_INPUT_DECLINED_MESSAGE = "user declined to answer";
+
+/** 脱敏 + 截断题面文本；空/非字符串一律 null（容错缺失字段） */
+function questionText(value: unknown, limit = QUESTION_TEXT_MAX_BYTES): string | null {
+  return typeof value === "string" && value.trim() !== "" ? safePreview(value, limit) : null;
+}
+
+function questionOptions(value: unknown): HostUserQuestion["options"] {
+  if (!Array.isArray(value) || value.length === 0) return null;
+  const options: NonNullable<HostUserQuestion["options"]> = [];
+  for (const item of value.slice(0, ANSWER_MAX_PER_QUESTION)) {
+    if (!isRecord(item)) continue;
+    const label = questionText(item.label);
+    if (label === null) continue;
+    options.push({ label, description: questionText(item.description) });
+  }
+  return options.length > 0 ? options : null;
+}
+
+/**
+ * `item/tool/requestUserInput` → 问答卡片题目。无法安全映射（缺 questions/超上限/重复 id）
+ * 返回 null，调用方安全拒绝（不挂起）；绝不返回残缺题目让用户在手机上误答。
+ */
+export function parseUserInputQuestions(params: Record<string, unknown>): HostUserQuestion[] | null {
+  const raw = params.questions;
+  if (!Array.isArray(raw) || raw.length === 0 || raw.length > QUESTION_MAX) return null;
+  const questions: HostUserQuestion[] = [];
+  const seen = new Set<string>();
+  for (const item of raw) {
+    if (!isRecord(item)) return null;
+    // id 是应答映射键，必须原样保留（不脱敏不截断），重复/超长会让映射歧义 → 整体拒绝
+    const id = typeof item.id === "string" && item.id.trim() !== "" && Buffer.byteLength(item.id) <= 512 ? item.id : null;
+    if (id === null || seen.has(id)) return null;
+    seen.add(id);
+    const header = questionText(item.header);
+    const question = questionText(item.question) ?? header ?? id;
+    questions.push({ id, header, question, options: questionOptions(item.options) });
+  }
+  return questions;
+}
+
+/** elicitation 属性类型（accept 时按它归一 content 值；integer 归为 number） */
+export type ElicitationValueType = "string" | "number" | "boolean";
+
+/**
+ * `mcpServer/elicitation/request` → 问答卡片（每个 schema 属性一题，id=属性名，enum 转 options，
+ * description 转问题文本）。schema 形状无法安全映射（嵌套 object/array、缺 properties、
+ * 超上限等）返回 null，调用方保持现状 decline（安全取消，不算挂起）。
+ */
+export function parseElicitationQuestions(params: Record<string, unknown>): { questions: HostUserQuestion[]; types: Record<string, ElicitationValueType> } | null {
+  const message = questionText(params.message, 1_000);
+  const schema = isRecord(params.requestedSchema) ? params.requestedSchema : null;
+  const properties = schema && isRecord(schema.properties) ? schema.properties : null;
+  if (!properties) return null;
+  const entries = Object.entries(properties);
+  if (entries.length === 0 || entries.length > QUESTION_MAX) return null;
+  const questions: HostUserQuestion[] = [];
+  const types: Record<string, ElicitationValueType> = {};
+  for (const [name, spec] of entries) {
+    if (name.trim() === "" || Buffer.byteLength(name) > 512 || !isRecord(spec)) return null;
+    const rawEnum = spec.enum;
+    const enumValues = Array.isArray(rawEnum) && rawEnum.length > 0 && rawEnum.length <= ANSWER_MAX_PER_QUESTION
+      ? rawEnum.filter((value): value is string => typeof value === "string" && value.trim() !== "") : null;
+    // 给了 enum 就必须能完整映射为选项（空/非字符串/超限 → 整体拒绝，绝不丢选项）
+    if (rawEnum !== undefined && (enumValues === null || enumValues.length === 0)) return null;
+    const type: ElicitationValueType | null = spec.type === "string" || (spec.type === undefined && enumValues) ? "string"
+      : spec.type === "number" || spec.type === "integer" ? "number"
+      : spec.type === "boolean" ? "boolean" : null;
+    if (type === null) return null; // 嵌套 object/array 或未知类型 → 无法在卡片上安全映射
+    types[name] = type;
+    questions.push({
+      id: name,
+      header: message,
+      question: questionText(spec.description) ?? message ?? name,
+      options: enumValues ? enumValues.map((value) => ({ label: questionText(value) ?? value, description: null })) : null,
+    });
+  }
+  return { questions, types };
+}
+
+/**
+ * 校验手机回传的 answers（不消费请求）：未知 key / 空数组 / 超限 / 非字符串一律 400。
+ * 允许部分回答（不要求全答），但每题若给出则必须非空。
+ */
+export function validateQuestionAnswers(questions: readonly HostUserQuestion[], answers: unknown): asserts answers is Record<string, string[]> {
+  if (!isRecord(answers) || Array.isArray(answers)) throw new HubError(ErrorCodes.INVALID_REQUEST, "answers 必须是 { [questionId]: string[] }");
+  const keys = Object.keys(answers);
+  if (keys.length === 0 || keys.length > QUESTION_MAX) throw new HubError(ErrorCodes.INVALID_REQUEST, "answers 至少回答一题且不超过 20 题");
+  const known = new Set(questions.map((question) => question.id));
+  for (const [key, value] of Object.entries(answers)) {
+    if (!known.has(key)) throw new HubError(ErrorCodes.INVALID_REQUEST, `未知 questionId: ${safePreview(key, 80)}`);
+    if (!Array.isArray(value) || value.length === 0 || value.length > ANSWER_MAX_PER_QUESTION) {
+      throw new HubError(ErrorCodes.INVALID_REQUEST, `answers.${key} 必须是非空字符串数组（不超过 ${ANSWER_MAX_PER_QUESTION} 项）`);
+    }
+    for (const element of value) {
+      if (typeof element !== "string" || element.trim() === "" || Buffer.byteLength(element) > QUESTION_TEXT_MAX_BYTES) {
+        throw new HubError(ErrorCodes.INVALID_REQUEST, `answers.${key} 的每项必须是不超过 4KB 的非空字符串`);
+      }
+    }
+  }
+}
+
+/** requestUserInput 应答：双层嵌套 `{ answers: { qid: { answers: [...] } } }`，绝不写成 answers 数组 */
+export function buildUserInputResult(answers: Record<string, string[]>): Record<string, unknown> {
+  const nested: Record<string, { answers: string[] }> = {};
+  for (const [key, value] of Object.entries(answers)) nested[key] = { answers: [...value] };
+  return { answers: nested };
+}
+
+/** 问答卡片的标题/摘要：与审批卡同口径，只展示已脱敏的题面 */
+export function questionCardPreview(kind: "userInput" | "elicitation", questions: readonly HostUserQuestion[]): { title: string; detail: string | null; toolName: string } {
+  const title = questions[0]?.header ?? (kind === "elicitation" ? "MCP 工具需要补充信息" : "工具向你提问");
+  const detail = questions.map((question) => `${question.header ? `${question.header}：` : ""}${question.question}`).join("\n");
+  return {
+    title: safePreview(title, 120),
+    detail: detail === "" ? null : safePreview(detail, QUESTION_TEXT_MAX_BYTES),
+    toolName: kind === "elicitation" ? "elicitation" : "requestUserInput",
+  };
+}
+
+/** elicitation accept：值按 schema type 基本归一（string/number/boolean），每题取首个回答 */
+export function buildElicitationAccept(types: Record<string, ElicitationValueType>, answers: Record<string, string[]>): Record<string, unknown> {
+  const content: Record<string, string | number | boolean> = {};
+  for (const [key, value] of Object.entries(answers)) {
+    const raw = value[0];
+    const type = types[key] ?? "string";
+    if (type === "number") {
+      const parsed = Number(raw);
+      if (!Number.isFinite(parsed)) throw new HubError(ErrorCodes.INVALID_REQUEST, `answers.${key} 必须是数字`);
+      content[key] = parsed;
+    } else if (type === "boolean") {
+      if (raw !== "true" && raw !== "false") throw new HubError(ErrorCodes.INVALID_REQUEST, `answers.${key} 必须是 true|false`);
+      content[key] = raw === "true";
+    } else content[key] = raw;
+  }
+  return { action: "accept", content };
+}
+
+/** rpc 应答的两种通道：正常 result 或协议错误（问答未作答时用 -32800，绝不代答） */
+export type CodexRpcReply = { result: Record<string, unknown> } | { rpcError: { code: number; message: string } };
+
+/**
+ * 未获用户回答的 rpc 应答（TTL 超时/turn 失效/清理）：问答用 -32800 错误、elicitation
+ * 保持现有 decline（安全取消）、审批 cancel/decline。硬规则：绝不代用户选任何选项。
+ * cancelled=true（取消/turn 失效）时审批回 cancel；TTL 超时传 false 回 decline（与既有语义一致）。
+ */
+export function unansweredRpcReply(kind: "approval" | "userInput" | "elicitation", type: CodexApprovalType | null, permissions: Record<string, unknown> = {}, cancelled = true): CodexRpcReply {
+  if (kind === "userInput") return { rpcError: { code: USER_INPUT_UNANSWERED_CODE, message: USER_INPUT_UNANSWERED_MESSAGE } };
+  if (kind === "elicitation") return { result: { action: "decline", content: null } };
+  return { result: buildApprovalResult(type ?? "permissions", "deny", permissions, cancelled) };
+}
+
+/** 用户明确拒绝：问答同样回 -32800（不冒充用户回答）；elicitation 回 decline */
+export function declinedRpcReply(kind: "approval" | "userInput" | "elicitation", type: CodexApprovalType | null, permissions: Record<string, unknown> = {}): CodexRpcReply {
+  if (kind === "userInput") return { rpcError: { code: USER_INPUT_UNANSWERED_CODE, message: USER_INPUT_DECLINED_MESSAGE } };
+  if (kind === "elicitation") return { result: { action: "decline", content: null } };
+  return { result: buildApprovalResult(type ?? "permissions", "deny", permissions) };
+}
 
 /** 进程参数不覆盖审批策略或沙箱设置。 */
 export function buildDriverArgs(): string[] { return ["app-server"]; }

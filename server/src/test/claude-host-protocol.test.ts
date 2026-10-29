@@ -25,13 +25,27 @@ describe("buildDriverArgs：spawn 参数安全集", () => {
     assert.ok(args.includes("--include-partial-messages"));
   });
 
-  it("绝不含危险 flag（--dangerously-skip-permissions / --allowedTools / --bare）", () => {
-    const args = buildDriverArgs({ sessionId: "s-1", bridgeScriptPath: "/x/bridge.mjs", permissionMode: "manual" });
-    const joined = args.join(" ");
-    assert.ok(!joined.includes("dangerously"));
-    assert.ok(!joined.includes("allowedTools"));
-    assert.ok(!joined.includes("allowed-tools"));
-    assert.ok(!joined.includes("--bare"));
+  it("绝不含危险 flag（--dangerously-skip-permissions / --allowedTools / --bare），与权限档位无关", () => {
+    for (const mode of ["manual", "bypassPermissions"]) {
+      const args = buildDriverArgs({ sessionId: "s-1", bridgeScriptPath: "/x/bridge.mjs", permissionMode: mode });
+      const joined = args.join(" ");
+      assert.ok(!joined.includes("dangerously"));
+      assert.ok(!joined.includes("allowedTools"));
+      assert.ok(!joined.includes("allowed-tools"));
+      assert.ok(!joined.includes("--bare"));
+    }
+  });
+
+  it("permissionMode 白名单校验：五个 CLI 档位全部通过且值正确；非法档位拒绝，不透传 CLI", () => {
+    for (const mode of ["bypassPermissions", "manual", "default", "acceptEdits", "plan"]) {
+      const args = buildDriverArgs({ sessionId: "s-1", bridgeScriptPath: null, permissionMode: mode });
+      const i = args.indexOf("--permission-mode");
+      assert.ok(i > 0, `合法档位 ${mode} 必须下发 flag`);
+      assert.equal(args[i + 1], mode);
+    }
+    assert.throws(() => buildDriverArgs({ sessionId: "s-1", bridgeScriptPath: null, permissionMode: "bypass" }), /非法/);
+    assert.throws(() => buildDriverArgs({ sessionId: "s-1", bridgeScriptPath: null, permissionMode: "inherit" }), /非法/);
+    assert.throws(() => buildDriverArgs({ sessionId: "s-1", bridgeScriptPath: null, permissionMode: "--evil-flag" }), /非法/);
   });
 
   it("bridge 路径非空时挂 --permission-prompts host + 全名工具 + --mcp-config", () => {
@@ -46,10 +60,13 @@ describe("buildDriverArgs：spawn 参数安全集", () => {
     assert.deepEqual(cfg.mcpServers.permhook.args, ["/x/bridge.mjs"]);
   });
 
-  it("bridge 为 null（bypass 环境）不挂权限通道", () => {
-    const args = buildDriverArgs({ sessionId: "s-1", bridgeScriptPath: null });
+  it("默认 bypass 运行：bridge 为 null 不挂权限通道", () => {
+    const args = buildDriverArgs({ sessionId: "s-1", bridgeScriptPath: null, permissionMode: "bypassPermissions" });
     assert.ok(!args.includes("--permission-prompt-tool"));
     assert.ok(!args.includes("--mcp-config"));
+    const i = args.indexOf("--permission-mode");
+    assert.ok(i > 0);
+    assert.equal(args[i + 1], "bypassPermissions");
   });
 
   it("buildMcpConfigJson 可解析且指向脚本路径", () => {
@@ -122,6 +139,8 @@ describe("parseBridgeHostRequestBody", () => {
 });
 
 describe("isBypassSettings / parseDriverMode", () => {
+  // 注意：默认策略（bypassPermissions）由配置直接决定、不依赖本判定；
+  // isBypassSettings 仅在 permissionMode=inherit（沿用 settings）时消费，语义是「settings 显式才算 bypass」。
   it("bypassPermissions 判定", () => {
     assert.equal(isBypassSettings({ permissions: { defaultMode: "bypassPermissions" } }), true);
     assert.equal(isBypassSettings({ permissions: { defaultMode: "acceptEdits" } }), false);

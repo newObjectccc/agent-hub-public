@@ -79,7 +79,9 @@ const baseSession: SessionSummary = {
   name: "历史会话",
   cwd: "/tmp/demo",
   updatedAt: "2026-02-18T11:00:00.000Z",
-  messageCount: 0,
+  // 有历史消息：空会话闸门（attachDefaultWorthy：无消息且不 running 默认永不接管）
+  // 不适用于本文件的智能默认场景；新建空会话的不接管行为在 ChatPage.attachDefault.test.tsx 覆盖
+  messageCount: 2,
   status: "idle",
   lastUserMessage: null,
   lastAssistantMessage: null,
@@ -281,7 +283,7 @@ describe("双模式说明 sheet：平行模式的主场景必须知情", () => {
     expect(el.textContent).toContain("真实执行");
   });
 
-  it("claude 源的平行说明按源给准确权限语义（manual：需确认的工具被拒）", async () => {
+  it("claude 源的平行说明按源给准确权限语义（默认档说明 + 配置指向，不锁死单一档位行为）", async () => {
     mocks.getSession.mockResolvedValue({
       session: { ...baseSession, source: "claude", terminal: null },
       messages: [],
@@ -289,9 +291,10 @@ describe("双模式说明 sheet：平行模式的主场景必须知情", () => {
       nextBefore: null,
     });
     const el = await render();
-    expect(el.textContent).toContain("manual");
-    // 不得对 claude 谎称"无人工批准"（它的 manual 会拒绝需确认的工具）
-    expect(el.textContent).not.toContain("无人工批准");
+    // 锁「默认档位说明 + 配置指向」：默认档位下自动执行、无人工批准，且明示档位可配置
+    expect(el.textContent).toContain("无人工批准");
+    expect(el.textContent).toContain("默认");
+    expect(el.textContent).toContain("claudeDriver.permissionMode");
   });
 
   it("看过一次就不再弹（一次性说明，不常驻打扰）", async () => {

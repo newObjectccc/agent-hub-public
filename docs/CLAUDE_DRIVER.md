@@ -69,22 +69,36 @@ headless 工具列表**不含** AskUserQuestion（它与 ExitPlanMode 同属宿�
 
 ## 二、驱动契约（Phase 1 实现依据）
 
-### spawn 参数（固定安全集）
+### spawn 参数（危险 flag 红线 + 配置驱动档位）
 
 ```
 claude -p --resume <session-id>
   --input-format stream-json --output-format stream-json
   --verbose --include-partial-messages
-  --permission-prompts host                                  # 非 bypass 时
-  --permission-prompt-tool mcp__permhook__permission_prompt   # 非 bypass 时
-  --mcp-config <perm-bridge 配置>                              # 非 bypass 时
-  [--permission-mode <resolved>]                               # 见下
+  --permission-prompts host                                  # 需确认档位时
+  --permission-prompt-tool mcp__permhook__permission_prompt   # 需确认档位时
+  --mcp-config <perm-bridge 配置>                              # 需确认档位时
+  [--permission-mode <claudeDriver.permissionMode>]            # 默认 bypassPermissions；inherit 时不下发
 ```
 
 禁止出现：`--dangerously-skip-permissions` / `--allowedTools` / `--bare`（bare 不绑 socket/无 hooks）。
-bridge 选择按用户级 settings → 项目 settings → 项目本地 settings 合并 `permissions`，后者覆盖前者，
-未声明的字段继续继承；最终 `permissions.defaultMode` 为 `bypassPermissions` 时可不挂 bridge，
-其余情况挂 bridge 走手机批权限。实际工具许可由 CLI 加载的配置决定，hub 不额外添加绕过权限的 flag。
+权限档位由 hub 配置 `claudeDriver.permissionMode` 统一决定（同时管 parallel 与接管两路径）：
+`bypassPermissions`（默认，最高权限，两路径全自动无人审批）/ `manual` / `default` / `acceptEdits` / `plan`
+（需确认档位：**两条路径都走手机审批 bridge**，同一套 HostRequestCard，超时/收尾一律 deny）/
+`inherit`（不下发 flag，按下述 settings 合并规则判定）。
+bridge 挂载规则（两条路径同规则）：有效档位非 `bypassPermissions` 时挂 bridge
+走手机批权限，bypass 运行时不挂。平行路径（spawn-per-message，无 `--input-format`）在同样条件下
+追加同一组 bridge 三 flag 并注入 `AGENT_HUB_SESSION_ID` / `AGENT_HUB_LIVE_URL` / `AGENT_HUB_LIVE_TOKEN`；
+其 `inherit` 档位保守挂 bridge（沿用 settings 的 bypass 用户不产生请求，空转无害），
+接管路径的 `inherit` 则按下述 settings 合并判定精确挂载。
+权限请求登记在共享 `HostRequestRegistry`（attach/平行两路径同一登记表 → 手机同一套卡片），
+且只在「有人在环」（attach 中或平行 run 中）时挂起，未知会话伪造请求一律 deny；
+平行 run 结束/abort 时挂起请求立即 deny 收尾。
+`inherit` 档位按下述 settings 合并判定：用户级 settings → 项目 settings → 项目本地 settings 的
+`permissions`，后者覆盖前者，未声明的字段继续继承；最终 `permissions.defaultMode` 为
+`bypassPermissions` 时可不挂 bridge，其余情况（含配置缺失/损坏）挂 bridge 走手机批权限。
+实际工具许可由 CLI 加载的配置决定；hub 仅通过官方 `--permission-mode` 表达档位，绝不引入
+`--dangerously-skip-permissions`。
 
 ### stdin 消息（真用户 turn）
 
@@ -128,7 +142,7 @@ stdin `{"type":"control_request","request_id":"<req-id>","request":{"subtype":"i
 1. **接管期间勿在电脑原 TUI 窗口输入**（无法进程级互斥，双写防护靠 busy 判定 + mtime 静默窗）。
 2. 裸 CLI 无 control 权限协议（那是 SDK host 的）；权限走 MCP permission-prompt-tool bridge。
 3. 非 bypass 环境下 sandbox 路径硬拦截仍存在（error 文案有误导，实为 permission 拒绝模板）。
-4. `--permission-mode manual` ≡ `default`。
+4. `--permission-mode manual` ≡ `default`（历史默认档位；现默认 `bypassPermissions`，见 claudeDriver.permissionMode）。
 5. Claude 平行模式只向本服务持有的 run 排队（steer/followUp 均在进程结束后执行）；
    未接管的外部终端忙时三种模式均返回 409 `SESSION_BUSY`，不会接受无人消费的队列。
 6. 外部进程运行状态依赖文件活动推断，长时间无写盘仍在思考时可能判断不准。接管不会停止原 TUI，
@@ -142,13 +156,14 @@ stdin `{"type":"control_request","request_id":"<req-id>","request":{"subtype":"i
 |---|---|
 | 驱动进程管理 | `server/src/adapters/claude-driver.ts`（ClaudeDriverHub） |
 | 协议纯函数 | `server/src/adapters/claude-host-protocol.ts` |
+| 权限请求登记表（attach/平行共用） | `server/src/adapters/host-request-registry.ts`（HostRequestRegistry） |
 | 权限 MCP bridge | `integrations/claude-perm-bridge/bridge.mjs` |
 | tmux 投屏 | `server/src/adapters/claude-mirror.ts` + `cli/mirror.js` |
 | 防双写 | `server/src/adapters/claude.ts` isEffectivelyBusy + attach 静默窗 |
 | 路由 | `server/src/routes.ts` attach/detach/message 分流 + host-requests 端点 |
 | 前端 | `web/src/components/HostRequestCard.tsx`、`web/src/api/attach.ts`、ChatPage 默认策略 |
 
-配置（`hub.config.json` `claudeDriver` 段，逐字段校验、非法回默认）：
+配置（`hub.config.json` `claudeDriver` 段；时长与并发字段非法时回默认，权限值/字段结构错误拒绝启动）：
 
 - `enabled`（默认 `true`）：总开关。**`false` = 不构造 ClaudeDriverHub**（`claudeDriver` 为
   null），claude 接管路由（attach / detach / message / host-requests）一律 400
@@ -177,7 +192,7 @@ stdin `{"type":"control_request","request_id":"<req-id>","request":{"subtype":"i
 1. 打开活跃 claude 会话（电脑刚跑过）→ 自动接管 + 轻提示 + `tmux attach -t hub-<id8>` 可观看
 2. 手机发消息 → 执行、transcript 追加、投屏实时显示
 3. 运行中插话（steer）→ 当前工具结束后立即转向（E3b 语义）
-4. 权限卡片：非 bypass 环境触发工具确认 → 手机允许 → 执行；拒绝 → 模型正常继续（不卡死）
+4. **权限卡片（需 claudeDriver.permissionMode 非 bypass）**：非 bypass 环境触发工具确认 → 手机允许 → 执行；拒绝 → 模型正常继续（不卡死）。**平行模式同样验证**：非 bypass 档位下平行发送触发确认 → 手机卡片批/拒 → 行为同上；run 结束/abort 未决卡片立即收尾
 5. 提问：模型文字化提问，手机文字回答（无 AskUserQuestion 卡死）
 6. abort → turn 中止（error_during_execution 收尾），会话可继续发消息
 7. detach → 投屏 pane 打印 resume 提示；电脑 `claude --resume <id>` 无缝接回

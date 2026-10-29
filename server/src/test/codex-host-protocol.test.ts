@@ -4,9 +4,13 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
-  buildApprovalResult, buildDriverArgs, buildResumeParams, buildTurnInput, codexMessageId,
-  hostRequestPreview, parseDriverMode, safePreview, snapshotRequestedPermissions,
+  buildApprovalResult, buildDriverArgs, buildElicitationAccept, buildResumeParams, buildTurnInput, buildUserInputResult,
+  codexMessageId, declinedRpcReply, hostRequestPreview, parseDriverMode, parseElicitationQuestions, parseUserInputQuestions,
+  questionCardPreview, safePreview, serverRequestKind, snapshotRequestedPermissions, unansweredRpcReply, validateQuestionAnswers,
+  type HostRequestKind,
 } from "../adapters/codex-host-protocol.js";
+import { ErrorCodes, HubError } from "../errors.js";
+import type { HostUserQuestion } from "../types.js";
 
 describe("Codex native protocol shapes", () => {
   it("inherits policies by default and uses only app-server process arguments", () => {
@@ -70,5 +74,88 @@ describe("Codex native protocol shapes", () => {
     assert.equal(parseDriverMode(undefined), "prompt");
     assert.equal(parseDriverMode("steer"), "steer");
     assert.throws(() => parseDriverMode("unknown"), /prompt\|steer\|followUp/);
+  });
+
+  it("routes only interactive requests to the phone and keeps token refresh off the wire", () => {
+    const kinds: Array<[string, HostRequestKind | null]> = [
+      ["item/commandExecution/requestApproval", "approval"],
+      ["item/tool/requestUserInput", "userInput"],
+      ["mcpServer/elicitation/request", "elicitation"],
+      ["account/chatgptAuthTokens/refresh", null],
+      ["attestation/generate", null],
+      ["unknown/method", null],
+    ];
+    for (const [method, expected] of kinds) assert.equal(serverRequestKind(method), expected);
+  });
+
+  it("maps requestUserInput questions with redaction, tolerant defaults and bounded size", () => {
+    const questions = parseUserInputQuestions({
+      questions: [
+        { id: "language", header: "MY_API_KEY = head-secret-value", question: "Use sk-super-secret-token now?", options: [{ label: "TypeScript", description: "AUTH_TOKEN=desc-secret-value" }, { label: 42 }] },
+        { id: "free" },
+      ],
+    });
+    assert.equal(JSON.stringify(questions).includes("head-secret-value"), false);
+    assert.equal(JSON.stringify(questions).includes("super-secret-token"), false);
+    assert.equal(JSON.stringify(questions).includes("desc-secret-value"), false);
+    assert.equal(questions![0].options![1], undefined); // 非字符串 label 容错跳过
+    assert.deepEqual(questions![1], { id: "free", header: null, question: "free", options: null }); // 缺字段容错，自由文本
+    // 无法安全映射 → null（拒绝建卡，绝不悄悄丢题）
+    assert.equal(parseUserInputQuestions({}), null);
+    assert.equal(parseUserInputQuestions({ questions: [] }), null);
+    assert.equal(parseUserInputQuestions({ questions: Array.from({ length: 21 }, (_, i) => ({ id: `q${i}` })) }), null);
+    assert.equal(parseUserInputQuestions({ questions: [{ id: "dup" }, { id: "dup" }] }), null);
+    assert.equal(parseUserInputQuestions({ questions: [{ header: "no id" }] }), null);
+    const long = parseUserInputQuestions({ questions: [{ id: "q", question: "x".repeat(50_000) }] });
+    assert.equal(Buffer.byteLength(long![0].question) <= 4 * 1024, true);
+    const card = questionCardPreview("userInput", questions!);
+    assert.equal(card.toolName, "requestUserInput");
+    assert.equal(card.title, "MY_API_KEY = [redacted]");
+    assert.match(card.detail!, /\[redacted\]/);
+    assert.equal(card.detail!.includes("super-secret-token"), false);
+  });
+
+  it("maps elicitation schema to questions and refuses nested shapes", () => {
+    const parsed = parseElicitationQuestions({
+      message: "Deploy info",
+      requestedSchema: { properties: { mode: { type: "string", enum: ["fast", "safe"], description: "Mode" }, level: { type: "number", description: "Level" }, ok: { type: "boolean" } } },
+    });
+    assert.deepEqual(parsed?.types, { mode: "string", level: "number", ok: "boolean" });
+    assert.deepEqual(parsed?.questions[1], { id: "level", header: "Deploy info", question: "Level", options: null });
+    assert.deepEqual(parsed?.questions[0].options, [{ label: "fast", description: null }, { label: "safe", description: null }]);
+    // 嵌套 object/array、缺 schema、非字符串 enum → 保持 decline（安全取消，不算挂起）
+    assert.equal(parseElicitationQuestions({ message: "x", requestedSchema: { properties: { nested: { type: "object" } } } }), null);
+    assert.equal(parseElicitationQuestions({ message: "x", requestedSchema: { properties: { list: { type: "array" } } } }), null);
+    assert.equal(parseElicitationQuestions({ message: "x" }), null);
+    assert.equal(parseElicitationQuestions({ message: "x", requestedSchema: { properties: { bad: { type: "string", enum: [1] } } } }), null);
+    // accept/content：值按 schema type 基本归一
+    assert.deepEqual(buildElicitationAccept(parsed!.types, { level: ["3"], ok: ["true"], mode: ["fast"] }), {
+      action: "accept", content: { level: 3, ok: true, mode: "fast" },
+    });
+    assert.throws(() => buildElicitationAccept({ n: "number" }, { n: ["abc"] }), /数字/);
+    assert.throws(() => buildElicitationAccept({ b: "boolean" }, { b: ["yes"] }), /true\|false/);
+    assert.deepEqual(buildElicitationAccept({ s: "string" }, { s: ["free text"] }), { action: "accept", content: { s: "free text" } });
+  });
+
+  it("validates answers strictly and unanswered questions never get an auto answer", () => {
+    const questions: HostUserQuestion[] = [{ id: "q", header: null, question: "Q?", options: null }];
+    validateQuestionAnswers(questions, { q: ["a"] }); // 合法
+    validateQuestionAnswers(questions, { q: ["a", "b"] }); // 允许部分回答 + 多选
+    for (const bad of [{ nope: ["a"] }, { q: [] }, { q: [""] }, { q: ["x", ...Array.from({ length: 20 }, () => "y")] }, { q: ["x".repeat(5_000)] }, {}, { q: "not-array" }] as unknown[]) {
+      assert.throws(() => validateQuestionAnswers(questions, bad), (error: unknown) => {
+        assert.equal((error as HubError).code, ErrorCodes.INVALID_REQUEST);
+        return true;
+      });
+    }
+    // rpc 应答形状：requestUserInput 双层嵌套；未作答/拒绝一律 -32800，绝不带 answers
+    assert.deepEqual(buildUserInputResult({ q: ["a"] }), { answers: { q: { answers: ["a"] } } });
+    assert.deepEqual(unansweredRpcReply("userInput", null), { rpcError: { code: -32800, message: "user input timed out/cancelled without an answer" } });
+    assert.deepEqual(declinedRpcReply("userInput", null), { rpcError: { code: -32800, message: "user declined to answer" } });
+    assert.deepEqual(unansweredRpcReply("elicitation", null), { result: { action: "decline", content: null } });
+    assert.deepEqual(declinedRpcReply("elicitation", null), { result: { action: "decline", content: null } });
+    // 审批语义保持：取消 cancel / 超时与拒绝 decline
+    assert.deepEqual(unansweredRpcReply("approval", "fileChange", {}, true), { result: { decision: "cancel" } });
+    assert.deepEqual(unansweredRpcReply("approval", "commandExecution", {}, false), { result: { decision: "decline" } });
+    assert.deepEqual(declinedRpcReply("approval", "permissions", { network: { enabled: true } }), { result: { permissions: {}, scope: "turn" } });
   });
 });

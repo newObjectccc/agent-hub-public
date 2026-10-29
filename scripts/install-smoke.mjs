@@ -90,6 +90,14 @@ else process.exitCode=1;
     return join(root, ...metadata.name.split('/'));
   };
   const first = await installed('install-a');
+  // SDK 仅导出 ESM import 入口，require.resolve(包名) 会被 exports 拒绝；
+  // 以真实 SDK 安装目录为基准，只解析依赖路径，不加载模型或读取账号状态。
+  const sdkManifest = join(first, 'node_modules/@earendil-works/pi-coding-agent/package.json');
+  assert(existsSync(sdkManifest), '安装产物缺少 SDK');
+  const sdkRequire = createRequire(sdkManifest);
+  const undiciVersion = JSON.parse(await readFile(sdkRequire.resolve('undici/package.json'), 'utf8')).version;
+  report.undiciVersion = undiciVersion;
+  check('已安装 SDK 实际解析到修补版 Undici', undiciVersion === '8.12.2');
   const version = (await run(process.execPath, [join(first, 'cli/cli.js'), '--version'], { env })).stdout.trim();
   report.cliVersion = version;
   check('真实 npm 安装后的 CLI 版本正确', version === `agent-hub v${metadata.version}`);

@@ -1,6 +1,6 @@
 {
   "name": "@agent-hub/web",
-  "version": "0.3.0-beta.1",
+  "version": "0.3.0-beta.2",
   "private": true,
   "type": "module",
   "description": "agent-hub 移动优先 PWA：会话面板、双模式 chat、子代理/实时旁观、Git/Diff、通知中心",

@@ -210,6 +210,39 @@ describe("attach: 智能默认策略 defaultPolicy（D3）", () => {
     expect(attachDefaultWorthy({ status: "running" }, undefined)).toBe(false);
   });
 
+  it("纯新建空会话（messageCount=0 且非 running）→ 永不默认接管（手机新建 ≠ 接管电脑）", () => {
+    // 新建会话兜底闸门：与策略无关；旧 server 误标 lastDrivenBy=terminal 也拦
+    expect(
+      attachDefaultWorthy(
+        { status: "idle", lastDrivenBy: "terminal", messageCount: 0 },
+        { online: true, attached: false, driver: "hub" },
+      ),
+    ).toBe(false);
+    expect(
+      attachDefaultWorthy({ status: "idle", messageCount: 0 }, { online: true, attached: false, driver: "hub" }),
+    ).toBe(false);
+    expect(
+      attachDefaultWorthy(
+        { status: "idle", messageCount: 0 },
+        { online: true, attached: false, driver: "hub", defaultPolicy: "always" },
+      ),
+    ).toBe(false);
+    expect(
+      attachDefaultWorthy({ status: "idle", messageCount: 0 }, { online: true, attached: false, defaultPolicy: "always" }),
+    ).toBe(false);
+    // running 例外：电脑上有活跃进程，接管有意义
+    expect(
+      attachDefaultWorthy({ status: "running", messageCount: 0 }, { online: true, attached: false, driver: "hub" }),
+    ).toBe(true);
+    // 有消息的会话不受影响；messageCount 缺省（老 server）不拦
+    expect(
+      attachDefaultWorthy(
+        { status: "idle", lastDrivenBy: "terminal", messageCount: 5 },
+        { online: true, attached: false, driver: "hub" },
+      ),
+    ).toBe(true);
+  });
+
   it("never：活跃会话也不默认接管（只手动；pinned 优先由 ChatPage 保证）", () => {
     expect(
       attachDefaultWorthy({ status: "running" }, { online: true, attached: false, driver: "hub", defaultPolicy: "never" }),

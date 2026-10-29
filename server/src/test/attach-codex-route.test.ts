@@ -6,7 +6,7 @@ import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import { test } from "node:test";
 import { WebSocket } from "ws";
-import type { CodexDriverLinkLike, CodexDriverSendInput } from "../adapters/codex-driver.js";
+import type { CodexDriverLinkLike, CodexDriverSendInput, CodexHostRequestDecision } from "../adapters/codex-driver.js";
 import { DEFAULT_CONFIG } from "../config.js";
 import { attachSessionWs, createApp } from "../index.js";
 import type { SessionHubLike } from "../routes.js";
@@ -20,7 +20,7 @@ import { makeFakeDashboard } from "./fakeDashboard.js";
 async function fixture(options: { disabled?: boolean; auth?: boolean; locked?: boolean; archived?: boolean } = {}) {
   const cwd = await mkdtemp(join(tmpdir(), "codex-route-"));
   const session: SessionListItem = { id: "codex-test", source: "codex", name: null, cwd, sessionFile: join(cwd, "rollout.jsonl"), updatedAt: new Date().toISOString(), messageCount: 0, status: "idle", isSubAgent: false, lastUserMessage: null, lastAssistantMessage: null, archived: options.archived };
-  const calls = { sent: [] as CodexDriverSendInput[], aborts: 0, parallel: 0 };
+  const calls = { sent: [] as CodexDriverSendInput[], aborts: 0, parallel: 0, decisions: [] as CodexHostRequestDecision[] };
   let attached = false;
   let attaching = false;
   let resolved = false;
@@ -38,7 +38,7 @@ async function fixture(options: { disabled?: boolean; auth?: boolean; locked?: b
     send: (_id, input) => { calls.sent.push(input); return { id: "command", mode: "followUp" }; },
     abortTurn: () => { calls.aborts += 1; },
     listHostRequests: () => resolved ? [] : [request],
-    respondHostRequest: (_id, id) => { if (id !== request.id || resolved) return false; resolved = true; return true; },
+    respondHostRequest: (_id, id, decision) => { if (id !== request.id || resolved) return false; calls.decisions.push(decision); resolved = true; return true; },
     isResolvedHostRequest: (id) => id === request.id && resolved,
     startSweep: () => {}, disposeAll: () => {},
   };
@@ -55,7 +55,7 @@ async function fixture(options: { disabled?: boolean; auth?: boolean; locked?: b
   const app = await createApp({ hub, config, appLock, codexDriver: options.disabled ? undefined : driver, kpi: { getCards: () => [] }, dashboard: makeFakeDashboard(), systemInfo: async () => ({} as SystemInfo), webRoot: null });
   const url = `/api/sessions/${session.id}`;
   const close = async () => { await app.close(); await rm(cwd, { recursive: true, force: true }); };
-  return { app, hub, driver, config, appLock, calls, cwd, session, url, close, pending: () => { attaching = true; } };
+  return { app, hub, driver, config, appLock, calls, cwd, session, url, request, close, pending: () => { attaching = true; } };
 }
 
 test("Codex attach/message/abort/detach 与 parallel 互斥，列表策略/来源正确", async () => {
@@ -101,6 +101,41 @@ test("Codex 审批刷新拉取、重复应答 409、未知请求 404、非法应
     assert.equal((await f.app.inject({ method: "POST", url: `${f.url}/host-requests/r1`, payload: { outcome: "allow" } })).statusCode, 409);
     assert.equal((await f.app.inject({ method: "POST", url: `${f.url}/host-requests/nope`, payload: { outcome: "deny" } })).statusCode, 404);
     assert.deepEqual((await f.app.inject(`${f.url}/host-requests`)).json().requests, []);
+  } finally { await f.close(); }
+});
+
+test("Codex 问答应答 body 分流：answers 转发、outcome/answers 互斥、非法形状 400 且不消费", async () => {
+  const f = await fixture();
+  try {
+    // 非法形状一律 400，且不消费请求（fake driver 未被调用）
+    assert.equal((await f.app.inject({ method: "POST", url: `${f.url}/host-requests/r1`, payload: { answers: { q: [1] } } })).statusCode, 400);
+    assert.equal((await f.app.inject({ method: "POST", url: `${f.url}/host-requests/r1`, payload: { answers: "nope" } })).statusCode, 400);
+    assert.equal((await f.app.inject({ method: "POST", url: `${f.url}/host-requests/r1`, payload: { answers: [] } })).statusCode, 400);
+    assert.equal((await f.app.inject({ method: "POST", url: `${f.url}/host-requests/r1`, payload: { outcome: "deny", answers: { q: ["a"] } } })).statusCode, 400);
+    assert.equal(f.calls.decisions.length, 0);
+    assert.equal((await f.app.inject(`${f.url}/host-requests`)).json().requests.length, 1);
+    // 问答应答：{ answers: { [questionId]: string[] } } 原样转发给 driver
+    const answered = await f.app.inject({ method: "POST", url: `${f.url}/host-requests/r1`, payload: { answers: { language: ["TypeScript"] } } });
+    assert.equal(answered.statusCode, 200);
+    assert.deepEqual(f.calls.decisions.at(-1), { answers: { language: ["TypeScript"] } });
+    // 审批 outcome 路径不受影响（重复应答 409）
+    assert.equal((await f.app.inject({ method: "POST", url: `${f.url}/host-requests/r1`, payload: { outcome: "allow" } })).statusCode, 409);
+    assert.equal(f.calls.decisions.length, 1);
+  } finally { await f.close(); }
+});
+
+test("GET 兑底列表透传问答卡片的 questions", async () => {
+  const f = await fixture();
+  try {
+    Object.assign(f.request, {
+      kind: "question",
+      questions: [{ id: "language", header: "Language", question: "Which language?", options: [{ label: "TypeScript", description: null }, { label: "JavaScript", description: null }] }],
+    });
+    const requests = (await f.app.inject(`${f.url}/host-requests`)).json().requests;
+    assert.equal(requests[0].kind, "question");
+    assert.deepEqual(requests[0].questions, [
+      { id: "language", header: "Language", question: "Which language?", options: [{ label: "TypeScript", description: null }, { label: "JavaScript", description: null }] },
+    ]);
   } finally { await f.close(); }
 });
 

@@ -23,7 +23,7 @@
 ## 特性
 
 - **🧩 三源会话支持**：pi / Claude Code / Codex 统一列表、详情与驱动（Codex 含桌面 app 会话：工具卡片 / 用量入账 / 归档会话 📦）
-- **📱 双模式会话驱动**：🖥 接管终端（pi：消息注入已有终端进程；Claude：hub 新建持续运行的 CLI 进程续接同一会话，支持 tmux 投屏和手机批权限）/ 📱 平行继续（由 server 续接上下文；pi 的工具调用在电脑真实执行且无人工批准，首次进入会明示）。三源均支持双模式，Codex 默认只手动接管，支持原生插话/中止、手机审批（三类卡片已接线，真实审批闭环待验）与图片（不控制原桌面窗口）；默认策略可配置，手动选择优先。电脑终端正在写同一会话时平行发送会被拦下并说明原因（防双写分叉）；模型/网络失败在气泡内给出原文与自救动作。详见下方模式说明。
+- **📱 双模式会话驱动**：🖥 接管终端（pi：消息注入已有终端进程；Claude：hub 新建持续运行的 CLI 进程续接同一会话，支持 tmux 投屏；非 bypass 档位可手机批权限，默认 bypass 档位全自动）/ 📱 平行继续（由 server 续接上下文；pi 的工具调用在电脑真实执行且无人工批准，首次进入会明示）。三源均支持双模式，Codex 进入会话默认 📱 平行继续（2026-10-23 产品规则：接管有「须先退出电脑端桌面会话」的写者互斥前提，与 pi/claude 活跃会话默认接管刻意不同），接管需手动切换，支持原生插话/中止、手机审批（三类卡片已接线，真实审批闭环待验）与工具交互问答（`requestUserInput`/elicitation 走手机问答卡片，选项/自由文本作答，不代答）与图片（不控制原桌面窗口）；默认策略可配置，手动选择优先。电脑终端正在写同一会话时平行发送会被拦下并说明原因（防双写分叉）；模型/网络失败在气泡内给出原文与自救动作。详见下方模式说明。
 - **🤖 子代理活动面板**：pi / claude 双源子代理实时展示（当前工具 / 输出摘要 / 运行时长），像终端多 agent 面板
 - **🔴 实时旁观**：终端跑的 pi 会话，手机上看思维链、流式回复、工具执行（token 级）
 - **🗂 工作台首页**：按注意力组织（🔥工作中 / ⚠️等你处理 / 今日概览），真实数据；今日概览按来源（pi/claude/codex）细分统计，可按来源过滤
@@ -48,7 +48,7 @@
 | 平行模式，未接管的电脑终端正在运行（pi / Claude） | 三种发送模式均返回忙（pi 为 `EXTERNAL_ACTIVE`，Claude 为 `SESSION_BUSY`），并给出可行动的中文原因；平行模式无法向这个终端排队 |
 | 接管模式 | hub 持有新的 CLI 进程；“插话”在工具间隙处理，“排队”在本轮结束后处理；正忙时普通发送通过回执报告失败 |
 
-pi 平行模式由 hub 进程内的 SDK 实例续聊，**工具调用（读写文件、执行命令）在你电脑上真实执行且无人工批准**，请只在你信任的仓库使用；Claude 平行固定 `--permission-mode manual`，需确认的工具一律被拒。模型/网络失败（含余额耗尽、连接中断、上下文溢出）在 pi 里不抛异常而是落在消息的 stopReason 上，hub 会把它透出为气泡内错误条：上下文溢出给「压缩上下文」一键自救，主动中止用中性语气不当报错；错误类提示常驻不自动消失。被双写闸门拦下或终端未执行的消息会退回离线队列并保留失败气泡（含重试入口），文本不会丢。
+pi 平行模式由 hub 进程内的 SDK 实例续聊，**工具调用（读写文件、执行命令）在你电脑上真实执行且无人工批准**，请只在你信任的仓库使用；Claude 平行默认 `--permission-mode bypassPermissions`：工具在你电脑上**自动执行且无人工批准**（与 pi 同类风险，请只在信任的仓库使用），可在 hub 配置 `claudeDriver.permissionMode` 改回 `manual` 等需确认档位——需确认档位下平行与接管两路径都会在手机上弹出审批卡片（同一套 HostRequestCard，允许/拒绝后继续）。模型/网络失败（含余额耗尽、连接中断、上下文溢出）在 pi 里不抛异常而是落在消息的 stopReason 上，hub 会把它透出为气泡内错误条：上下文溢出给「压缩上下文」一键自救，主动中止用中性语气不当报错；错误类提示常驻不自动消失。被双写闸门拦下或终端未执行的消息会退回离线队列并保留失败气泡（含重试入口），文本不会丢。
 
 Claude 接管不会控制原来的 TUI 窗口。接管期间请避免同时在原窗口输入；tmux 仅展示 hub 进程的输出。外部活动检测依赖文件更新时间，静默窗不能替代进程锁。
 
@@ -80,11 +80,11 @@ agent-hub remote
 | 跨网络远程（推荐） | `agent-hub remote` | 电脑、手机安装并登录 Tailscale |
 | 自建网络 / 反向代理 | `agent-hub start` | 沿用自己的网络与鉴权配置，参见 [安全说明](SECURITY.md) 与 [Headscale 指南](docs/HEADSCALE.md) |
 
-源码版 `remote` 另支持 `--lan`、`--no-tailscale`，自启可用 `setup --autostart --no-tailscale` 跳过自动检测；npm `0.3.0-beta.1` 使用上表的 `start` 命令选择本机或局域网。
+从 `0.3.0-beta.2` 起，`remote` 支持 `--lan`、`--no-tailscale`，自启可用 `setup --autostart --no-tailscale` 跳过自动检测；npm `0.3.0-beta.1` 使用上表的 `start` 命令选择本机或局域网。
 
 ### 电脑和手机通过 Tailscale 接入
 
-1. 选择此推荐方案时，两端安装 [Tailscale](https://tailscale.com/download)，登录同一账号、连接同一 tailnet。电脑需要可用的 Tailscale CLI；源码版还会识别 macOS App 内置 CLI 与 Windows 默认安装路径。若你配置过 ACL，还需允许手机访问这台电脑。
+1. 选择此推荐方案时，两端安装 [Tailscale](https://tailscale.com/download)，登录同一账号、连接同一 tailnet。电脑需要可用的 Tailscale CLI；Beta.2 起还会识别 macOS App 内置 CLI 与 Windows 默认安装路径。若你配置过 ACL，还需允许手机访问这台电脑。
 2. 首次使用 Serve 需要开启 MagicDNS / HTTPS 证书。按 CLI 打印的授权地址完成确认，或在管理后台的 DNS 页开启；参见 [Tailscale Serve 官方说明](https://tailscale.com/docs/features/tailscale-serve)。
 3. 电脑运行 `agent-hub remote`。看到 **“Tailscale Serve 已开启（HTTPS）”** 和 `https://<node>.<tailnet>.ts.net` 才表示远程入口已建立。
 4. 手机浏览器打开该 HTTPS 地址。Android Chrome 使用安装入口；iPhone Safari 使用“分享 → 添加到主屏幕”。首次打开可设置应用锁，再进入工作台选择会话。
@@ -212,6 +212,7 @@ pm2 save && pm2 startup        # 开机自启
 | `claudeDriver.maxConcurrent` | `3` | 并发 hub 驱动上限，含正在准备的接管（超出 409 DRIVER_LIMIT） |
 | `claudeDriver.mirror` | `"tmux"` | 终端投屏（tmux 命名 session，`tmux attach` 实时观看；无 tmux 自动降级 `off`） |
 | `claudeDriver.externalQuietMs` | `3000` | 接管准备前及启动进程前各检查一次文件静默窗；近期外部写入返回 409，无法提供进程级互斥 |
+| `claudeDriver.permissionMode` | `"bypassPermissions"` | 权限档位，同时管平行与接管两路径的 `--permission-mode`：默认 `bypassPermissions`（最高权限，两路径工具均自动执行、无人工审批）；`manual`/`default`/`acceptEdits`/`plan` = 需确认档位——平行与接管两路径都走手机审批卡片（同一套 UI）；`inherit` = 沿用你的 `~/.claude/settings.json`。非法权限值、未知键或错放字段会拒绝启动，避免回落最高权限 |
 
 - npm 可在 `~/.agent-hub/config/kpi-sources.json` 创建可选指标卡数据源；源码仓使用 `config/kpi-sources.json`（`${ENV_VAR}` 引用密钥）
 
@@ -225,7 +226,7 @@ pm2 save && pm2 startup        # 开机自启
 | Tailscale / headscale / 私有局域网 | ✅ | 无（推荐形态） |
 | 公网 VPS / 公网 IP 直接暴露 | ❌ | **请勿直接暴露**。需要公网访问时用 Tailscale/headscale，或在面板前面加一层带鉴权的反向代理（Caddy/Nginx basic auth、OAuth2 等） |
 
-- **关于 `auth.token`（API 鉴权）的如实说明**：`"auth": { "enabled": true, "token": "<长随机串>" }` 开启后（enabled 为 true **且** token 非空才生效），全部 API 与 WS 都要求 `Authorization: Bearer <token>`——**也包括自带 PWA 面板的静态资源**，而 web 端目前没有输入 Bearer token 的能力。也就是说开了它自带面板就打不开；它只适用于 API/CLI 调用方（例如由反代注入鉴权头的场景）。在补齐 web 端 token 支持之前，公网暴露请一律走 Tailscale/headscale 或前置反代鉴权，**不要**指望单靠 `auth.token` 保护公网部署
+- **关于 `auth.token`（API 鉴权）的如实说明**：`"auth": { "enabled": true, "token": "<长随机串>" }` 开启后（token 为空、类型错误或字段拼错时拒绝启动），全部 API 与 WS 都要求 `Authorization: Bearer <token>`——**也包括自带 PWA 面板的静态资源**，而 web 端目前没有输入 Bearer token 的能力。也就是说开了它自带面板就打不开；它只适用于 API/CLI 调用方（例如由反代注入鉴权头的场景）。在补齐 web 端 token 支持之前，公网暴露请一律走 Tailscale/headscale 或前置反代鉴权，**不要**指望单靠 `auth.token` 保护公网部署
 - `auth.enabled` 默认 `false` 是刻意设计（tailnet 内免 token 的顺手体验）
 - **应用锁（PIN / WebAuthn）**保护界面，并在服务端校验业务 HTTP 请求和 WS 发送/中止的解锁令牌；它不能替代 API token，两层可同时启用
 - `host` 默认 `127.0.0.1` 且拒绝通配绑定；局域网开放需显式 `"allowLan": true`（或 `agent-hub start --lan` / `npm run start -- --lan`，CLI 会自动写入 `allowLan`）

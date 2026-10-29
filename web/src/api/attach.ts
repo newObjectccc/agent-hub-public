@@ -193,12 +193,23 @@ export function attachAvailability(
  * - "active-only"（含缺省）：电脑上正活跃才默认接管——
  *   pi：终端扩展在线；claude（hub）：tail/mtime 推断 running，或最后由终端驱动
  * pinned（用户手动选择）永远优先于本判定（ChatPage 侧保证）。
+ * Codex 产品规则（2026-10-23 用户明确）：无论策略，codex 源默认永远 📱 平行继续——
+ * 接管有「须先退出桌面 ChatGPT app 对应会话」的写者互斥前提，进入会话时默认接管几乎必失败；
+ * 这与 pi/claude（active-only：电脑上活跃 → 默认接管）刻意区分。手动切换 / pin 不受限。
+ * 无论何种策略，纯新建空会话（无任何消息且不在运行）都不默认接管：
+ * 它是创建端自己的干净平行会话，不是电脑终端的会话（用户定调：手机 PWA 新建 ≠ 接管电脑）。
  */
 export function attachDefaultWorthy(
-  session: { source?: string; status?: string; lastDrivenBy?: string } | null | undefined,
+  session: { source?: string; status?: string; lastDrivenBy?: string; messageCount?: number } | null | undefined,
   terminal: TerminalAttachInfo | null | undefined,
 ): boolean {
   if (!terminal) return false;
+  // codex 硬规则（与 defaultPolicy 无关）：双源判定容错（老 server 只给其一）
+  if (session?.source === "codex" || terminal.source === "codex") return false;
+  // 纯新建空会话闸门（与策略无关的不变量）：无消息且不在运行的会话不属于任何一端，
+  // 默认永不接管；旧 server 可能误标 lastDrivenBy="terminal"，此处兜底。手动切换/ pin 不受限。
+  // messageCount 可缺省（老 server）按 undefined 不拦；running 例外（电脑上有活跃进程，接管有意义）。
+  if (session?.messageCount === 0 && session?.status !== "running") return false;
   const policy = terminal.defaultPolicy ?? "active-only"; // 老 server 无字段 → 原有行为
   if (policy === "never") return false;
   const hub = terminal.driver === "hub";

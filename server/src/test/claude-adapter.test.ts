@@ -10,6 +10,8 @@ import { join } from "node:path";
 import { after, before, beforeEach, describe, it } from "node:test";
 import type { ChildProcess } from "node:child_process";
 import { ClaudeAdapter } from "../adapters/claude.js";
+import type { ClaudeAdapterOptions } from "../adapters/claude.js";
+import { ENV_LIVE_TOKEN, ENV_LIVE_URL, ENV_SESSION_ID, PERM_TOOL_FULL_NAME } from "../adapters/claude-host-protocol.js";
 import type { ServerEvent } from "../types.js";
 
 const SID = "394b6cea-13f8-44e8-bb03-5cda75fa88b0";
@@ -47,7 +49,7 @@ class FakeChild extends EventEmitter {
 interface SpawnCall {
   bin: string;
   args: string[];
-  opts: { cwd?: string };
+  opts: { cwd?: string; env?: NodeJS.ProcessEnv };
 }
 
 let root: string;
@@ -55,20 +57,26 @@ let projectsDir: string;
 const children: FakeChild[] = [];
 const spawnCalls: SpawnCall[] = [];
 
-const spawnFn = ((bin: string, args: string[], opts: { cwd?: string }) => {
+const spawnFn = ((bin: string, args: string[], opts: { cwd?: string; env?: NodeJS.ProcessEnv }) => {
   const child = new FakeChild();
   children.push(child);
   spawnCalls.push({ bin, args, opts });
   return child as unknown as ChildProcess;
 }) as never;
 
-function makeAdapter(emit: (sessionId: string, event: ServerEvent) => void): ClaudeAdapter {
+function makeAdapter(
+  emit: (sessionId: string, event: ServerEvent) => void,
+  permissionMode?: "bypassPermissions" | "manual" | "inherit",
+  extra?: Partial<ClaudeAdapterOptions>,
+): ClaudeAdapter {
   return new ClaudeAdapter({
     projectsDir,
     historyFile: join(root, "history.jsonl"),
     emit,
     spawnFn,
     claudeBin: "claude",
+    permissionMode,
+    ...extra,
   });
 }
 
@@ -172,7 +180,7 @@ describe("claude adapter: prompt → spawn 安全参数 + 事件广播", () => {
     }
   });
 
-  it("spawn 参数为安全集（--resume/--output-format stream-json/--permission-mode manual，无 bypass）", async () => {
+  it("spawn 参数为安全集（默认 --permission-mode bypassPermissions 最高权限，无危险 flag）", async () => {
     const events: ServerEvent[] = [];
     const adapter = makeAdapter((_sid, ev) => events.push(ev));
     try {
@@ -191,9 +199,9 @@ describe("claude adapter: prompt → spawn 安全参数 + 事件广播", () => {
         "--verbose",
         "--include-partial-messages",
         "--permission-mode",
-        "manual",
+        "bypassPermissions",
       ]);
-      // 安全红线：不得出现任何提权/放行参数
+      // 危险 flag 红线（与权限档位无关）：不得出现任何危险 flag；档位只走官方 --permission-mode 通道
       assert.ok(!args.includes("--dangerously-skip-permissions"));
       assert.ok(!args.includes("--allowedTools"));
       assert.ok(!args.includes("--allowed-tools"));
@@ -242,6 +250,32 @@ describe("claude adapter: prompt → spawn 安全参数 + 事件广播", () => {
       assert.equal(events.filter((e) => e.type === "agent_settled").length, settledBefore);
       assert.equal(adapter.isLive(SID), false);
       assert.equal(adapter.getStatus(SID), "idle");
+    } finally {
+      adapter.disposeAll();
+    }
+  });
+
+  it("permissionMode=manual 显式下发 --permission-mode manual", async () => {
+    const adapter = makeAdapter(() => undefined, "manual");
+    try {
+      await adapter.prompt(SID, "继续", undefined);
+      const { args } = spawnCalls[0];
+      const i = args.indexOf("--permission-mode");
+      assert.ok(i > 0);
+      assert.equal(args[i + 1], "manual");
+      assert.ok(!args.includes("--dangerously-skip-permissions"));
+    } finally {
+      adapter.disposeAll();
+    }
+  });
+
+  it("permissionMode=inherit 不下发 --permission-mode（沿用用户 settings）", async () => {
+    const adapter = makeAdapter(() => undefined, "inherit");
+    try {
+      await adapter.prompt(SID, "继续", undefined);
+      const { args } = spawnCalls[0];
+      assert.ok(!args.includes("--permission-mode"));
+      assert.ok(!args.includes("--dangerously-skip-permissions"));
     } finally {
       adapter.disposeAll();
     }
@@ -825,6 +859,123 @@ describe("claude adapter: D8 防双写（busy 判定加固）", () => {
       const result = await adapter.prompt(SID, "继续", undefined);
       assert.equal(result.accepted, true);
       assert.equal(spawnCalls.length, 1);
+    } finally {
+      adapter.disposeAll();
+    }
+  });
+});
+
+describe("claude adapter: parallel 审批通道（非 bypass 档位挂 MCP bridge，手机批/拒）", () => {
+  const fakeRegistry = (): {
+    cancelled: Array<{ sessionId: string; message: string; outcome?: string }>;
+    hostRequests: { cancelSession: (sessionId: string, message: string, outcome?: string) => void };
+  } => {
+    const cancelled: Array<{ sessionId: string; message: string; outcome?: string }> = [];
+    return {
+      cancelled,
+      hostRequests: {
+        cancelSession: (sessionId: string, message: string, outcome?: string) => {
+          cancelled.push({ sessionId, message, outcome });
+        },
+      },
+    };
+  };
+
+  it("manual 档位：挂 permission-prompt-tool bridge + 回连 env（与接管路径同一审批通道）", async () => {
+    const { hostRequests } = fakeRegistry();
+    const adapter = makeAdapter(() => undefined, "manual", {
+      hostRequests,
+      bridgeScriptPath: "/x/bridge.mjs",
+      liveUrl: "http://127.0.0.1:7700",
+      liveToken: "tok",
+    });
+    try {
+      await adapter.prompt(SID, "需要确认的任务", undefined);
+      const { args, opts } = spawnCalls[0];
+      assert.ok(args.includes("--permission-prompts"), "挂权限应答通道");
+      assert.equal(args[args.indexOf("--permission-prompt-tool") + 1], PERM_TOOL_FULL_NAME);
+      const mcpConfig = args[args.indexOf("--mcp-config") + 1];
+      assert.ok(mcpConfig.includes("bridge.mjs"), "mcp-config 指向 bridge 脚本");
+      assert.equal(opts.env?.[ENV_SESSION_ID], SID, "bridge 回连需会话 id");
+      assert.equal(opts.env?.[ENV_LIVE_URL], "http://127.0.0.1:7700");
+      assert.equal(opts.env?.[ENV_LIVE_TOKEN], "tok");
+    } finally {
+      adapter.disposeAll();
+    }
+  });
+
+  it("默认 bypassPermissions：不挂 bridge（最高权限全自动、无人审批）", async () => {
+    const adapter = makeAdapter(() => undefined, "bypassPermissions", {
+      hostRequests: fakeRegistry().hostRequests,
+      bridgeScriptPath: "/x/bridge.mjs",
+    });
+    try {
+      await adapter.prompt(SID, "全自动任务", undefined);
+      const { args, opts } = spawnCalls[0];
+      assert.ok(!args.includes("--permission-prompt-tool"), "bypass 不挂 bridge");
+      assert.ok(!args.includes("--mcp-config"));
+      assert.equal(opts.env?.[ENV_SESSION_ID], undefined);
+    } finally {
+      adapter.disposeAll();
+    }
+  });
+
+  it("inherit：保守挂 bridge（沿用 settings 的 bypass 用户不产生请求，空转无害）且不下发 flag", async () => {
+    const adapter = makeAdapter(() => undefined, "inherit", {
+      hostRequests: fakeRegistry().hostRequests,
+      bridgeScriptPath: "/x/bridge.mjs",
+    });
+    try {
+      await adapter.prompt(SID, "沿用 settings", undefined);
+      const { args } = spawnCalls[0];
+      assert.ok(!args.includes("--permission-mode"), "inherit 不下发档位 flag");
+      assert.ok(args.includes("--permission-prompt-tool"), "非显式 bypass 一律挂 bridge 兜底");
+    } finally {
+      adapter.disposeAll();
+    }
+  });
+
+  it("run 结束：挂起权限请求 cancelSession deny 收尾（手机卡片同步消失，不等 TTL）", async () => {
+    const { cancelled, hostRequests } = fakeRegistry();
+    const adapter = makeAdapter(() => undefined, "manual", {
+      hostRequests,
+      bridgeScriptPath: "/x/bridge.mjs",
+    });
+    try {
+      await adapter.prompt(SID, "任务", undefined);
+      assert.equal(cancelled.length, 0, "run 中不收尾");
+      children[0].emit("close", 0, null);
+      assert.equal(cancelled.length, 1);
+      assert.equal(cancelled[0].sessionId, SID);
+    } finally {
+      adapter.disposeAll();
+    }
+  });
+
+  it("abort：立即 cancelSession，不等进程退出", async () => {
+    const { cancelled, hostRequests } = fakeRegistry();
+    const adapter = makeAdapter(() => undefined, "manual", {
+      hostRequests,
+      bridgeScriptPath: "/x/bridge.mjs",
+    });
+    try {
+      await adapter.prompt(SID, "任务", undefined);
+      await adapter.abort(SID);
+      assert.equal(cancelled.length, 1, "abort 立即收尾挂起审批");
+      assert.equal(cancelled[0].sessionId, SID);
+    } finally {
+      adapter.disposeAll();
+    }
+  });
+
+  it("hasActiveRun：run 中 true，结束后 false（driver 权限守卫据此放行 parallel 审批）", async () => {
+    const adapter = makeAdapter(() => undefined);
+    try {
+      assert.equal(adapter.hasActiveRun(SID), false);
+      await adapter.prompt(SID, "任务", undefined);
+      assert.equal(adapter.hasActiveRun(SID), true);
+      children[0].emit("close", 0, null);
+      assert.equal(adapter.hasActiveRun(SID), false);
     } finally {
       adapter.disposeAll();
     }

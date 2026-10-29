@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.3.0-beta.2（2026-10-29）公开发布准备
+
+- 显式开启 API 鉴权却漏填 token，以及 auth 字段拼错、类型错误时拒绝启动，保留默认关闭鉴权的私有网络用法。
+- 配置读取与权限字段错误在启动前拒绝，修复 `manual` 拼错后回落最高权限的问题；CLI 和 server 的 JSON 错误不再回显配置原文，合法的全自动配置保持可用。
+- 更新 Fastify / fast-uri 安全补丁，并固定 SDK 精确依赖中的 Undici 修补版本；npm CLI 发布物增加 shrinkwrap 与真实安装版本检查，避免仅 pnpm 锁文件修复而消费者仍安装旧版本。
+- 公开文档去掉维护者本机权限偏好的叙述，明确使用者配置、验证范围与历史隐私清理流程。
+
+## 未发布（2026-10-23）Codex 交互问答 UI 与平行通道可用性
+
+- **Codex 默认通道固化为 📱 平行**（产品规则）：进入会话默认平行继续，与 pi/claude（active-only：电脑上活跃 → 默认接管）刻意区分——Codex 接管有「须先退出桌面 ChatGPT app 对应会话」的写者互斥前提，默认接管几乎必失败。实现为双层硬规则（前端 `attachDefaultWorthy` 对 codex 源短路 + server `stampTerminal` 恒下发 `defaultPolicy: "never"`），`codexDriver.defaultPolicy` 配置保留仅兼容、不影响默认通道；手动切换/pin 仍可接管。模式选择 sheet 对 codex 把「📱 平行继续」标为主按钮（引导与默认一致）。
+
+- **Codex 交互式请求不再「无 UI 直接报错」**：`item/tool/requestUserInput`（工具向用户提问）与 `mcpServer/elicitation/request`（MCP 输入收集）从直接 respondError/decline 改为手机问答卡片（HostRequestCard 新增 `kind: "question"` 模式：逐题渲染问题/选项/自由文本输入，可提交回答或明确拒绝）。应答严格按协议形状 `{"answers":{"<qid>":{"answers":[...]}}}`；**绝不代答**——超时 / turn 终态 / 取消一律 respondError 明确告知模型「用户未回答」，绝不自动选第一项。问题文本走脱敏预览（凭据/秘密不出手机）；`account/chatgptAuthTokens/refresh`、`attestation/generate` 及未知请求保持安全响应、不上手机。
+- **Codex 平行通道目录检查豁免**：`codex exec resume` 补 `--skip-git-repo-check`。实测 0.163 下非 git 且非 TUI 信任目录的会话发送 100% 被拒（`Not inside a trusted directory and --skip-git-repo-check was not specified.`，config 的 `trust_level` 条目对 exec 无效），手机端表现为「发送即报错」；该 flag 只豁免入口防呆、不触碰审批/沙箱（`--dangerously-bypass-*` 红线不变）。
+- **权限与交互规则**：Codex 的 `inherit` 沿用使用者自己的本机设置，Claude 默认 `claudeDriver.permissionMode: bypassPermissions`；凡仍需用户交互的场景（工具提问 / elicitation）一律给手机 UI，不得出现「需交互但无 UI 直接报错」。
+
+## 未发布（2026-10-22）Claude 默认最高权限
+
+- **Claude 会话默认权限姿态反转**：平行与接管两路径统一由新配置 `claudeDriver.permissionMode` 决定 `--permission-mode`，默认 `bypassPermissions`——手机创建的会话工具自动执行、无人工审批（此前平行路径硬编码 `--permission-mode manual` 强行盖掉用户 settings 的 bypass，手机发消息时需确认的工具一律被拒）。
+- 取值：`bypassPermissions`（默认，最高权限）/ `manual` / `default` / `acceptEdits` / `plan`（需确认档位：平行与接管两路径都走手机审批 bridge，同一套审批卡片 UI）/ `inherit`（不下发 flag，沿用 `~/.claude/settings.json` 等 settings 合并判定，含配置缺失/损坏回退挂 bridge 的 fail-safe）。合法档位保留；非法值、拼错/误放字段与非对象 claudeDriver 会拒绝启动（2026-10-29 修复）。
+- 实现走官方 `--permission-mode` 档位通道；`--dangerously-skip-permissions` / `--allowedTools` 红线保留不变。bypass 档位不挂权限 bridge；非 bypass 档位手机审批闭环、超时 deny 一律不变。
+- UI/文档文案同步诚实化（AttachIntroSheet、README 中英、API_CONTRACT / CLAUDE_DRIVER / ARCHITECTURE / SECURITY）：默认档位下工具调用自动执行且无需人工批准，请只在信任的仓库使用；改回 `manual` 等需确认档位后两路径均恢复手机审批卡片。
+- 验证：server 949 + web 983 模拟测试全绿（含新增档位矩阵与危险 flag 红线用例）；真机对照实验（副作用落盘铁证）确认 flag 级 `--permission-mode bypassPermissions` 工具自动执行零拦截、`manual` 档位工具确实被拦（模型会口头编造已执行的输出，验收必须以副作用为准）。
+
+## 未发布（2026-10-23）平行路径手机审批闭环
+
+- **平行（📱）路径补齐手机审批通道**：权限请求登记表从 ClaudeDriverHub 解耦为共享 `HostRequestRegistry`（attach/平行两路径共用），平行 spawn 非 bypass 档位同样挂 MCP permission bridge（`--permission-prompt-tool` + 回连 env）——需确认的操作挂起在手机 HostRequestCard 上批/拒，不再是“工具被 CLI 直接拒绝且无任何提示”。默认 `bypassPermissions` 仍全自动、不挂 bridge（无审批卡片属预期）。
+- 权限请求守卫不变：只在「有人在环」（attach 中或平行 run 中）时挂起，未知会话伪造请求一律 deny；run 结束/abort/detach/崩溃/超时一律 deny 收尾（手机卡片同步消失，不等 TTL）。
+- 手机刷新/断线重连的 host-requests 兜底拉取不再限接管路径，平行模式的未决卡片同样回来。
+
 ## 未发布（2026-10-22）可选 Tailscale 接入
 
 - Tailscale 明确为推荐的可选远程方案；中英 README 与安装指南补充本机、可信局域网和自建网络入口。
@@ -113,7 +142,7 @@
 - WS upgrade Origin 校验（防跨站 WebSocket 劫持）：upgrade 闸与 HTTP CORS 闸共用 hostTrust/同源判定单一事实源——同源放行，跨域只放 `allowOrigins` 精确白名单（缺省空 = 拒绝一切跨域），反代感知走可信 Host 判定
 - WS abort 过应用锁门禁：WS `abort` 此前绕过 promptGuard，锁屏期可中止 turn——补锁屏门禁（同 promptGuard 锁分支判据，但不复用其 ATTACH_ACTIVE 拒绝，接管期 abort 合法且必要）；通过后 hub 驱动接管中走 `driver.abortTurn`（control interrupt，进程存活可续），否则 `hub.abort`（镜像 HTTP `/abort` 语义）
 - host-request 已决 409 语义落地：已决 id 短期记忆（TTL 约 5 分钟、上限约 200 条）内重复应答 → 409 `HOST_REQUEST_RESOLVED`，未知 → 404 `HOST_REQUEST_NOT_FOUND`——双重应答/幂等回放不再误报 404
-- auth 空 token 告警（fail-open 拦截）：`auth.enabled=true` 且 `token` 为空（含缺失/非字符串吞成空串）时启动 warnings 告警，防「开了鉴权却形同虚设」静默失守
+- auth 空 token 告警（该历史行为已在 0.3.0-beta.2 改为拒绝启动）：`auth.enabled=true` 且 `token` 为空（含缺失/非字符串吞成空串）时启动 warnings 告警，防「开了鉴权却形同虚设」静默失守
 - web attach 残留自愈：pin=attach 但本次打开接管不可用（claudeDriver.enabled=false 等）时自动回退，不再卡死在 attach 模式
 - pack 冒烟补强：`scripts/pack-smoke.mjs` 断言从 8 个关键路径扩到 20 个关键文件 + 6 个运行时依赖声明齐全
 

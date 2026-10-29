@@ -63,6 +63,9 @@ const REQUIRED_FILES = [
   "SECURITY.md",
   "web/dist/index.html",
   "LICENSE",
+  "npm-shrinkwrap.json",
+  "THIRD_PARTY_NOTICES.md",
+  "patches/@earendil-works__pi-coding-agent@0.99.1.patch",
 ];
 
 // 根 dependencies 必须声明的运行时依赖（发布后 npm 只装根 dependencies，装不到 workspace 子包的声明）
@@ -82,6 +85,8 @@ function packReport() {
   const raw = execFileSync(npmBin, ["pack", "--dry-run", "--json"], {
     cwd: repoRoot,
     encoding: "utf8",
+    // 生产依赖随 CLI 打包，文件清单超过 Node 默认 1 MiB 缓冲区。
+    maxBuffer: 32 * 1024 * 1024,
     stdio: ["ignore", "pipe", "inherit"], // npm 的告警走 stderr 直通，stdout 只留 JSON
   });
   let report;
@@ -97,6 +102,16 @@ function packReport() {
 
 const { paths, filename } = packReport();
 const pkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8"));
+const shrinkwrap = JSON.parse(readFileSync(join(repoRoot, "npm-shrinkwrap.json"), "utf8"));
+if (shrinkwrap.name !== pkg.name || shrinkwrap.version !== pkg.version
+  || JSON.stringify(shrinkwrap.packages?.[""]?.dependencies) !== JSON.stringify(pkg.dependencies)
+  || JSON.stringify(pkg.overrides) !== JSON.stringify(pkg.pnpm?.overrides)) {
+  throw Error("npm 发布锁或依赖覆盖与 package.json 不一致；运行 pnpm release:shrinkwrap 更新");
+}
+const lockedUndici = Object.entries(shrinkwrap.packages ?? {}).filter(([key]) => /(?:^|\/)node_modules\/undici$/.test(key));
+if (lockedUndici.length === 0 || lockedUndici.some(([, value]) => value.version !== "8.12.2")) {
+  throw Error("npm 发布锁缺少修补版 Undici");
+}
 
 const missingFiles = REQUIRED_FILES.filter((p) => !paths.has(p));
 // 入口存在还不够：沿实际编译代码的相对 import 核对依赖闭包，防止漏打 sessions 等子目录。
@@ -121,7 +136,21 @@ while (queue.length) {
   }
 }
 const missingDeps = REQUIRED_DEPS.filter((d) => !(pkg.dependencies && d in pkg.dependencies));
-const forbidden = [...paths].filter(p => /(^|\/)(node_modules|\.git|\.claude|evidence|data|test)(\/|$)|\.map$|\.src\.(png|gif)$|(^|\/)\.env(?:\.|$)|(^|\/)(auth|hub\.config(?:\.local)?)\.json$/.test(p));
+for (const dependency of REQUIRED_DEPS) {
+  const manifest = `node_modules/${dependency}/package.json`;
+  if (!paths.has(manifest)) missingFiles.push(manifest);
+  if (!pkg.bundledDependencies?.includes(dependency)) missingDeps.push(`bundledDependencies: ${dependency}`);
+}
+// 发布物内的 node_modules 是声明的运行时 bundle，保留上游自己的许可/测试等文件。
+// 第一方源码/配置仍用原隐私白名单；禁止把 pnpm 虚拟仓整体打进包。
+const forbidden = [...paths].filter(p => p.startsWith('node_modules/')
+  ? p.startsWith('node_modules/.pnpm/')
+  : /(^|\/)(\.git|\.claude|evidence|data|test)(\/|$)|\.map$|\.src\.(png|gif)$|(^|\/)\.env(?:\.|$)|(^|\/)(auth|hub\.config(?:\.local)?)\.json$/.test(p));
+for (const platform of ['darwin-arm64', 'darwin-x64', 'linux-arm64', 'linux-x64', 'win32-arm64', 'win32-x64']) {
+  if (![...paths].some(p => p.endsWith(`@esbuild/${platform}/package.json`))) {
+    throw Error(`运行时 bundle 缺少 esbuild 平台包 ${platform}`);
+  }
+}
 const invalidName = !/^@[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*$/.test(pkg.name);
 
 if (missingFiles.length > 0 || missingDeps.length > 0 || forbidden.length > 0 || invalidName) {

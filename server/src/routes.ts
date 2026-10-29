@@ -128,7 +128,6 @@ function stampTerminal(
   claudeDriver?: ClaudeDriverLinkLike,
   defaultPolicy?: TerminalAttachInfo["defaultPolicy"],
   codexDriver?: CodexDriverLinkLike,
-  codexPolicy?: TerminalAttachInfo["defaultPolicy"],
 ): SessionDto {
   const withPolicy = (info: TerminalAttachInfo): TerminalAttachInfo =>
     defaultPolicy === undefined ? info : { ...info, defaultPolicy };
@@ -139,7 +138,11 @@ function stampTerminal(
     return toSessionDto({ ...session, terminal: withPolicy(claudeDriver.statusFor(session.id)) });
   }
   if (session.source === "codex" && codexDriver && !session.archived) {
-    return toSessionDto({ ...session, status: codexDriver.runStatusFor(session.id) ?? session.status, terminal: { ...codexDriver.statusFor(session.id), source: "codex", defaultPolicy: codexPolicy ?? "never" } });
+    // Codex 产品规则（2026-10-23 用户明确）：进入会话默认 📱 平行，defaultPolicy 恒 "never" 下发——
+    // 接管有「须先退出桌面 ChatGPT app 对应会话」的写者互斥前提，默认接管几乎必失败；
+    // 与 pi/claude（active-only：电脑活跃 → 默认接管）刻意区分。codexDriver.defaultPolicy 配置不再影响默认通道，
+    // 手动切换 / pin 仍可接管。
+    return toSessionDto({ ...session, status: codexDriver.runStatusFor(session.id) ?? session.status, terminal: { ...codexDriver.statusFor(session.id), source: "codex", defaultPolicy: "never" } });
   }
   return toSessionDto(session);
 }
@@ -155,6 +158,24 @@ function tokenMatches(headerValue: string, expected: string): boolean {
   const a = Buffer.from(headerValue);
   const b = Buffer.from(expected);
   return a.length === b.length && timingSafeEqual(a, b);}
+
+/**
+ * 问答应答 body 的粗校验：{ [questionId]: string[] } 形状，逐题合法性（未知 id / 空数组 /
+ * 长度上限）由 driver 按该请求下发的 questions 校验（未知 questionId 一律 400 且不消费请求）。
+ */
+function parseAnswerMap(value: unknown): Record<string, string[]> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new HubError(ErrorCodes.INVALID_REQUEST, "answers 必须是 { [questionId]: string[] }");
+  }
+  const result: Record<string, string[]> = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (!Array.isArray(item) || item.some((element) => typeof element !== "string")) {
+      throw new HubError(ErrorCodes.INVALID_REQUEST, "answers 必须是 { [questionId]: string[] }");
+    }
+    result[key] = item as string[];
+  }
+  return result;
+}
 
 function handle(reply: FastifyReply, err: unknown): void {
   const { statusCode, body } = toErrorEnvelope(err);
@@ -240,10 +261,10 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   const appLock: AppLockStoreLike = deps.appLock ?? createAppLockStore(dataDir);
   /** prompt 幂等键（sessionId + clientMessageId）：弱网重发不双执行 */
   const promptIdem = new PromptIdempotencyStore();
-  /** 会话 DTO 附加最后驱动来源（契约 §1，面板驱动过即 panel） */
+  /** 会话 DTO 附加最后驱动来源（契约 §1：面板驱动过即 panel；无消息的空会话无驱动史，不下发） */
   const decorateSession = (s: SessionListItem): SessionListItem => ({
     ...s,
-    lastDrivenBy: drivenByOf(panelDriven, s.id),
+    lastDrivenBy: drivenByOf(panelDriven, s.id, s.messageCount),
   });
   // auth.token 预留：enabled 时校验 Bearer（v0 默认关闭）
   if (config.auth.enabled && config.auth.token !== "") {
@@ -277,7 +298,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
     try {
       const sessions = (await hub.listSessions()).map(decorateSession);
       return reply.send({
-        sessions: sessions.map((s) => stampTerminal(s, deps.agents, deps.claudeDriver, deps.config.claudeDriver.defaultPolicy, deps.codexDriver, deps.config.codexDriver.defaultPolicy)),
+        sessions: sessions.map((s) => stampTerminal(s, deps.agents, deps.claudeDriver, deps.config.claudeDriver.defaultPolicy, deps.codexDriver)),
       });
     } catch (err) {
       return handle(reply, err);
@@ -309,7 +330,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
         // 不带分页查询：保持 v0 全量行为（hasMore=false / nextBefore=null）
         const page = limit === undefined && before === undefined ? fullPage(all) : paginateMessages(all, { before, limit });
         return reply.send({
-          session: stampTerminal(session, deps.agents, deps.claudeDriver, deps.config.claudeDriver.defaultPolicy, deps.codexDriver, deps.config.codexDriver.defaultPolicy),
+          session: stampTerminal(session, deps.agents, deps.claudeDriver, deps.config.claudeDriver.defaultPolicy, deps.codexDriver),
           messages: page.messages,
           hasMore: page.hasMore,
           nextBefore: page.nextBefore,
@@ -832,22 +853,36 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
     }
   });
 
-  // POST /api/sessions/:id/host-requests/:requestId：手机应答（allow|deny）
+  // POST /api/sessions/:id/host-requests/:requestId：手机应答（契约 §12）
+  // body 二选一：{ outcome: "allow" | "deny" } = 审批；{ answers: { [questionId]: string[] } } = 问答
+  // （kind==="question" 的请求）。二者互斥，问答的逐题校验在 driver（那里持有 questions）。
   app.post<{ Params: { id: string; requestId: string } }>(
     "/api/sessions/:id/host-requests/:requestId",
     async (req, reply) => {
       try {
         const body = (typeof req.body === "object" && req.body !== null ? req.body : {}) as Record<string, unknown>;
-        const outcome = body.outcome;
-        if (outcome !== "allow" && outcome !== "deny") {
-          throw new HubError(ErrorCodes.INVALID_REQUEST, "outcome 必须是 allow|deny");
-        }
         const message = typeof body.message === "string" ? body.message : undefined;
         const driver = await hostDriverFor(req.params.id);
         if (!driver) throw new HubError(ErrorCodes.INVALID_REQUEST, "该会话没有手机审批通道", 400);
-        const ok = driver === deps.codexDriver
-          ? deps.codexDriver.respondHostRequest(req.params.id, req.params.requestId, { outcome, message })
-          : (driver as ClaudeDriverLinkLike).respondHostRequest(req.params.id, req.params.requestId, { behavior: outcome, message: message ?? "" });
+        let ok: boolean;
+        // 响应回显口径：问答应答成功视作 allow（已替用户提交），拒绝回答为 deny
+        let resolvedOutcome: "allow" | "deny";
+        if (body.answers !== undefined) {
+          if (body.outcome !== undefined) throw new HubError(ErrorCodes.INVALID_REQUEST, "outcome 与 answers 只能二选一");
+          // 问答应答只走 Codex 驱动（claude 的 host request 全是审批，不存在 questions）
+          if (driver !== deps.codexDriver) throw new HubError(ErrorCodes.INVALID_REQUEST, "该会话不支持问答应答", 400);
+          resolvedOutcome = "allow";
+          ok = deps.codexDriver.respondHostRequest(req.params.id, req.params.requestId, { answers: parseAnswerMap(body.answers) });
+        } else {
+          const outcome = body.outcome;
+          if (outcome !== "allow" && outcome !== "deny") {
+            throw new HubError(ErrorCodes.INVALID_REQUEST, "outcome 必须是 allow|deny");
+          }
+          resolvedOutcome = outcome;
+          ok = driver === deps.codexDriver
+            ? deps.codexDriver.respondHostRequest(req.params.id, req.params.requestId, { outcome, message })
+            : (driver as ClaudeDriverLinkLike).respondHostRequest(req.params.id, req.params.requestId, { behavior: outcome, message: message ?? "" });
+        }
         if (!ok) {
           // 未知 / 已决（契约 §12）：已决记忆判 409 HOST_REQUEST_RESOLVED，其余 404（双重应答/幂等回放不再误报 404）
           const resolved = driver.isResolvedHostRequest(req.params.requestId);
@@ -857,7 +892,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
             resolved ? 409 : 404,
           );
         }
-        return reply.send({ resolved: true, outcome });
+        return reply.send({ resolved: true, outcome: resolvedOutcome });
       } catch (err) {
         return handle(reply, err);
       }

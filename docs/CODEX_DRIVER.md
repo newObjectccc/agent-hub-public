@@ -15,7 +15,7 @@ app-server 提供 `thread/resume`、`turn/start`、原生 `turn/steer`、`turn/i
 - abort 使用 `turn/interrupt`，保留进程；清理待办与当前审批。detach / crash / timeout 取消挂起请求并关闭进程释放自身 writer；释放尚未完成时拒绝重新 attach。
 - 命令、文件与 permissions 三类原生审批显示手机卡片，刷新后可重新拉取。只允许当前操作；permissions 仅回授原请求的权限子集且 scope 固定 turn。超时、退出、中止全部拒绝；已清理不冒充「用户允许」。
 - 审批按 turn 与原生 requestId 共同关联，原生 ID 跨轮复用不会漏卡或批准到另一轮；文件审批展示同轮同 item 的有界 diff，缺少 diff 时明确告知。
-- requestUserInput 与 elicitation 尚无交互 UI，明确拒绝/unsupported，模型可改用文字提问。未知服务请求返回协议错误；不把认证刷新或凭据交给手机。
+- requestUserInput 与 elicitation 走**手机问答卡片**（`kind: "question"`）：逐题选项/自由文本应答，未作答（超时/取消/收尾）明确告知模型未回答、绝不代答；认证刷新或凭据类请求（`account/chatgptAuthTokens/refresh`、`attestation/generate`、未知方法）不上手机、给安全的 unsupported。
 - 已校验的上传图片以 localImage 发送（图片路径在驱动内部二次校验，只接受会话上传目录内的真实文件；越界附件降级为文本提示，绝不静默丢），图片预览保留在回执与重连快照；进行中回复用当前轮快照与 rollout 对账。
 - 并行通道与接管准备/执行互斥。CLI 返回内容按 UTF-8 增量解码并处理无换行尾帧；准备期取消和外部忙状态均有回归测试。
 - 手机接管失败、写者冲突或受理状态不明时保留消息供手动重试，绝不自动改走 exec。Codex 不投屏原桌面窗口；原线程被桌面持有时需先退出原会话再接管。
@@ -81,9 +81,9 @@ app-server 提供 `thread/resume`、`turn/start`、原生 `turn/steer`、`turn/i
 
 **要让「手机批权限」真生效**：可申请 `approvalPolicy: "untrusted"`（仍须通过基线比较；真实原生审批闭环待验）。`on-request` 不足以稳定触发审批。`hostRequestCount: 0` 只说明那一轮没有审批请求，不能单独证明审批关闭或批准链路可用。
 
-### 不支持的交互式请求
+### 交互式请求（手机问答卡片）
 
-`item/tool/requestUserInput` 默认不可用（Default mode 下模型以文字提问；这是模式观察，不是协议永久不可用）。协议应答形状为 `{"answers":{"questionId":{"answers":["user text"]}}}`（按问题 id 映射；不能写成 answers 数组），**绝不代用户自动选第一个答案**。`mcpServer/elicitation/request`、`account/chatgptAuthTokens/refresh`、`attestation/generate` 等未实现时给安全的 unsupported / 取消结果并收敛状态；不得静默挂起或输出秘密。
+`item/tool/requestUserInput`（工具向用户提问）与 `mcpServer/elicitation/request`（MCP 输入收集）在手机端渲染问答卡片（HostRequestCard `kind: "question"`）：`questions` 形如 `{id, header, question, options:[{label, description}]}`（无 options 为自由文本；elicitation 按 `requestedSchema.properties` 映射，enum 转选项），用户逐题作答后提交。协议应答形状为 `{"answers":{"questionId":{"answers":["user text"]}}}`（按问题 id 映射；不能写成 answers 数组），**绝不代用户自动选第一个答案**：超时 / turn 终态 / detach / 取消一律 respondError 明确告知模型「用户未回答」。问题文本过脱敏预览（凭据/秘密不出手机）。`account/chatgptAuthTokens/refresh`、`attestation/generate` 与未知方法仍给安全的 unsupported / 取消结果并收敛状态；不得静默挂起或输出秘密。
 
 ## 协议契约要点
 
@@ -182,7 +182,7 @@ hub 已支持配置 codexBin，并显示所选二进制版本与线程 cliVersio
 - daemon start 因缺 standalone 安装失败；没有安装、共享 daemon 或桌面 rejoin 的成功证据，不能推导安装后一定能连接桌面。
 - rollout 解析可读新版消息、工具与 steer 输入；曾见 unknown 工具名与空 assistant 气泡（后者已在渲染层与快照层过滤，见「已知限制」）。改进解析器应以受控 fixture 验证。
 - 观察到 tokenUsage、rateLimits、account 更新通知（可作增强）；账号通知与响应只输出白名单元数据，绝不输出 token 或完整正文。
-- `exec` 在非 git / 非 trusted cwd 拒收；app-server 可在实验 cwd 起 thread。通道前置条件不同，不应为排障自动增加绕过检查或放宽权限参数。
+- `exec` 在非 git / 非 TUI 信任目录的 cwd 拒收；app-server 可在实验 cwd 起 thread。hub 平行通道以 `--skip-git-repo-check` 豁免该入口防呆（2026-10-23 实测：0.163 下 `Not inside a trusted directory and --skip-git-repo-check was not specified.` 拒收所有非 git 会话消息，config 的 `trust_level` 条目对 exec 无效；用户策略明确为默认信任）。该 flag 只豁免目录检查、不触碰审批/沙箱；`--dangerously-bypass-*` 红线不变。
 
 ### 冷启耗时
 
@@ -287,8 +287,8 @@ no rollout found for thread id <uuid>
 2. `thread/list` 不可靠，列表必须自研扫描。
 3. daemon / 共享形态需要 standalone 安装，npm 安装拿不到「与桌面 app 共享同一 thread」。
 4. 冷启成本高（内置 MCP 最长 23s），必须长驻 + 预热。
-5. `requestUserInput` 默认不可用。
-6. codex 的策略事实源是用户 `~/.codex/config.toml`，hub 默认 `inherit` 不覆盖 → 用户配了 never + danger-full-access 时接管后一条审批请求都不会有（见「审批空转」）；claude 侧的权限链是 hub 自起的 bridge（`--permission-mode manual`），行为可控。
+5. `requestUserInput` / elicitation 走手机问答卡片；未作答绝不代答（超时明确告知模型）。
+6. codex 的策略事实源是用户 `~/.codex/config.toml`，hub 默认 `inherit` 不覆盖 → 用户配了 never + danger-full-access 时接管后一条审批请求都不会有（见「审批空转」）；claude 侧的权限档位由 hub 配置 `claudeDriver.permissionMode` 统一决定（默认 `bypassPermissions` 最高权限、全自动，非 bypass 档位经 hub 自起的 bridge 走手机审批）——注意两侧哲学不对称：codex 只允许收紧、claude 默认放宽到最高，改档位可回退。
 7. hub 自己写 rollout 有 meta 兼容坑（见「session_meta 最小字段集」）；claude 侧同类坑已以 `isMeta` 占位行实测规避。
 8. 接管通道不注入 provider env、平行通道注入（见「通道差异」）→ 同一会话两通道行为不一致。
 
@@ -298,7 +298,7 @@ no rollout found for thread id <uuid>
 - **新建会话 meta 依赖最小字段集**（`cli_version`、`model_provider`）：修复已落地（解析失败绝不落盘），隔离线程的原生 resume 已通过；首条模型消息与平行通道仍待实测。
 - **thread/start 未持久化不能跨进程 resume**：hub 重启恢复接管、detach 后回收再 attach 可能撞上 `no rollout found for thread id`。
 - **审批空转**：用户 config.toml 配 never + danger-full-access 时接管后零审批；手机批权限需显式配 `untrusted`；`on-request` 不足以稳定触发。effectivePolicy 的审批与沙箱分开呈现；仅 never 判定为不请求操作审批。
-- **requestUserInput / elicitation 不可用**：明确拒绝/unsupported，模型以文字提问；绝不代答。
+- **requestUserInput / elicitation 走手机问答卡片**：逐题选项/自由文本应答；未作答（超时/取消/收尾）明确告知模型未回答、绝不代答；问题文本脱敏后才下发。
 - **冷启成本高**：内置 MCP 最长 23s，需长驻 + 预热。
 - **可重试错误不当终态已实现**（`willRetry:true` 不下发假报错），待真机弱网/重连场景回归。
 - **空气泡过滤已实现**：验收口径为「不得渲染出空气泡（live 与快照同口径）」——web 层 `isEmptyAssistant` 过滤 + 快照层（`codex-rollout`）过滤；driver 侧 `endItem` 仍可能发 `text:""` 的 message_end，但不会到达 UI。
@@ -330,7 +330,7 @@ no rollout found for thread id <uuid>
 | 写者互斥的错误码判定 | `-32600 already has an active writer` 已真机观测，判定已改为先判错误码、文案正则降为兜底；仍需回归：旧版本（无错误码或码不同）走文案兜底时的 409 归类 |
 | 可重试错误不当终态 | `willRetry:true` 不得下发 `PROMPT_FAILED`（已实现）；真机复测弱网/重连场景，确认手机无假报错且真实失败原因不被吞 |
 | 空气泡回归 | 验收口径「不得渲染出空气泡（live 与快照同口径）」（已实现）；回归确认 text="" 且无 toolCalls 的 message_end 不到达前端 |
-| requestUserInput | 模式 / capability 的可用条件；用户答案正确映射，未实现时安全取消 |
+| requestUserInput / elicitation | 手机问答卡片渲染、用户答案正确映射（双层 answers 形状）、未作答超时 respondError 不代答、问题文本脱敏 |
 | 桌面持有线程 / daemon / queue --remote | 单独获得授权后受控验证；自持进程实验不覆盖该范围 |
 | detach 与 writer 释放 | 验证 unsubscribe 宽限期、关闭进程、崩溃后的锁释放和重复 attach |
 | Windows / Linux | 当前真实观察仅 macOS |

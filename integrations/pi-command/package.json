@@ -1,6 +1,6 @@
 {
   "name": "@agent-hub/pi-command",
-  "version": "0.1.0",
+  "version": "0.3.0-beta.2",
   "private": true,
   "type": "module",
   "license": "MIT",
@@ -9,7 +9,10 @@
     "url": "git+https://github.com/newObjectccc/agent-hub.git",
     "directory": "integrations/pi-command"
   },
-  "keywords": ["agent-hub", "pi-extension"],
+  "keywords": [
+    "agent-hub",
+    "pi-extension"
+  ],
   "description": "pi 扩展：接收 agent-hub 反向指令（心跳/长轮询/回执），手机消息注入终端 pi 会话（E3 双模式会话驱动）",
   "scripts": {
     "build": "tsc -p tsconfig.json",

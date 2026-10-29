@@ -89,7 +89,7 @@
 
 ### T14 体验与知情权（P2）✅
 - `SESSION_CORRUPT` 中文可行动文案（保留原始错误尾巴）；错误类 notice 常驻不 6s 消失；切后台/锁屏回来立即对账
-- 双模式说明 sheet 无条件首弹 + 按 source 明示权限真相（pi：工具真实执行且无人工批准；claude：manual 拒需确认工具）
+- 双模式说明 sheet 无条件首弹 + 按 source 明示权限真相（pi：工具真实执行且无人工批准；claude：当时硬编码 manual 拒需确认工具——现已由 `claudeDriver.permissionMode` 决定，默认 bypassPermissions 全自动执行、无人工批准，见 CHANGELOG「Claude 默认最高权限」）
 
 ### 真机验证（真实浏览器 + 独立验证实例）抓到并修复 3 个单测覆盖不到的 bug ✅
 - 闸门被 tail 启发式回写绕过（WS 握手启动 tail，对「只有 user 消息」的文件置 idle 回写 statuses → 同窗口先 409 后 202 且真执行）→ statuses 加 `source: own|tail`，闸门只信 own
@@ -107,7 +107,7 @@
 
 ## Claude 接入（v0.2 基础能力 / v0.3 接管与可靠性）
 
-- ✅ 会话六契约（列表/详情/prompt/abort/create/fork）+ stream-json 流式 + 安全约束（manual 权限、不落凭据）
+- ✅ 会话六契约（列表/详情/prompt/abort/create/fork）+ stream-json 流式 + 安全约束（不落凭据；权限档位当时硬编码 manual，现已配置化为 `claudeDriver.permissionMode`、默认 bypassPermissions）
 - ✅ 消息级实时旁观：WS tail 按 source 注入 transcript 解析器（终端跑的 claude 会话同样实时）
 - ✅ 子代理面板：Task/Agent sidechain 解析 → SubAgentActivityDto（当前工具/输出摘要/运行时长/结果），同 pi 口径
 - ✅ v0.3 接管模式（hub 新建 CLI 进程续接同一会话，非原 TUI 注入，见 [CLAUDE_DRIVER.md](CLAUDE_DRIVER.md)）：stdin 真用户 turn、工具间隙插话、MCP bridge 手机批权限、control interrupt 中止、tmux 投屏；busy 检查与两次静默窗降低冲突风险，但不提供进程锁

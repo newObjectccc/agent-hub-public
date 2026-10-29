@@ -2,8 +2,8 @@
  * 会话驱动来源标注（心理预期管理）：
  * 1. panelDriven 纯函数：JSON 解析容错 / 稳定序列化 / drivenBy 判定
  * 2. PanelDrivenStore 持久化：mark → 落盘 → 新实例重启后仍记得（data/panel-driven.json）
- * 3. 路由：POST prompt 接受 → lastDrivenBy=panel；未驱动会话 → terminal；
- *    409 busy 未接受不标注；/compact 接受同样标注
+ * 3. 路由：POST prompt 接受 → lastDrivenBy=panel；有消息未驱动 → terminal；
+ *    无消息空会话 → 不下发（无驱动史）；409 busy 未接受不标注；/compact 接受同样标注
  */
 import { makeFakeDashboard } from "./fakeDashboard.js";
 import { strict as assert } from "node:assert";
@@ -50,7 +50,7 @@ const sessionFixture: SessionListItem = {
   name: null,
   cwd: "/tmp/demo",
   updatedAt: "2026-02-18T12:00:00.000Z",
-  messageCount: 0,
+  messageCount: 3,
   status: "idle",
   lastUserMessage: null,
   lastAssistantMessage: null,
@@ -58,11 +58,11 @@ const sessionFixture: SessionListItem = {
   isSubAgent: false,
 };
 
-function makeFakeHub(promptResult: PromptResult): SessionHubLike {
+function makeFakeHub(promptResult: PromptResult, fixture: SessionListItem = sessionFixture): SessionHubLike {
   return {
     getStatus: () => "idle",
-    listSessions: async () => [sessionFixture],
-    findSession: async (id: string) => (id === "sess-1" ? sessionFixture : null),
+    listSessions: async () => [fixture],
+    findSession: async (id: string) => (id === fixture.id ? fixture : null),
     loadMessages: async (): Promise<MessageDto[]> => [],
     search: async (): Promise<SearchResultDto[]> => [],
     loadTree: async (): Promise<SessionTreeDto | null> => ({ entries: [], activePath: [] }),
@@ -103,10 +103,12 @@ describe("panelDriven: 纯函数", () => {
     assert.deepEqual([...parsePanelDriven(raw)], ["s1", "s2"]);
   });
 
-  it("drivenByOf：面板驱动过 → panel，否则 terminal", () => {
+  it("drivenByOf：面板驱动过 → panel；有消息未驱动 → terminal；空会话 → 无驱动史（undefined）", () => {
     const store = fakeStore(["s-panel"]);
-    assert.equal(drivenByOf(store, "s-panel"), "panel");
-    assert.equal(drivenByOf(store, "s-terminal"), "terminal");
+    assert.equal(drivenByOf(store, "s-panel", 5), "panel");
+    assert.equal(drivenByOf(store, "s-panel", 0), "panel");
+    assert.equal(drivenByOf(store, "s-terminal", 5), "terminal");
+    assert.equal(drivenByOf(store, "s-empty", 0), undefined);
   });
 });
 
@@ -146,7 +148,7 @@ describe("panelDriven: PanelDrivenStore 持久化", () => {
 });
 
 describe("panelDriven 路由：lastDrivenBy 标注与提示契约", () => {
-  it("GET /api/sessions / :id 未驱动 → terminal；POST prompt 接受 → panel（持久集合）", async () => {
+  it("GET /api/sessions / :id 有消息未驱动 → terminal；POST prompt 接受 → panel（持久集合）", async () => {
     const store = fakeStore();
     const app = await createApp({
       hub: makeFakeHub({ accepted: true, mode: "prompt" }),
@@ -221,6 +223,28 @@ describe("panelDriven 路由：lastDrivenBy 标注与提示契约", () => {
       assert.equal(res.statusCode, 202);
       assert.deepEqual((res.json() as { handled?: string }).handled, "compact");
       assert.deepEqual(store.marked, ["sess-1"]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("GET /api/sessions 空会话（无消息）→ lastDrivenBy 不下发（无驱动史，不触发默认接管）", async () => {
+    const store = fakeStore();
+    const emptyFixture: SessionListItem = { ...sessionFixture, id: "sess-empty", messageCount: 0 };
+    const app = await createApp({
+      hub: makeFakeHub({ accepted: true, mode: "prompt" }, emptyFixture),
+      kpi: { getCards: () => [] },
+      dashboard: makeFakeDashboard(),
+      config: { ...DEFAULT_CONFIG },
+      systemInfo: async () => systemFixture,
+      webRoot: null, appLock: fakeUnlockedAppLock(),
+      panelDriven: store,
+    });
+    try {
+      const list = await app.inject({ method: "GET", url: "/api/sessions" });
+      assert.equal((list.json() as { sessions: SessionListItem[] }).sessions[0].lastDrivenBy, undefined);
+      const detail = await app.inject({ method: "GET", url: "/api/sessions/sess-empty" });
+      assert.equal((detail.json() as { session: SessionListItem }).session.lastDrivenBy, undefined);
     } finally {
       await app.close();
     }

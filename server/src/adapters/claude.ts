@@ -12,16 +12,18 @@
  * ── 安全约束（硬规则）─────────────────────────────────────────────────────
  * 1. 只走本地 spawn，不引入任何远程 SDK / 网络驱动；不读取、不记录、不回显任何凭据
  *    （ANTHROPIC_API_KEY 等仅随子进程 env 继承传递，绝不打印）。
- * 2. `--permission-mode manual`：不用用户 settings 里的 bypassPermissions，
- *    保证 claude 无法在无人确认的情况下执行破坏性操作（headless 下需确认的工具一律拒绝）。
- *    不传 `--dangerously-skip-permissions`、不传 `--allowedTools`。
+ * 2. 权限档位由 hub 配置 `claudeDriver.permissionMode` 决定（默认 bypassPermissions，
+ *    产品决策：手机 = 对本机 agent 的全权遥控，工具全自动执行、无人工审批），
+ *    经官方 `--permission-mode <mode>` 下发（inherit 时不下发 flag、沿用用户 settings）。
+ *    绝不传 `--dangerously-skip-permissions`、不传 `--allowedTools`——提权只走
+ *    --permission-mode 官方档位通道；危险 flag 红线与档位无关，任何档位都成立。
  * 3. 模型输出的 stderr 只保留尾部截断预览用于错误提示，不落盘。
  *
  * ── 两条执行路径的边界（防误改）──────────────────────────────────────────
- * 本文件的「manual」硬约束只管 parallel 路径（spawn-per-message，无人在环）。
- * hub 驱动接管路径（adapters/claude-driver.ts）是用户显式接管：人在环、手机逐单批
- * 权限（--permission-prompt-tool bridge），权限模式跟随用户 settings（bypass 用户全自动），
- * 放开 manual 是产品语义而非漏洞。请勿把两路径的权限策略「统一收紧」。
+ * parallel 路径（本文件，spawn-per-message）与 hub 驱动接管路径
+ * （adapters/claude-driver.ts）共用同一 permissionMode 配置，attach/detach 切换时
+ * 权限语义不跳变。改档位默认值属产品语义变更，须同步改文档与前端文案
+ * （AttachIntroSheet / README / docs/CLAUDE_DRIVER.md），勿在此私自改动档位。
  * ─────────────────────────────────────────────────────────────────────────
  */
 import { spawn, type ChildProcess } from "node:child_process";
@@ -29,6 +31,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { mkdir, appendFile, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { ErrorCodes, HubError } from "../errors.js";
+import type { ClaudePermissionMode } from "../config.js";
 import type { PromptResult } from "../sessions/hub.js";
 import { appendAttachmentHints } from "../uploads.js";
 import { decidePromptAction, parsePromptMode } from "../sessions/prompt-policy.js";
@@ -39,6 +42,14 @@ import {
   loadClaudeProviderEnv,
   mergeClaudeEnvSync,
 } from "./claude-env.js";
+import {
+  buildMcpConfigJson,
+  ENV_LIVE_TOKEN,
+  ENV_LIVE_URL,
+  ENV_SESSION_ID,
+  PERM_TOOL_FULL_NAME,
+} from "./claude-host-protocol.js";
+import type { HostRequestRegistry } from "./host-request-registry.js";
 import {
   claudeSummaries,
   encodeClaudeProjectDir,
@@ -66,6 +77,22 @@ export interface ClaudeAdapterOptions {
   driverBusy?: (id: string) => boolean;
   /** 已接管会话的真实运行态，未接管返回 null。 */
   driverStatus?: (id: string) => SessionStatus | null;
+  /**
+   * 权限档位（与 driver 接管路径共用同一配置，默认 bypassPermissions 最高权限）。
+   * inherit = 不下发 --permission-mode flag，沿用用户 settings。
+   */
+  permissionMode?: ClaudePermissionMode;
+  /**
+   * 权限请求登记表（与 driver 接管路径共用同一实例：手机端同一套审批卡片 UI）。
+   * run 结束/abort/关闭时挂起请求一律 deny 收尾。
+   */
+  hostRequests?: Pick<HostRequestRegistry, "cancelSession">;
+  /** MCP permission bridge 脚本绝对路径；null/缺省 = 不挂 bridge（无审批通道） */
+  bridgeScriptPath?: string | null;
+  /** bridge 回连 hub 地址（挂 bridge 时注入 env） */
+  liveUrl?: string;
+  /** auth.token（非空时 bridge 带 Bearer） */
+  liveToken?: string;
 }
 
 /** stderr 预览上限（错误提示用） */
@@ -97,6 +124,13 @@ export class ClaudeAdapter implements SessionAdapter {
   /** 防双写（D8）：hub 驱动接管判定（构造注入） */
   private readonly driverBusy?: (id: string) => boolean;
   private readonly driverStatus?: (id: string) => SessionStatus | null;
+  /** 权限档位（默认 bypassPermissions；inherit = 不下发 flag） */
+  private readonly permissionMode: ClaudePermissionMode;
+  /** 权限请求登记表（与接管路径共用；缺省不收尾 = 无审批通道） */
+  private readonly hostRequests?: Pick<HostRequestRegistry, "cancelSession">;
+  private readonly bridgeScriptPath: string | null;
+  private readonly liveUrl: string;
+  private readonly liveToken: string;
   private readonly running = new Map<string, RunningRun>();
   private readonly pendingPrompts = new Map<string, Set<{ aborted: boolean }>>();
   private readonly queues = new Map<string, PendingPrompt[]>();
@@ -124,6 +158,11 @@ export class ClaudeAdapter implements SessionAdapter {
     this.claudeBin = options.claudeBin ?? "claude";
     this.driverBusy = options.driverBusy;
     this.driverStatus = options.driverStatus;
+    this.permissionMode = options.permissionMode ?? "bypassPermissions";
+    this.hostRequests = options.hostRequests;
+    this.bridgeScriptPath = options.bridgeScriptPath ?? null;
+    this.liveUrl = options.liveUrl ?? "";
+    this.liveToken = options.liveToken ?? "";
     // tail 的 status 事件只走 WS 广播，不回写会让 getStatus 与 WS 显示分叉（镜像 hub.ts 同机制）
     this.unregisterTailStatus = registerTailStatusSink((id, status) => {
       this.statuses.set(id, { status, at: Date.now() });
@@ -132,6 +171,11 @@ export class ClaudeAdapter implements SessionAdapter {
   }
 
   isLive(id: string): boolean {
+    return this.running.has(id);
+  }
+
+  /** parallel run 活跃判定（driver 权限请求守卫用：attach 或 parallel run 在环才挂起审批） */
+  hasActiveRun(id: string): boolean {
     return this.running.has(id);
   }
 
@@ -496,6 +540,8 @@ export class ClaudeAdapter implements SessionAdapter {
   async abort(id: string): Promise<void> {
     for (const attempt of this.pendingPrompts.get(id) ?? []) attempt.aborted = true;
     this.queues.delete(id);
+    // 挂起的权限请求立即 deny 收尾（手机卡片同步消失，不等 TTL/进程退出）
+    this.hostRequests?.cancelSession(id, "已中止当前任务", "cancelled");
     const run = this.running.get(id);
     if (!run) return;
     run.aborted = true;
@@ -512,7 +558,8 @@ export class ClaudeAdapter implements SessionAdapter {
       clearInterval(this.sweepTimer);
       this.sweepTimer = null;
     }
-    for (const run of this.running.values()) {
+    for (const [id, run] of this.running) {
+      this.hostRequests?.cancelSession(id, "server 正在关闭", "cancelled");
       this.killChild(run.child);
     }
     this.running.clear();
@@ -557,8 +604,13 @@ export class ClaudeAdapter implements SessionAdapter {
     if (this.disposed) {
       throw new HubError(ErrorCodes.INTERNAL, "server 正在关闭", 503);
     }
-    // spawn 参数固定安全集：不加 --dangerously-skip-permissions / --allowedTools；
-    // --permission-mode manual 覆盖用户 settings 的 bypassPermissions（见文件头安全约束）
+    // 权限档位由配置决定（默认 bypassPermissions 最高权限，见文件头安全约束）：
+    // 非 inherit 显式下发官方 --permission-mode；inherit 不下发、由 claude 沿用用户 settings。
+    // 绝不加 --dangerously-skip-permissions / --allowedTools（危险 flag 红线与档位无关）。
+    // 非 bypass 档位挂 MCP permission bridge：需确认的工具挂起等手机批/拒（与接管路径同一
+    // 审批通道、同一套卡片 UI）；bypass 运行不产生权限请求（E2 实测），不挂。
+    // inherit 保守挂 bridge（沿用 settings 的 bypass 用户不产生请求，空转无害）。
+    const bridgeNeeded = this.permissionMode !== "bypassPermissions" && this.bridgeScriptPath !== null;
     const args = [
       "-p",
       text,
@@ -568,15 +620,34 @@ export class ClaudeAdapter implements SessionAdapter {
       "stream-json",
       "--verbose",
       "--include-partial-messages",
-      "--permission-mode",
-      "manual",
     ];
+    if (this.permissionMode !== "inherit") {
+      args.push("--permission-mode", this.permissionMode);
+    }
+    if (bridgeNeeded) {
+      args.push(
+        "--permission-prompts",
+        "host",
+        "--permission-prompt-tool",
+        PERM_TOOL_FULL_NAME,
+        "--mcp-config",
+        buildMcpConfigJson(this.bridgeScriptPath),
+      );
+    }
+    const env: NodeJS.ProcessEnv = {
+      // 自定义 provider（~/.zshrc 的 ANTHROPIC_BASE_URL 等）随 spawn 注入，
+      // 不依赖 pm2/服务进程的 env（见 claude-env.ts）
+      ...mergeClaudeEnvSync(process.env),
+    };
+    if (bridgeNeeded) {
+      env[ENV_SESSION_ID] = session.id;
+      if (this.liveUrl !== "") env[ENV_LIVE_URL] = this.liveUrl;
+      if (this.liveToken !== "") env[ENV_LIVE_TOKEN] = this.liveToken;
+    }
     const child = this.spawnFn(this.claudeBin, args, {
       cwd: session.cwd !== "" ? session.cwd : undefined,
       stdio: ["ignore", "pipe", "pipe"],
-      // 自定义 provider（~/.zshrc 的 ANTHROPIC_BASE_URL 等）随 spawn 注入，
-      // 不依赖 pm2/服务进程的 env（见 claude-env.ts）
-      env: mergeClaudeEnvSync(process.env),
+      env,
       windowsHide: true,
     });
     const translator = new ClaudeStreamTranslator();
@@ -599,6 +670,8 @@ export class ClaudeAdapter implements SessionAdapter {
     });
 
     const finish = (errored: boolean): void => {
+      // 本轮进程结束：挂起的权限请求一律 deny 收尾（bridge 随进程退出，HTTP 长挂起立即返回）
+      this.hostRequests?.cancelSession(session.id, "claude 进程已退出", "cancelled");
       if (this.running.get(session.id) !== run) return; // 已被新 run 顶替
       this.running.delete(session.id);
       // result 事件未到（崩溃/被杀）：flush 未竟消息 + 兜底收尾（abort 已收尾则跳过）

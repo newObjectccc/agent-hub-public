@@ -75,6 +75,21 @@ export interface TerminalAttachInfo {
   responsive?: boolean;
 }
 
+/**
+ * 问答题（Codex 工具向用户提问 / MCP elicitation，`kind === "question"` 下发）：
+ * `options` 为 null = 自由文本题；非空 = 单选选项（label 唯一，描述可空）。
+ */
+export interface HostUserQuestion {
+  /** questionId，应答映射键 */
+  id: string;
+  /** 标题（小标题），可空 */
+  header: string | null;
+  /** 问题文本 */
+  question: string;
+  /** 选项列表；null = 自由文本 */
+  options: Array<{ label: string; description: string | null }> | null;
+}
+
 /** host 权限请求（hub 驱动 claude 会话的手机批权限，契约 §12） */
 export interface HostRequestDto {
   id: string;
@@ -88,9 +103,19 @@ export interface HostRequestDto {
   turnId?: string;
   itemId?: string;
   permissions?: unknown;
+  /** 问答题（仅 kind === "question" 下发）；审批请求无此字段 */
+  questions?: HostUserQuestion[] | null;
   createdAt: number;
   expiresAt: number | null;
 }
+
+/**
+ * POST /api/sessions/:id/host-requests/:requestId 应答 body（契约二选一）：
+ * 审批现状 `{ outcome: "allow" | "deny" }`；问答提交 `{ answers: { [questionId]: string[] } }`。
+ */
+export type HostRequestBody =
+  | { outcome: "allow" | "deny" }
+  | { answers: Record<string, string[]> };
 
 export type HostRequestOutcome = "allow" | "deny" | "timeout" | "cancelled";
 

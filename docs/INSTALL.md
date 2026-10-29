@@ -25,9 +25,9 @@ agent-hub remote
 
 不使用 Tailscale 时，安装 npm 包后运行 `agent-hub start`（默认 `http://127.0.0.1:7700`）；可信局域网用 `agent-hub start --lan`，手机打开电脑的局域网地址。已有 headscale / 反向代理可沿用自己的网络配置，见 [HEADSCALE.md](HEADSCALE.md) 与 [安全说明](../SECURITY.md)。HTTP 局域网地址的 PWA 能力受限。
 
-源码版补充了 `remote --lan` 和 `remote --no-tailscale`，后者只跳过 Tailscale 配置，保留已有绑定地址；`setup --autostart --no-tailscale` 可跳过自启动的 Tailscale 自动检测。npm `0.3.0-beta.1` 仍使用上面的 `start` 命令。
+Beta.2 起提供 `remote --lan` 和 `remote --no-tailscale`，后者只跳过 Tailscale 配置，保留已有绑定地址；`setup --autostart --no-tailscale` 可跳过自启动的 Tailscale 自动检测。npm `0.3.0-beta.1` 仍使用上面的 `start` 命令。
 
-源码版会自动查找 PATH、macOS Tailscale App 内置 CLI 和 Windows 默认安装目录，并在缺失时给出对应平台的官方安装说明。npm 不捆绑或静默安装 VPN 服务；客户端安装、系统网络扩展确认与账号登录由本人完成。可参考 [macOS](https://tailscale.com/docs/install/mac)、[Linux](https://tailscale.com/docs/install/linux)、[Windows](https://tailscale.com/docs/install/windows) 官方步骤；macOS 脚本调用内置 CLI 时使用官方支持的 `TAILSCALE_BE_CLI=1`，见 [CLI 说明](https://tailscale.com/docs/reference/tailscale-cli?tab=macos)。
+Beta.2 起会自动查找 PATH、macOS Tailscale App 内置 CLI 和 Windows 默认安装目录，并在缺失时给出对应平台的官方安装说明。npm 不捆绑或静默安装 VPN 服务；客户端安装、系统网络扩展确认与账号登录由本人完成。可参考 [macOS](https://tailscale.com/docs/install/mac)、[Linux](https://tailscale.com/docs/install/linux)、[Windows](https://tailscale.com/docs/install/windows) 官方步骤；macOS 脚本调用内置 CLI 时使用官方支持的 `TAILSCALE_BE_CLI=1`，见 [CLI 说明](https://tailscale.com/docs/reference/tailscale-cli?tab=macos)。
 
 首次 Serve 需要 MagicDNS 与 HTTPS 证书。CLI 若给出启用地址，使用 tailnet 管理账号打开确认；也可在 Tailscale 管理后台 DNS 页开启。授权后重新执行 `agent-hub remote`。以打印 **“Tailscale Serve 已开启（HTTPS）”** 和 `https://<node>.<tailnet>.ts.net` 为成功信号，单独看到本机地址不代表远程已通。
 
@@ -59,6 +59,8 @@ agent-hub setup --autostart
 ```
 
 注册自启动会尝试立即启动服务，操作前先 Ctrl+C 停止前台实例；不要两份实例争用 7700。不要从临时 npx 目录注册自启。macOS / Linux / Windows 分别使用 launchd / systemd user / 任务计划程序，细则见 [PLATFORM.md](PLATFORM.md)。后台服务需继承相应模型环境；自定义网关仅配置在交互 shell 时，先核对前台/后台环境差异。
+
+配置必须是合法 JSON 对象。未知顶层键、未知 Claude 配置键或非法 `claudeDriver.permissionMode` 会阻止启动；修正键名/档位后重试，不会自动回落最高权限。`//` 开头的说明键仍可保留。
 
 ## 5. 常见问题
 

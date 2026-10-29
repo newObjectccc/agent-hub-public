@@ -7,7 +7,7 @@ export type SessionStatus = "idle" | "running" | "error";
 
 /**
  * 会话最后驱动来源（心理预期管理）：面板（手机/网页 POST prompt）或终端（电脑 pi/claude）。
- * 可缺省（老 server/容错路径）：缺省视为 terminal。
+ * DTO 缺省 = 从未被任何端驱动过（无驱动史，如刚创建的空会话）。
  */
 export type SessionDrivenBy = "panel" | "terminal";
 
@@ -40,7 +40,8 @@ export interface SessionListItem {
   parentSessionId?: string | null;
   /**
    * 最后驱动来源（面板驱动过即 "panel"，只增不减）：手机面板发消息 = server 的 pi SDK
-   * 实例驱动同一会话文件，电脑终端 pi 需 pi --resume 重开才能看到。可缺省按 terminal。
+   * 实例驱动同一会话文件，电脑终端 pi 需 pi --resume 重开才能看到。
+   * 缺省 = 无驱动史（从未有任何消息，如刚创建的空会话）：不参与默认接管判定。
    */
   lastDrivenBy?: SessionDrivenBy;
   /** 终端驱动状态（E3 双模式）：pi=扩展心跳；claude=hub 驱动进程（可接管/已接管）。pi/claude 会话有值。 */
@@ -101,11 +102,27 @@ export interface EffectivePolicyDto {
   bypass: boolean;
 }
 
+/**
+ * 交互式问答题（Codex `item/tool/requestUserInput` / MCP elicitation → 手机问答卡片）。
+ * `id` 是应答映射键（answers 的 key），必须与下发时一致；`options: null` 表示自由文本。
+ * 文本字段一律经服务端脱敏（safePreview）+ 截断后下发，绝不透传原始工具入参。
+ */
+export interface HostUserQuestion {
+  /** questionId，应答映射键 */
+  id: string;
+  /** 标题（无标题时为 null） */
+  header: string | null;
+  /** 问题文本（脱敏预览后） */
+  question: string;
+  /** 选项；null = 自由文本 */
+  options: Array<{ label: string; description: string | null }> | null;
+}
+
 /** host 权限请求（hub 驱动 claude 会话的手机批权限，契约 §12） */
 export interface HostRequestDto {
   id: string;
   sessionId: string;
-  /** v1 仅 permission（question 预留：headless 无 AskUserQuestion，模型文字化提问） */
+  /** permission = 审批卡；question = 工具向用户提问（问答卡片，questions 随卡下发） */
   kind: "permission" | "question";
   /** 卡片标题（工具名 + 入参摘要） */
   title: string;
@@ -118,6 +135,8 @@ export interface HostRequestDto {
   turnId?: string;
   itemId?: string;
   permissions?: unknown;
+  /** 仅 kind === "question" 下发：问答卡片的题目列表（自由文本题 options 为 null） */
+  questions?: HostUserQuestion[] | null;
   createdAt: number;
   /** 人工应答超时（超时一律 deny，绝不自动 allow）；null=未知 */
   expiresAt: number | null;

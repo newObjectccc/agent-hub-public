@@ -1,6 +1,6 @@
 {
   "name": "@agent-hub/pi-live-feed",
-  "version": "0.1.0",
+  "version": "0.3.0-beta.2",
   "private": true,
   "type": "module",
   "license": "MIT",
@@ -9,7 +9,10 @@
     "url": "git+https://github.com/newObjectccc/agent-hub.git",
     "directory": "integrations/pi-live-feed"
   },
-  "keywords": ["agent-hub", "pi-extension"],
+  "keywords": [
+    "agent-hub",
+    "pi-extension"
+  ],
   "description": "pi 扩展：任意终端 pi 会话的实时事件流（思维链/流式回复/工具执行）推送给 agent-hub（POST /api/live/:sessionId）",
   "scripts": {
     "build": "tsc -p tsconfig.json",

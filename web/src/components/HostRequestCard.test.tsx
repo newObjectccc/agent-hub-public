@@ -53,9 +53,9 @@ describe("HostRequestCard", () => {
     expect(container.textContent).toContain("Bash: rm -rf build");
 
     click(Array.from(container.querySelectorAll("button")).find((b) => b.textContent === "允许") ?? null);
-    expect(onRespond).toHaveBeenCalledWith("call_1", "allow");
+    expect(onRespond).toHaveBeenCalledWith("call_1", { outcome: "allow" });
     click(Array.from(container.querySelectorAll("button")).find((b) => b.textContent === "拒绝") ?? null);
-    expect(onRespond).toHaveBeenCalledWith("call_1", "deny");
+    expect(onRespond).toHaveBeenCalledWith("call_1", { outcome: "deny" });
     unmount();
   });
 
@@ -86,6 +86,131 @@ describe("HostRequestCard", () => {
     const allow = Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.includes("允许"));
     click(allow ?? null);
     expect(onRespond).not.toHaveBeenCalled();
+    unmount();
+  });
+});
+
+/* ===== 问答卡片（kind === "question"：Codex 工具提问 / MCP elicitation） ===== */
+
+const questionRequest: HostRequestDto = {
+  id: "call_q",
+  sessionId: "s1",
+  kind: "question",
+  title: "MCP 需要你的输入",
+  detail: null,
+  createdAt: Date.now(),
+  expiresAt: Date.now() + 60_000,
+  questions: [
+    {
+      id: "q1",
+      header: "部署环境",
+      question: "部署到哪个环境？",
+      options: [
+        { label: "测试环境", description: "不影响线上" },
+        { label: "生产环境", description: null },
+      ],
+    },
+    {
+      id: "q2",
+      header: null,
+      question: "还有什么要备注的吗？",
+      options: null,
+    },
+  ],
+};
+
+function typeInto(el: Element | null, value: string): void {
+  expect(el).not.toBeNull();
+  const input = el as HTMLInputElement;
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+  act(() => {
+    setter.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+}
+
+function buttonByText(container: HTMLElement, text: string): HTMLButtonElement | null {
+  return (Array.from(container.querySelectorAll("button")).find((b) => b.textContent === text) as HTMLButtonElement | undefined) ?? null;
+}
+
+describe("HostRequestCard 问答卡片（kind=question）", () => {
+  it("渲染题目/选项/输入框", async () => {
+    const { container, unmount } = await render({ request: questionRequest });
+    expect(container.textContent).toContain("MCP 需要你的输入");
+    expect(container.textContent).toContain("部署环境");
+    expect(container.textContent).toContain("部署到哪个环境？");
+    expect(container.textContent).toContain("测试环境");
+    expect(container.textContent).toContain("不影响线上");
+    expect(container.textContent).toContain("还有什么要备注的吗？");
+    const inputs = container.querySelectorAll<HTMLInputElement>(".host-request-q-input");
+    expect(inputs.length).toBe(2);
+    expect(inputs[0].placeholder).toBe("或输入你的回答");
+    expect(container.textContent).toContain("提交回答");
+    expect(container.textContent).toContain("拒绝回答");
+    unmount();
+  });
+
+  it("点选项 + 提交 → 回调收到 { answers: { qid: [label] } }", async () => {
+    const { container, onRespond, unmount } = await render({ request: questionRequest });
+    click(buttonByText(container, "测试环境不影响线上"));
+    click(buttonByText(container, "提交回答"));
+    expect(onRespond).toHaveBeenCalledWith("call_q", { answers: { q1: ["测试环境"] } });
+    unmount();
+  });
+
+  it("自定义文本优先于选项", async () => {
+    const { container, onRespond, unmount } = await render({ request: questionRequest });
+    click(buttonByText(container, "生产环境"));
+    typeInto(container.querySelectorAll(".host-request-q-input")[0], "灰度发布");
+    click(buttonByText(container, "提交回答"));
+    expect(onRespond).toHaveBeenCalledWith("call_q", { answers: { q1: ["灰度发布"] } });
+    unmount();
+  });
+
+  it("全部未答时不能提交", async () => {
+    const { container, onRespond, unmount } = await render({ request: questionRequest });
+    const submit = buttonByText(container, "提交回答");
+    expect(submit).not.toBeNull();
+    expect(submit!.disabled).toBe(true);
+    click(submit);
+    expect(onRespond).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("至少回答一题");
+    unmount();
+  });
+
+  it("拒绝回答 → { outcome: deny }", async () => {
+    const { container, onRespond, unmount } = await render({ request: questionRequest });
+    click(buttonByText(container, "拒绝回答"));
+    expect(onRespond).toHaveBeenCalledWith("call_q", { outcome: "deny" });
+    unmount();
+  });
+
+  it("options 为 null 的题只显示输入框", async () => {
+    const { container, unmount } = await render({ request: questionRequest });
+    const blocks = Array.from(container.querySelectorAll(".host-request-q"));
+    expect(blocks.length).toBe(2);
+    const freeText = blocks[1];
+    expect(freeText.querySelector(".host-request-q-options")).toBeNull();
+    expect(freeText.querySelector(".host-request-q-input")).not.toBeNull();
+    // 仅答自由文本题也可提交，答案进 q2
+    typeInto(freeText.querySelector(".host-request-q-input"), "请加快上线");
+    const submit = buttonByText(container, "提交回答");
+    expect(submit!.disabled).toBe(false);
+    unmount();
+  });
+
+  it("提交失败：回调抛错 → 卡片保留 + 内联报错 + 输入不丢", async () => {
+    const onRespond = vi.fn().mockRejectedValue(new Error("网络错误"));
+    const { container, unmount } = await render({ request: questionRequest, onRespond });
+    click(buttonByText(container, "测试环境不影响线上"));
+    click(buttonByText(container, "提交回答"));
+    await act(async () => {});
+    expect(container.textContent).toContain("网络错误");
+    // 输入保留，可重试
+    const selected = container.querySelector(".host-request-q-option.selected");
+    expect(selected).not.toBeNull();
+    click(buttonByText(container, "提交回答"));
+    expect(onRespond).toHaveBeenCalledTimes(2);
     unmount();
   });
 });

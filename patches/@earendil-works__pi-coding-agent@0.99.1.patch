@@ -1,0 +1,39 @@
+diff --git a/npm-shrinkwrap.json b/npm-shrinkwrap.json
+index 477b404862505c4352815f04ecc2989d194f1d78..4b02f4b7969721bbd92af5b6d06f2513389b07e2 100644
+--- a/npm-shrinkwrap.json
++++ b/npm-shrinkwrap.json
+@@ -29,7 +29,7 @@
+ 				"quickjs-wasi": "3.6.2",
+ 				"semver": "7.8.5",
+ 				"typebox": "1.3.27",
+-				"undici": "8.10.2",
++				"undici": "8.12.2",
+ 				"yaml": "2.9.0"
+ 			},
+ 			"bin": {
+@@ -1879,9 +1879,9 @@
+ 			"license": "MIT"
+ 		},
+ 		"node_modules/undici": {
+-			"version": "8.10.2",
+-			"resolved": "https://registry.npmjs.org/undici/-/undici-8.10.2.tgz",
+-			"integrity": "sha512-/y4/bH9YNU5hi9NIrpOuvGXFcxrj3CMrV+/AYpowAYTpHn8gX/XPFjNy766FPoYY0miQhdW977JFWKGNhBdwyQ==",
++			"version": "8.12.2",
++			"resolved": "https://registry.npmjs.org/undici/-/undici-8.12.2.tgz",
++			"integrity": "sha512-XtuDWVdqTLr3NAxm2ly9/hU6kUsJOgGh1RASzMBbsw6aWCOaQzHdW+QQDfdERjfJ2V5vL5pRPa4RetO9UfivDg==",
+ 			"license": "MIT",
+ 			"engines": {
+ 				"node": ">=22.19.0"
+diff --git a/package.json b/package.json
+index 22b6fdcb43e81f4eb7f782c44e4d659293dcb544..52ef3acab4e7433c628ce28b00c0e339f92a45b1 100644
+--- a/package.json
++++ b/package.json
+@@ -69,7 +69,7 @@
+ 		"quickjs-wasi": "3.6.2",
+ 		"semver": "7.8.5",
+ 		"typebox": "1.3.27",
+-		"undici": "8.10.2",
++		"undici": "8.12.2",
+ 		"yaml": "2.9.0"
+ 	},
+ 	"overrides": {

@@ -1,6 +1,6 @@
 {
   "name": "@newobjectcccddd/agent-hub",
-  "version": "0.3.0-beta.1",
+  "version": "0.3.0-beta.2",
   "description": "Cross-platform pi/claude agent session hub: mobile PWA panel + chat + KPI, with Node server, pi extensions and CLI",
   "license": "MIT",
   "author": "newObjectccc",
@@ -37,7 +37,10 @@
     "server/dist/sessions/*.js",
     "web/dist",
     "SECURITY.md",
-    "docs/INSTALL.md"
+    "docs/INSTALL.md",
+    "npm-shrinkwrap.json",
+    "THIRD_PARTY_NOTICES.md",
+    "patches/*.patch"
   ],
   "repository": {
     "type": "git",
@@ -72,7 +75,8 @@
     "doctor": "node cli/check.js",
     "check": "node cli/check.js",
     "prepublishOnly": "pnpm -r build && node scripts/pack-smoke.mjs",
-    "test:install": "node scripts/install-smoke.mjs"
+    "test:install": "node scripts/install-smoke.mjs",
+    "release:shrinkwrap": "node scripts/update-npm-shrinkwrap.mjs"
   },
   "devDependencies": {
     "typescript": "^5.7.0"
@@ -82,7 +86,7 @@
     "@fastify/compress": "^9.2.0",
     "@fastify/cors": "^10.0.0",
     "@fastify/static": "^10.1.6",
-    "fastify": "^5.2.0",
+    "fastify": "^5.12.7",
     "ws": "^8.18.0"
   },
   "workspaces": [
@@ -91,5 +95,35 @@
     "cli",
     "integrations/pi-live-feed",
     "integrations/pi-command"
+  ],
+  "overrides": {
+    "undici": "8.12.2"
+  },
+  "pnpm": {
+    "overrides": {
+      "undici": "8.12.2"
+    },
+    "supportedArchitectures": {
+      "os": [
+        "darwin",
+        "linux",
+        "win32"
+      ],
+      "cpu": [
+        "x64",
+        "arm64"
+      ]
+    },
+    "patchedDependencies": {
+      "@earendil-works/pi-coding-agent@0.99.1": "patches/@earendil-works__pi-coding-agent@0.99.1.patch"
+    }
+  },
+  "bundledDependencies": [
+    "@earendil-works/pi-coding-agent",
+    "@fastify/compress",
+    "@fastify/cors",
+    "@fastify/static",
+    "fastify",
+    "ws"
   ]
 }

@@ -2,7 +2,7 @@
  * 配置加载：config/hub.config.json（可覆盖端口/目录）。
  * 监听地址安全规则：绝不明文绑定公网（拒绝 0.0.0.0 / :: 等通配地址）。
  */
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { isIPv4, isIPv6 } from "node:net";
@@ -21,6 +21,15 @@ export interface ClaudeDriverConfig {
   mirror: "tmux" | "off";
   /** attach 前 sessionFile 静默窗（ms，外部写入检测防双写） */
   externalQuietMs: number;
+  /**
+   * 权限档位，**同时管 parallel 与 driver 接管两路径**的 spawn `--permission-mode`
+   *（默认 bypassPermissions = 全自动无人审批，产品决策：手机 = 对本机 agent 的全权遥控）。
+   * `manual` / `default` / `acceptEdits` / `plan` = 需确认档位：**两条路径都走手机审批 bridge**
+   *（同一套 HostRequestCard 审批卡片）。`inherit` = 不下发 flag，沿用用户 settings 判定
+   *（缺省/损坏回退挂 bridge 兜底）。
+   * 本字段允许显式选择任一合法档位；非法值或拼错的字段拒绝加载，避免意外回落最高权限。
+   */
+  permissionMode: ClaudePermissionMode;
 }
 
 export interface HubConfig {
@@ -70,6 +79,21 @@ export const CODEX_SANDBOXES = ["inherit", "read-only", "workspace-write"] as co
 /** 历史版本可配、现已移除的「放宽」档位：老配置命中 → 告警并回落 inherit（不中断启动） */
 export const CODEX_RELAXED_TIERS: readonly string[] = ["never", "danger-full-access"];
 
+/**
+ * claude 权限档位（对齐 CLI `--permission-mode` 字面量 + `inherit` 逃生口）。
+ * 与 CODEX_* 的收紧集不同：本白名单是**双向**档位旋钮——默认 `bypassPermissions`（最高权限，
+ * 产品决策），也可显式收紧到 manual 等需确认档位。白名单只限制拼写，不表达安全方向。
+ */
+export const CLAUDE_PERMISSION_MODES = [
+  "bypassPermissions",
+  "manual",
+  "default",
+  "acceptEdits",
+  "plan",
+  "inherit",
+] as const;
+export type ClaudePermissionMode = (typeof CLAUDE_PERMISSION_MODES)[number];
+
 export const DEFAULT_CODEX_DRIVER_CONFIG: CodexDriverConfig = {
   enabled: true,
   defaultPolicy: "never",
@@ -87,6 +111,8 @@ export const DEFAULT_CLAUDE_DRIVER_CONFIG: ClaudeDriverConfig = {
   maxConcurrent: 3,
   mirror: "tmux",
   externalQuietMs: 3_000,
+  // 产品决策：手机创建/驱动的 Claude 会话默认最高权限（bypassPermissions，全自动无人审批）
+  permissionMode: "bypassPermissions",
 };
 
 export const DEFAULT_CONFIG: HubConfig = {
@@ -213,17 +239,44 @@ export interface LoadedConfig {
   warnings: string[];
 }
 
+function invalidConfig(message: string): Error & { code: "CONFIG_INVALID" } {
+  return Object.assign(new Error(`hub.config.json ${message}`), { code: "CONFIG_INVALID" as const });
+}
+
+/** 不回显未知键或原始值，避免把配置中的凭据/损坏 JSON 片段写入日志。 */
+function assertKnownConfigKeys(object: Record<string, unknown>, keys: readonly string[], section: string): void {
+  if (Object.keys(object).some(key => !key.startsWith("//") && !keys.includes(key))) {
+    throw invalidConfig(`${section}含未知或位置错误的字段；请按示例检查键名与所属层级`);
+  }
+}
+
 export function loadHubConfig(configDir: string, home = homedir()): LoadedConfig {
   const warnings: string[] = [];
   const file = join(configDir, "hub.config.json");
   let raw: RawConfig = {};
-  if (existsSync(file)) {
-    try {
-      raw = JSON.parse(readFileSync(file, "utf8")) as RawConfig;
-    } catch (err) {
-      warnings.push(`hub.config.json 解析失败，使用默认配置: ${(err as Error).message}`);
-      raw = {};
+  let text: string | undefined;
+  try {
+    text = readFileSync(file, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw invalidConfig("无法读取；请修复文件访问权限后重新启动");
     }
+  }
+  if (text !== undefined) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      throw invalidConfig("不是合法 JSON；请修复后重新启动，不会回落默认权限");
+    }
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      throw invalidConfig("顶层必须是对象；请修复后重新启动");
+    }
+    assertKnownConfigKeys(parsed as Record<string, unknown>, [
+      "port", "host", "sessionDir", "workspaceRoot", "kpiRefreshMinutes", "auth",
+      "allowOrigins", "allowLan", "claudeDriver", "codexBin", "codexDriver",
+    ], "顶层");
+    raw = parsed as RawConfig;
   }
 
   const config: HubConfig = {
@@ -280,22 +333,45 @@ export function loadHubConfig(configDir: string, home = homedir()): LoadedConfig
   if (typeof raw.kpiRefreshMinutes === "number" && raw.kpiRefreshMinutes > 0) {
     config.kpiRefreshMinutes = raw.kpiRefreshMinutes;
   }
-  if (raw.auth && typeof raw.auth === "object") {
+  if (raw.auth !== undefined) {
+    if (typeof raw.auth !== "object" || raw.auth === null || Array.isArray(raw.auth)) {
+      throw invalidConfig("的 auth 必须是对象");
+    }
+    assertKnownConfigKeys(raw.auth as Record<string, unknown>, ["enabled", "token"], "auth ");
+    if (raw.auth.enabled !== undefined && typeof raw.auth.enabled !== "boolean") {
+      throw invalidConfig("的 auth.enabled 必须是布尔值");
+    }
+    if (raw.auth.token !== undefined && typeof raw.auth.token !== "string") {
+      throw invalidConfig("的 auth.token 必须是字符串");
+    }
     config.auth = {
       enabled: raw.auth.enabled === true,
       token: typeof raw.auth.token === "string" ? raw.auth.token : "",
     };
   }
-  // 鉴权 fail-open 告警（D4）：enabled=true 且 token 为空（含缺失/非字符串被吞成空串）时，
-  // routes/ws 均「enabled 且 token 非空才校验」→ 鉴权不生效却无人知晓，必须显式告警（行为不变，防锁死零配置部署）
-  if (config.auth.enabled && config.auth.token === "") {
-    warnings.push("auth.enabled=true 但 token 为空：鉴权不会生效，请填写 auth.token 或关闭 enabled");
+  // 显式开启鉴权后必须有可用密钥；拒绝空值，避免带着“已开启”的配置无鉴权监听。
+  if (config.auth.enabled && config.auth.token.trim() === "") {
+    throw invalidConfig("的 auth.enabled=true 时必须填写非空 auth.token；拒绝无鉴权启动");
   }
 
-  // claudeDriver：逐字段校验，非法回默认（容错，不阻断启动）
+  // 权限配置不做静默容错：拼错、误放或损坏时在构造驱动/监听端口前拒绝加载。
   if (raw.claudeDriver !== undefined) {
-    if (typeof raw.claudeDriver === "object" && raw.claudeDriver !== null) {
+    if (typeof raw.claudeDriver === "object" && raw.claudeDriver !== null && !Array.isArray(raw.claudeDriver)) {
       const d = raw.claudeDriver as Record<string, unknown>;
+      assertKnownConfigKeys(d, [
+        "enabled", "defaultPolicy", "idleDetachMs", "maxConcurrent", "mirror", "externalQuietMs", "permissionMode",
+      ], "claudeDriver ");
+      let permissionMode: ClaudePermissionMode = DEFAULT_CLAUDE_DRIVER_CONFIG.permissionMode;
+      if (d.permissionMode !== undefined) {
+        if (
+          typeof d.permissionMode === "string" &&
+          (CLAUDE_PERMISSION_MODES as readonly string[]).includes(d.permissionMode)
+        ) {
+          permissionMode = d.permissionMode as ClaudePermissionMode;
+        } else {
+          throw invalidConfig(`的 claudeDriver.permissionMode 必须是 ${CLAUDE_PERMISSION_MODES.join(" | ")}；拒绝回落默认权限`);
+        }
+      }
       config.claudeDriver = {
         enabled: d.enabled !== false,
         defaultPolicy:
@@ -313,9 +389,10 @@ export function loadHubConfig(configDir: string, home = homedir()): LoadedConfig
           typeof d.externalQuietMs === "number" && d.externalQuietMs >= 0
             ? d.externalQuietMs
             : DEFAULT_CLAUDE_DRIVER_CONFIG.externalQuietMs,
+        permissionMode,
       };
     } else {
-      warnings.push("hub.config.json 的 claudeDriver 必须是对象，已使用默认配置");
+      throw invalidConfig("的 claudeDriver 必须是对象；拒绝回落默认权限");
     }
   }
 

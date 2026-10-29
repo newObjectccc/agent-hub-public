@@ -317,10 +317,23 @@ describe("驱动来源标注与预期提示条", () => {
     expect(localStorage.getItem("agent-hub.driverHint.v1:s1")).toBe("1");
   });
 
-  it("纯终端会话/全新会话不显示提示条（🖥 终端驱动徽章）", async () => {
+  it("纯终端会话（lastDrivenBy=terminal）→ 🖥 终端驱动徽章，无提示条", async () => {
+    mocks.getSession.mockResolvedValue({
+      session: { ...session, messageCount: 3, lastDrivenBy: "terminal" },
+      messages: [],
+      hasMore: false,
+      nextBefore: null,
+    });
     const el = await render();
     expect(el.querySelector(".driver-hint")).toBeNull();
     expect(el.querySelector(".badge.driven-terminal")).not.toBeNull();
+    expect(el.querySelector(".badge.driven-panel")).toBeNull();
+  });
+
+  it("全新会话（无驱动史）→ 不显示驱动徽章与提示条", async () => {
+    const el = await render();
+    expect(el.querySelector(".driver-hint")).toBeNull();
+    expect(el.querySelector(".badge.driven-terminal")).toBeNull();
     expect(el.querySelector(".badge.driven-panel")).toBeNull();
   });
 

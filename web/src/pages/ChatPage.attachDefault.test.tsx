@@ -76,7 +76,9 @@ const baseSession: SessionSummary = {
   name: "智能默认会话",
   cwd: "/tmp/demo",
   updatedAt: "2026-02-18T11:00:00.000Z",
-  messageCount: 0,
+  // 有历史消息：空会话闸门（attachDefaultWorthy：无消息且不 running 默认永不接管）
+  // 不适用于本文件的智能默认场景；新建空会话的不接管行为另有用例覆盖
+  messageCount: 2,
   status: "idle",
   lastUserMessage: null,
   lastAssistantMessage: null,
@@ -432,6 +434,48 @@ describe("claude hub 驱动接管默认策略（D3 active-only）", () => {
     expect(mocks.attachSession).not.toHaveBeenCalled();
     expect(modeLabel(el)).toContain("平行继续");
     expect(window.localStorage.getItem(PINNED_KEY)).toBeNull();
+  });
+
+  it("codex 源默认永远 📱 平行（写者互斥前提）：即使 defaultPolicy=always、running、终端在线也不自动接管", async () => {
+    mockDetail({ online: true, attached: false, driver: "hub", defaultPolicy: "always" }, "codex", {
+      status: "running",
+      lastDrivenBy: "terminal",
+    });
+    const el = await render();
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(mocks.attachSession).not.toHaveBeenCalled();
+    expect(modeLabel(el)).toContain("平行继续");
+    expect(window.localStorage.getItem(PINNED_KEY)).toBeNull();
+  });
+
+  it("手机 PWA 新建空会话（messageCount=0）→ 不自动接管，保持 📱 平行继续", async () => {
+    mockDetail({ online: true, attached: false, driver: "hub" }, "claude", { status: "idle", messageCount: 0 });
+    const el = await render();
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(mocks.attachSession).not.toHaveBeenCalled();
+    expect(modeLabel(el)).toContain("平行继续");
+    expect(window.localStorage.getItem(PINNED_KEY)).toBeNull();
+  });
+
+  it("新建空会话被旧 server 误标 lastDrivenBy=terminal → 仍不接管（兜底闸门）", async () => {
+    mockDetail({ online: true, attached: false, driver: "hub" }, "claude", {
+      status: "idle",
+      messageCount: 0,
+      lastDrivenBy: "terminal",
+    });
+    const el = await render();
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(mocks.attachSession).not.toHaveBeenCalled();
+    expect(modeLabel(el)).toContain("平行继续");
   });
 
   it("claude 最后由终端驱动（lastDrivenBy=terminal）→ 自动接管", async () => {
