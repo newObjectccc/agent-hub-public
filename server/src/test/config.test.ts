@@ -30,6 +30,8 @@ describe("Codex 运行时配置", () => {
     const first = load({});
     assert.equal(first.config.codexBin, "codex");
     assert.deepEqual(first.config.codexDriver, DEFAULT_CODEX_DRIVER_CONFIG);
+    assert.equal(first.config.codexDriver.approvalPolicy, "never");
+    assert.equal(first.config.codexDriver.sandbox, "danger-full-access");
     first.config.codexDriver.enabled = false;
     assert.equal(load({}).config.codexDriver.enabled, true);
   });
@@ -40,10 +42,24 @@ describe("Codex 运行时配置", () => {
     assert.equal(config.codexBin, join(dir, "tools/my codex"));
   });
   it("非法值回默认并告警，不接受空字符串/换行或无界定时配置", () => {
-    const { config, warnings } = load({ codexBin: "codex\ncommand", codexDriver: { maxConcurrent: 0.5, idleDetachMs: 3e9, approvalPolicy: "accept-all", sandbox: "anything", defaultPolicy: "active" } });
+    const { config, warnings } = load({ codexBin: "codex\ncommand", codexDriver: { maxConcurrent: 0.5, idleDetachMs: 3e9, defaultPolicy: "active" } });
     assert.equal(config.codexBin, "codex");
     assert.deepEqual(config.codexDriver, DEFAULT_CODEX_DRIVER_CONFIG);
-    assert.equal(warnings.length, 6);
+    assert.equal(warnings.length, 4);
+  });
+  it("最高权限、收紧与 inherit 都可显式选择", () => {
+    for (const approvalPolicy of ["never", "inherit", "untrusted", "on-request"]) {
+      assert.equal(load({ codexDriver: { approvalPolicy } }).config.codexDriver.approvalPolicy, approvalPolicy);
+    }
+    for (const sandbox of ["danger-full-access", "inherit", "read-only", "workspace-write"]) {
+      assert.equal(load({ codexDriver: { sandbox } }).config.codexDriver.sandbox, sandbox);
+    }
+  });
+  it("Codex 权限字段错误拒绝启动，不回落最高权限", () => {
+    for (const codexDriver of [null, [], "auto", { approvalPolicy: "nevver" }, { sandbox: "readOnly" },
+      { approvalPolicy: null }, { sandbox: 42 }, { approvalPolcy: "untrusted" }, { sandbox_mode: "read-only" }]) {
+      assert.throws(() => load({ codexDriver }), { code: "CONFIG_INVALID" });
+    }
   });
   it("关闭开关和显式策略逐项生效", () => {
     const { config, warnings } = load({ codexDriver: { enabled: false, defaultPolicy: "always", maxConcurrent: 1, idleDetachMs: 0, externalQuietMs: 0, approvalPolicy: "on-request", sandbox: "workspace-write" } });

@@ -33,18 +33,20 @@ app-server 提供 `thread/resume`、`turn/start`、原生 `turn/steer`、`turn/i
 
 ### 权限策略（approvalPolicy / sandbox）
 
-策略事实源是用户自己的 `~/.codex/config.toml`。hub 默认 `inherit`：不覆盖，沿用用户在终端跑 codex 的同口径行为。
+Hub 的 `codexDriver.approvalPolicy` / `sandbox` 同时控制平行和接管，默认 `never` + `danger-full-access`：免操作审批、完整文件与网络访问。该默认值以当前系统账号与管理员策略为界，与 pi 默认直接执行工具、Claude 默认 `bypassPermissions` 对齐。
 
-`codexDriver.approvalPolicy` / `sandbox` 的可配范围是目标白名单，**只有通过协议回显比较才允许覆盖**：
+- `approvalPolicy` ∈ `inherit` | `never` | `untrusted` | `on-request`
+- `sandbox` ∈ `inherit` | `danger-full-access` | `read-only` | `workspace-write`
 
-- `approvalPolicy` ∈ `inherit` | `untrusted` | `on-request`
-- `sandbox` ∈ `inherit` | `read-only` | `workspace-write`
+显式档位既可放宽也可收紧。`inherit` 才不下发覆盖、沿用本机配置；已有显式配置会在升级时保留。权限值拼错、未知/误放字段、非对象配置在监听前报 `CONFIG_INVALID`，不会回落最高权限。
 
-`never` 与 `danger-full-access` 不再允许通过 hub 配置。枚举白名单本身不能证明收紧（例如只读改成 workspace-write 仍是放宽）。生产驱动先不带覆盖恢复会话，取得实际审批与沙箱回显，比较目标值；未知/细粒度策略无法证明收紧时，拒绝覆盖并释放进程，不执行任务。
+平行路径通过逐进程 `-c approval_policy=...` / `-c sandbox_mode=...` 下发配置；接管先不带覆盖恢复，取得实际基线。需要更换档位时先确认旧 writer 退出、等待文件静默，再创建新 app-server 应用配置。0.162 实测同进程重复 `thread/resume` 会忽略新参数，因此必须重建进程。最终回显须与显式申请相符；未申请覆盖的维度及其细粒度网络/目录/临时目录限制不能顺便放宽。回显缺少或不符就停止，不执行 turn。准备与释放阶段持续占用会话互斥名额。
 
-需要收紧时，先确认旧进程退出，再创建新的 app-server 应用覆盖。0.162 实测：同进程重复 `thread/resume` 会忽略新的权限参数，不能依赖这种方式更新设置。恢复/退出本身也会更新 rollout，因此旧 writer 退出后等待文件满足静默窗（默认 3 秒），每次等待后重新核对；持续写入受启动总超时限制，取消等待或文件不可读均不得启动第二个 writer。新进程的回显须符合申请值，并再次确认审批、文件访问、网络访问、可写目录和临时目录都未放宽；不满足就停止接管。整个准备阶段持续占用同会话互斥名额。
+这两种路径均不改写用户全局 config.toml；策略核对仅取 RPC 回显，不读取凭据文件。模型向用户提问或 MCP elicitation 仍使用手机问答卡片，不因免操作审批而代答。
 
-`inherit` 不修改用户设置，也不承诺它必然需要审批。这里只读取 app-server 返回的策略字段，不读取用户配置或凭据文件。
+本机 0.164.0-alpha.11.1 的无模型元数据核对确认，`thread/start` 回显 `never` 与 `dangerFullAccess`；未调用模型或执行工具。该版本已不支持 CLI 启动配置 `untrusted`，使用该旧档位时需核对版本，不能静默降级到其他策略。
+
+官方参数含义见 [CLI 配置覆盖](https://learn.chatgpt.com/docs/developer-commands?surface=cli) 与 [app-server](https://learn.chatgpt.com/docs/app-server)。
 
 ### 生效策略回显（effectivePolicy）
 
@@ -73,13 +75,13 @@ app-server 提供 `thread/resume`、`turn/start`、原生 `turn/steer`、`turn/i
 
 只允许用户明确选择的决策；未支持的形状明确取消或 unsupported，不能伪造授权。现有 [验收记录](acceptance/codex-mvp-2026-10-16.json) 的真实模型链路没有审批请求（hostRequestCount 为 0）；[浏览器验收](acceptance/codex-mvp-2026-10-16/README.md) 的允许、拒绝、刷新恢复和文件副作用均来自受控 fake app-server。不能把这两组记录合并成“手机真实原生审批已验证”。历史人工观察保留为待补证据，真实命令、文件与 permissions 审批分别待验。
 
-### ⚠️ 默认配置下审批通道空转
+### 默认全自动与可选手机审批
 
-**事实**：用户 `~/.codex/config.toml` 若是 `approval_policy="never"` + `sandbox_mode="danger-full-access"`，`inherit` 透传后接管**不会产生任何审批请求**——命令直接执行、文件直接写，手机上没有任何门禁。同源现象：`on-request` + `read-only` 下模型可能直接回 BLOCKED、SERVER-REQUESTS 为空；单次未触发不代表通道不可用，`untrusted` 也不保证模型一定请求审批——验收必须断言请求确实出现。
+默认 `never` + `danger-full-access` 下，命令与文件工具直接执行，不出现操作审批卡片，这是预期行为。显式 `inherit` 时，实际审批取决于本机设置。`on-request` + `read-only` 下模型也可能直接返回 BLOCKED 而不请求审批；单次没有请求不能用来证明审批通道可用。
 
 **为什么是认知风险**：前端文案曾暗示有门禁（「回复与审批将在此同步」，`web/src/api/attach.ts`、`web/src/pages/ChatPage.tsx`），用户看到「审批」会以为危险操作会先问手机；空转配置下**根本不会问**。现在前端通过详情、attach 响应与 WS 读取 effectivePolicy，持续展示实际审批和文件访问范围；never 明确不请求审批，on-request 明确只在模型申请时询问，缺省显示未知，退出/重新接管不沿用旧进程的策略。
 
-**要让「手机批权限」真生效**：可申请 `approvalPolicy: "untrusted"`（仍须通过基线比较；真实原生审批闭环待验）。`on-request` 不足以稳定触发审批。`hostRequestCount: 0` 只说明那一轮没有审批请求，不能单独证明审批关闭或批准链路可用。
+**要让「手机批权限」真生效**：可申请 `approvalPolicy: "on-request"`，由模型申请时提示；旧版也可用 `untrusted`（真实原生审批闭环待验，接管会核验实际回显）。`on-request` 不足以稳定触发审批。`hostRequestCount: 0` 只说明那一轮没有审批请求，不能单独证明审批关闭或批准链路可用。
 
 ### 交互式请求（手机问答卡片）
 
@@ -288,7 +290,7 @@ no rollout found for thread id <uuid>
 3. daemon / 共享形态需要 standalone 安装，npm 安装拿不到「与桌面 app 共享同一 thread」。
 4. 冷启成本高（内置 MCP 最长 23s），必须长驻 + 预热。
 5. `requestUserInput` / elicitation 走手机问答卡片；未作答绝不代答（超时明确告知模型）。
-6. codex 的策略事实源是用户 `~/.codex/config.toml`，hub 默认 `inherit` 不覆盖 → 用户配了 never + danger-full-access 时接管后一条审批请求都不会有（见「审批空转」）；claude 侧的权限档位由 hub 配置 `claudeDriver.permissionMode` 统一决定（默认 `bypassPermissions` 最高权限、全自动，非 bypass 档位经 hub 自起的 bridge 走手机审批）——注意两侧哲学不对称：codex 只允许收紧、claude 默认放宽到最高，改档位可回退。
+6. Codex 平行与接管、Claude 两条通道默认均全自动；Codex 用 `never` + `danger-full-access`，Claude 用 `bypassPermissions`。可显式收紧或 inherit，本机全局设置不被改写；权限字段错误拒绝启动，操作审批与模型问答分别处理。
 7. hub 自己写 rollout 有 meta 兼容坑（见「session_meta 最小字段集」）；claude 侧同类坑已以 `isMeta` 占位行实测规避。
 8. 接管通道不注入 provider env、平行通道注入（见「通道差异」）→ 同一会话两通道行为不一致。
 
@@ -348,15 +350,15 @@ no rollout found for thread id <uuid>
     "maxConcurrent": 3,
     "idleDetachMs": 1800000,
     "externalQuietMs": 3000,
-    "approvalPolicy": "inherit",
-    "sandbox": "inherit"
+    "approvalPolicy": "never",
+    "sandbox": "danger-full-access"
   }
 }
 ```
 
 `codexBin` 可为 PATH 命令或含空格的绝对路径；`~` 展开，含路径分隔符的相对值按配置目录解析。不执行 shell、不自动升级或改模型。真机验证时可明确指定 macOS 桌面应用内的 `/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex`（0.162.0-alpha.17.2）；这不是跨机器的默认路径。CLI 与接管共用同一设置。`CODEX_HOME` 未设置时会话根为 `~/.codex`。
 
-`defaultPolicy` 默认 never，只手动接管；可选 active-only / always，但真实占用仍受 native writer 和静默窗检查。`approvalPolicy` 可显式设置 `untrusted` / `on-request`，`sandbox` 可显式设置 `read-only` / `workspace-write`；`never` 与 `danger-full-access` 已移除，写了会告警并回落 `inherit`。手机不会把一次允许升级为永久允许。
+`defaultPolicy` 不控制工具权限；Codex 产品默认仍为平行继续，手动选择后才接管。工具默认 `approvalPolicy: "never"` + `sandbox: "danger-full-access"`，可改 `untrusted` / `on-request` 与 `read-only` / `workspace-write`，或显式 `inherit`。手机上的单次允许不会升级为永久允许。
 
 `agent-hub doctor` 与 server 启动执行只读版本诊断：解析实际二进制、调用 `--version`，在正常/归档目录有限采样 rollout 头的 cli_version。默认最多 32 个文件、每个 64 KiB、2.5 秒总预算，版本查询 1.5 秒；历史 I/O 一旦超时即停止余下采样并标记受限，超时后才取得的句柄仍会释放。失败只告警，不读 auth.json、不调用模型、不阻塞服务启动。版本 compatible 只表示数字版本比较没有发现落后，不等于模型、认证或 provider 已验证可用。
 

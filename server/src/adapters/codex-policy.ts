@@ -1,4 +1,5 @@
 /** 仅依赖协议回显比较权限；不读取用户配置、凭据或运行模型。 */
+import type { CodexDriverConfig } from "../config.js";
 import { isAbsolute, resolve } from "node:path";
 import { ErrorCodes, HubError } from "../errors.js";
 import { isRecord } from "./codex-rpc.js";
@@ -8,7 +9,21 @@ const APPROVAL = ["never", "on-request", "untrusted"];
 const SANDBOX = ["danger-full-access", "workspace-write", "read-only"];
 function fail(message: string): never { throw new HubError(ErrorCodes.INVALID_REQUEST, `${message}；本次接管已停止，未执行任务。可改为 inherit 沿用电脑端设置`, 400); }
 
-/** 初次恢复只继承设置；先拒绝已知放宽，再决定是否需要以新进程应用更严覆盖。 */
+/** 两条通道统一从 Hub 配置取得策略；inherit 不产生任何覆盖。 */
+export function configuredCodexPolicy(config: Pick<CodexDriverConfig, "approvalPolicy" | "sandbox">): PolicyOverrides {
+  return {
+    ...(config.approvalPolicy === "inherit" ? {} : { approvalPolicy: config.approvalPolicy }),
+    ...(config.sandbox === "inherit" ? {} : { sandbox: config.sandbox }),
+  };
+}
+
+/** CLI 的逐进程 TOML 配置覆盖，不修改用户 config.toml，也不经 shell。 */
+export function buildExecPolicyArgs(policy: PolicyOverrides): string[] {
+  return Object.entries(policy).flatMap(([key, value]) => value === undefined ? [] :
+    ["-c", `${key === "approvalPolicy" ? "approval_policy" : "sandbox_mode"}=${JSON.stringify(value)}`]);
+}
+
+/** 初次恢复取得基线；明确配置可放宽或收紧，实际回显另行核验。 */
 export function planPolicyOverrides(baseline: unknown, requested: PolicyOverrides): PolicyOverrides {
   const policy = parseEffectivePolicy(baseline);
   const result: PolicyOverrides = {};
@@ -17,9 +32,7 @@ export function planPolicyOverrides(baseline: unknown, requested: PolicyOverride
     if (target === undefined) continue;
     const original = policy?.[field] ?? "unknown";
     if (original === target) continue;
-    const before = ranks.indexOf(original), after = ranks.indexOf(target);
-    if (before < 0 || after < 0) fail("无法确认 Codex 原有权限，不允许覆盖未知策略");
-    if (after < before) fail("配置的 Codex 权限比电脑端更宽松，不允许放宽");
+    if (!ranks.includes(target)) fail("配置的 Codex 权限不是受支持的策略");
     if (key === "approvalPolicy") result.approvalPolicy = target as CodexApprovalPolicy;
     else result.sandbox = target as CodexSandbox;
   }
@@ -42,17 +55,20 @@ function roots(value: Record<string, unknown>, cwd: string): string[] {
   // workspace-write 对 cwd 的隐式授权与显式 writableRoots 一起比较。
   return [cwd, ...raw as string[]].map(p => resolve(p));
 }
-/** 重启后的最终回显必须满足申请值，并且审批、网络、目录与临时目录均未放宽。 */
-export function assertPolicyNotWeaker(baseline: unknown, actual: unknown, requested: PolicyOverrides, cwd: string): void {
+/** 最终回显必须满足显式申请；未覆盖的维度及其细粒度限制不能顺便放宽。 */
+export function assertPolicyApplied(baseline: unknown, actual: unknown, requested: PolicyOverrides, cwd: string): void {
   const before = parseEffectivePolicy(baseline), after = parseEffectivePolicy(actual);
-  if (!before || !after) fail("Codex 未回传完整权限，无法确认覆盖结果");
-  const approvalBefore = APPROVAL.indexOf(before.approval), approvalAfter = APPROVAL.indexOf(after.approval);
-  const sandboxBefore = SANDBOX.indexOf(before.sandbox), sandboxAfter = SANDBOX.indexOf(after.sandbox);
-  if ([approvalBefore, approvalAfter, sandboxBefore, sandboxAfter].some(n => n < 0)) fail("Codex 返回未知权限，无法确认覆盖结果");
-  if (approvalAfter < approvalBefore || sandboxAfter < sandboxBefore) fail("Codex 实际权限比原设置更宽松");
-  if (requested.approvalPolicy && requested.approvalPolicy !== after.approval) fail("Codex 未应用要求的审批策略");
-  if (requested.sandbox && requested.sandbox !== after.sandbox) fail("Codex 未应用要求的文件访问策略");
-  if (before.sandbox === "danger-full-access") return;
+  if (!after || !APPROVAL.includes(after.approval) || !SANDBOX.includes(after.sandbox)) fail("Codex 未回传完整权限，无法确认覆盖结果");
+  for (const [key, field] of [["approvalPolicy", "approval"], ["sandbox", "sandbox"]] as const) {
+    if (requested[key] !== undefined) {
+      if (requested[key] !== after[field]) fail(`Codex 未应用要求的${key === "approvalPolicy" ? "审批" : "文件访问"}策略`);
+    } else if (!before || before[field] === "unknown" || before[field] !== after[field]) {
+      fail("Codex 改变了未申请覆盖的权限维度，无法确认继承结果");
+    }
+  }
+  // 明确申请更宽的沙箱就是用户授权的范围，不再与旧基线比较；未覆盖维度已在上方核对。
+  if (requested.sandbox !== undefined && (!before || !SANDBOX.includes(before.sandbox) || SANDBOX.indexOf(after.sandbox) < SANDBOX.indexOf(before.sandbox))) return;
+  if (before?.sandbox === "danger-full-access") return;
   const old = sandboxEcho(baseline), next = sandboxEcho(actual);
   if (!old || !next) fail("缺少沙箱明细，无法确认权限未放宽");
   const known = new Set(["type", "writableRoots", "networkAccess", "excludeTmpdirEnvVar", "excludeSlashTmp"]);

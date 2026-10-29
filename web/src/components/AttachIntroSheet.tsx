@@ -29,7 +29,7 @@ function parallelDesc(source: SessionSource | undefined): string {
     return "由电脑上的 agent-hub server 起一个 claude 实例续聊（共享同一会话上下文）。注意：默认档位（bypassPermissions）下工具调用（读写文件、执行命令）会在你电脑上自动执行且**无人工批准**，请只在你信任的仓库使用；实际档位由 hub 配置 claudeDriver.permissionMode 决定（需确认档位下需要确认的操作会在手机上弹出审批卡片，允许/拒绝后继续）。原终端窗口不会同步显示新增消息。";
   }
   if (source === "codex") {
-    return "由电脑上的 agent-hub server 起一个 codex 实例续聊（共享同一会话上下文）。命令与文件访问按 Codex 实际权限在电脑上执行。此通道无人工批准入口，需要确认的操作可能失败；原电脑窗口不会同步新增消息。";
+    return "由电脑上的 agent-hub server 起一个 codex 实例续聊（共享同一会话上下文）。默认免操作审批，命令和文件读写在电脑上直接执行；可在 Hub 配置中收紧。此通道无人工批准入口，收紧后需要确认的操作可能失败；原电脑窗口不会同步新增消息。";
   }
   return "由电脑上的 agent-hub server 起一个 pi 实例续聊（共享同一会话上下文）。注意：工具调用（读写文件、执行命令）会在你电脑上真实执行且**无人工批准**，请只在你信任的仓库里用。原终端窗口不会同步显示新增消息；两端共享上下文，请避免同时发送。";
 }
@@ -37,7 +37,7 @@ function parallelDesc(source: SessionSource | undefined): string {
 export function AttachIntroSheet({ onPick, onClose, driver, source }: AttachIntroSheetProps) {
   const attachDesc =
     source === "codex"
-      ? "由电脑上的 Codex 驱动继续同一会话，回复同步到手机，是否询问审批取决于实际设置，接管后会显示。电脑正在占用会话时请先退出原会话；退出接管后可在电脑继续。审批方式与沙箱沿用 Codex 配置。"
+      ? "由电脑上的 Codex 驱动继续同一会话，回复同步到手机，是否询问审批取决于实际设置，接管后会显示。电脑正在占用会话时请先退出原会话；退出接管后可在电脑继续。两种模式共用 Hub 权限配置，默认免操作审批、完整文件访问；接管后显示实际生效策略。"
       : driver === "hub"
       ? "手机消息由 hub 直接驱动 claude 执行并写回同一会话，电脑终端投屏实时显示；退出接管后可 claude --resume 无缝接回。权限档位与平行模式同源（默认自动执行、无人工批准；需确认档位走手机审批卡片）。"
       : "手机消息发往电脑终端 pi 进程，终端实时显示并执行——人在电脑前，手机当遥控器。";

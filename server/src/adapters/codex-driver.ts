@@ -1,6 +1,6 @@
 /**
  * 每个接管会话独占一个持有写者锁的 app-server 进程。
- * 不回落 exec、不放宽策略、不读凭据或 shell 初始化文件，也不自动批准请求。
+ * 不回落 exec、按 Hub 配置申请并核验策略、不读凭据或 shell 初始化文件，也不自动批准请求。
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -16,7 +16,7 @@ import {
   type CodexApprovalItemPreview, type CodexApprovalPolicy, type CodexApprovalType, type CodexDriverMode, type CodexRpcReply, type CodexSandbox, type CodexUserInput,
   type ElicitationValueType, type HostRequestKind,
 } from "./codex-host-protocol.js";
-import { planPolicyOverrides, assertPolicyNotWeaker, type PolicyOverrides } from "./codex-policy.js";
+import { planPolicyOverrides, assertPolicyApplied, type PolicyOverrides } from "./codex-policy.js";
 import { CodexRpc, CodexRpcError, isRecord, isRpcId, type CodexNotification, type CodexRpcId, type CodexServerRequest } from "./codex-rpc.js";
 
 export type EmitFn = (sessionId: string, event: ServerEvent) => void;
@@ -309,14 +309,14 @@ export class CodexDriverHub implements CodexDriverLinkLike {
           overrides = planPolicyOverrides(baseline, { approvalPolicy: this.options.approvalPolicy, sandbox: this.options.sandbox });
           if (Object.keys(overrides).length > 0) {
             // 0.162 在同一进程重复 resume 会忽略覆盖参数，必须先确认旧 writer 释放再重建。
-            this.stopEntry(current, "正在应用收紧后的权限", false, false);
+            this.stopEntry(current, "正在应用配置的权限", false, false);
             await abortable(waitForDriverRelease(current), controller.signal);
             check();
             await this.waitForExternalQuiet(opts.sessionFile, controller.signal);
             check();
             continue;
           }
-        } else assertPolicyNotWeaker(baseline, result, overrides, opts.cwd);
+        } else assertPolicyApplied(baseline, result, overrides, opts.cwd);
         // P1-2：从 thread/resume 回显解析实际生效策略（只取协议回显，不读 ~/.codex/config.toml）。
         // 解析不出 = 不回传该字段，前端按「未知」容错，绝不把缺省当成安全档位。
         const policy = parseEffectivePolicy(result);

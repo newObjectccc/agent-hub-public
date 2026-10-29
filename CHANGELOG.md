@@ -2,6 +2,8 @@
 
 ## 0.3.0-beta.2（2026-10-29）公开发布准备
 
+- 统一默认全自动：Codex 平行与接管两通道共用 `never` + `danger-full-access`，与 pi 直接工具执行、Claude `bypassPermissions` 对齐；保留显式继承与收紧档位，配置错拼不回落最高权限，接管核对实际生效策略。
+
 - 显式开启 API 鉴权却漏填 token，以及 auth 字段拼错、类型错误时拒绝启动，保留默认关闭鉴权的私有网络用法。
 - 配置读取与权限字段错误在启动前拒绝，修复 `manual` 拼错后回落最高权限的问题；CLI 和 server 的 JSON 错误不再回显配置原文，合法的全自动配置保持可用。
 - 更新 Fastify / fast-uri 安全补丁，并固定 SDK 精确依赖中的 Undici 修补版本；npm CLI 发布物增加 shrinkwrap 与真实安装版本检查，避免仅 pnpm 锁文件修复而消费者仍安装旧版本。

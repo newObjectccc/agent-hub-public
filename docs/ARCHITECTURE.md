@@ -108,3 +108,5 @@ agent-hub/
 
 完整字段和事件以 [API_CONTRACT.md](API_CONTRACT.md) 为准；部署与构建纪律见
 [PLATFORM.md](PLATFORM.md) 和 [CONTRIBUTING.md](../CONTRIBUTING.md)。
+
+Codex 平行与接管共用 Hub 的权限配置，默认 `never` + `danger-full-access`；pi 默认直接执行工具，Claude 默认 `bypassPermissions`。`inherit` 是显式保留本机策略的选项；非法权限配置在监听前拒绝，接管策略不符也拒绝执行。

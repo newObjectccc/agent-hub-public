@@ -1081,14 +1081,15 @@ describe("Codex native ServerRequests", () => {
 });
 
 describe("Codex 接管权限基线", () => {
-  it("拒绝只读覆盖为工作区可写，且从不发 turn", async t => {
-    const f = fixture(t, {sandbox:"workspace-write"}, child => {child.policyEcho={approvalPolicy:"untrusted",sandbox:{type:"readOnly",networkAccess:false}};});
-    await assert.rejects(f.hub.attach("s1", opts), /更宽松/);
-    assert.equal(f.children.length,1);
+  it("最高权限配置可覆盖受限基线，实际回显确认后才 attached", async t => {
+    const f = fixture(t, {approvalPolicy:"never",sandbox:"danger-full-access"}, child => {child.policyEcho={approvalPolicy:"untrusted",sandbox:{type:"readOnly",networkAccess:false}};});
+    await f.hub.attach("s1", opts);
+    assert.equal(f.children.length,2);
     assert.equal(f.child().method("turn/start").length,0);
-    assert.equal(f.hub.isAttached("s1"),false);
+    assert.equal(f.hub.isAttached("s1"),true);
+    assert.deepEqual(f.hub.statusFor("s1")?.effectivePolicy,{approval:"never",sandbox:"danger-full-access",bypass:true});
   });
-  it("缺少基线回显时拒绝显式覆盖，inherit 仍兼容旧回显", async t => {
+  it("最终缺少权限回显时拒绝显式覆盖", async t => {
     const f=fixture(t,{approvalPolicy:"untrusted"},child=>{child.policyEcho=null;});
     await assert.rejects(f.hub.attach("s1",opts),/无法确认/);
     assert.equal(f.child().method("turn/start").length,0);

@@ -50,6 +50,8 @@
 
 pi 平行模式由 hub 进程内的 SDK 实例续聊，**工具调用（读写文件、执行命令）在你电脑上真实执行且无人工批准**，请只在你信任的仓库使用；Claude 平行默认 `--permission-mode bypassPermissions`：工具在你电脑上**自动执行且无人工批准**（与 pi 同类风险，请只在信任的仓库使用），可在 hub 配置 `claudeDriver.permissionMode` 改回 `manual` 等需确认档位——需确认档位下平行与接管两路径都会在手机上弹出审批卡片（同一套 HostRequestCard，允许/拒绝后继续）。模型/网络失败（含余额耗尽、连接中断、上下文溢出）在 pi 里不抛异常而是落在消息的 stopReason 上，hub 会把它透出为气泡内错误条：上下文溢出给「压缩上下文」一键自救，主动中止用中性语气不当报错；错误类提示常驻不自动消失。被双写闸门拦下或终端未执行的消息会退回离线队列并保留失败气泡（含重试入口），文本不会丢。
 
+Codex 两条通道同样默认最高执行权限：免操作审批、完整文件与网络访问。权限只作用于 Hub 驱动的 agent 进程，沿用当前系统账号能力；模型向你提问时仍会等待问答卡片。已有配置中的显式 `inherit` 或收紧档位会继续保留，升级不会覆盖你的选择。
+
 Claude 接管不会控制原来的 TUI 窗口。接管期间请避免同时在原窗口输入；tmux 仅展示 hub 进程的输出。外部活动检测依赖文件更新时间，静默窗不能替代进程锁。
 
 默认 `active-only` 策略下，pi 终端扩展在线时默认接管；Claude 在状态为 `running` **或** `lastDrivenBy=terminal` 时默认尝试接管，其他情况默认平行。`always` 每次打开均尝试接管，`never` 只手动切换；用户手动选择优先，实际接管仍受静默窗、开关及并发上限约束。
@@ -204,8 +206,8 @@ pm2 save && pm2 startup        # 开机自启
 | `allowOrigins` | `[]` | 跨域白名单（精确 origin，如 `https://app.example.com`；空数组 = 拒绝一切跨域） |
 | `allowLan` | `false` | 显式开启局域网暴露（允许 `host` 通配绑定；`start --lan` 会自动写入） |
 | `codexBin` | `"codex"` | CLI 命令或绝对路径，parallel/接管共用；doctor 显示实际版本，接管要求 0.162+（含对应 alpha） |
-| `codexDriver.enabled` / `defaultPolicy` | `true` / `"never"` | Codex 手动接管；审批/沙箱沿用 Codex 配置，详见 [驱动说明](docs/CODEX_DRIVER.md) |
-| `codexDriver.approvalPolicy` / `sandbox` | `"inherit"` / `"inherit"` | 接管时下发给 app-server 的策略；`inherit` = 不覆盖、沿用 `~/.codex/config.toml`。⚠️ 用户配为 `approval_policy="never"` + `sandbox_mode="danger-full-access"` 时，接管后**不会产生任何审批请求**（命令直接执行）；可申请 `"untrusted"` 以允许审批提示，仍须通过权限基线校验；真实审批闭环待验。显式覆盖会比较 RPC 基线与最终回显，只接受可确认的收紧：`approvalPolicy ∈ inherit\|untrusted\|on-request`、`sandbox ∈ inherit\|read-only\|workspace-write`；`never` / `danger-full-access` 已移除，配置里写了会告警并回落 `inherit`——hub 不会把 Codex 放到比你自己配置更宽松的权限 |
+| `codexDriver.enabled` / `defaultPolicy` | `true` / `"never"` | 默认平行继续，Codex 接管仅手动；此项不控制工具权限，详见 [驱动说明](docs/CODEX_DRIVER.md) |
+| `codexDriver.approvalPolicy` / `sandbox` | `"never"` / `"danger-full-access"` | 同时控制平行与接管，默认免操作审批、完整文件和网络访问（以当前系统账号与管理员策略为界）。可选审批 `inherit\|never\|untrusted\|on-request`、沙箱 `inherit\|danger-full-access\|read-only\|workspace-write`；`inherit` 才沿用本机配置。接管核对实际回显，非法权限字段拒绝启动。需要手机审批可选 `on-request`（由模型申请时提示）；`untrusted` 取决于 CLI 版本支持，真实审批闭环仍需实测 |
 | `claudeDriver.enabled` | `true` | claude 接管（hub 驱动）总开关：关掉后不构造驱动、接管接口回 400，前端回落平行模式 |
 | `claudeDriver.defaultPolicy` | `"active-only"` | 默认接管策略：Claude `running` 或最后由终端驱动时尝试接管 / `always`=打开即尝试 / `never`=只手动；pi 还要求扩展在线，手动选择优先 |
 | `claudeDriver.idleDetachMs` | `1800000` | 空闲自动退出接管（毫秒，30 分钟；`0`=永不，运行中不退） |

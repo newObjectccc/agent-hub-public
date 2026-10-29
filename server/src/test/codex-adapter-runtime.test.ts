@@ -7,6 +7,8 @@ import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { it } from "node:test";
 import { CodexAdapter, type CodexAdapterOptions } from "../adapters/codex.js";
+import { DEFAULT_CODEX_DRIVER_CONFIG } from "../config.js";
+import { configuredCodexPolicy } from "../adapters/codex-policy.js";
 import { ErrorCodes, HubError } from "../errors.js";
 import type { ServerEvent } from "../types.js";
 
@@ -177,3 +179,18 @@ it("Codex closing time covers final rollout writes after the earlier turn termin
     assert.equal(f.children.length, 2);
   } finally { await f.cleanup(); }
 });
+
+for (const [name, config, expected] of [
+  ["默认最高权限", DEFAULT_CODEX_DRIVER_CONFIG, ["-c", 'approval_policy="never"', "-c", 'sandbox_mode="danger-full-access"']],
+  ["沿用本机配置", { approvalPolicy: "inherit", sandbox: "inherit" }, []],
+  ["显式收紧", { approvalPolicy: "untrusted", sandbox: "read-only" }, ["-c", 'approval_policy="untrusted"', "-c", 'sandbox_mode="read-only"']],
+] as const) {
+  it(`Codex 平行通道 ${name}：逐进程传递策略而不使用绕过 flag`, async () => {
+    const f = await fixture(configuredCodexPolicy(config));
+    try {
+      await f.adapter.prompt(f.session.id, "show status", undefined);
+      assert.deepEqual(f.calls[0].args, [...expected, "exec", "resume", "--json", "--skip-git-repo-check", f.session.id, "show status"]);
+      assert.ok(!f.calls[0].args.some(value => value.startsWith("--dangerously-")));
+    } finally { await f.cleanup(); }
+  });
+}

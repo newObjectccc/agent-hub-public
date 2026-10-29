@@ -10,15 +10,15 @@
     "token": ""
   },
   "codexBin": "codex",
-  "//codexDriver": "显式权限覆盖先读取 RPC 回显基线、再核对最终设置，只接受可确认的收紧：approvalPolicy ∈ inherit|untrusted|on-request；sandbox ∈ inherit|read-only|workspace-write。inherit = 不覆盖、沿用 ~/.codex/config.toml。never / danger-full-access 已移除，写了会告警并回落 inherit——hub 绝不把 Codex 放到比你自己配置更宽松的权限。defaultPolicy 对 Codex 已废除（2026-10-23 产品规则）：进入会话默认永远 📱 平行（接管须先退出桌面会话），该键保留仅兼容、不影响默认通道；手动切换/pin 仍可接管。",
+  "//codexDriver": "审批/沙箱同时控制 Codex 平行与接管：默认 never + danger-full-access（免审批、完整文件与网络访问，受当前系统账号与管理员策略约束）。可选 approvalPolicy: inherit|never|untrusted|on-request；sandbox: inherit|danger-full-access|read-only|workspace-write。inherit 才沿用本机配置；非法权限值、未知键或非对象配置会拒绝启动。接管会核对 RPC 实际回显，不会修改全局 config.toml。defaultPolicy 只影响是否自动接管，与工具权限独立；Codex 默认平行，手动切换后才接管。",
   "codexDriver": {
     "enabled": true,
     "defaultPolicy": "never",
     "idleDetachMs": 1800000,
     "maxConcurrent": 3,
     "externalQuietMs": 3000,
-    "approvalPolicy": "inherit",
-    "sandbox": "inherit"
+    "approvalPolicy": "never",
+    "sandbox": "danger-full-access"
   },
   "//claudeDriver": "permissionMode 同时管 claude 的 parallel 与 driver 接管两路径的 spawn --permission-mode。枚举：bypassPermissions（默认，两路径全自动无人审批）| manual | default | acceptEdits | plan（需确认档位：平行与接管两路径都走手机审批 bridge，同一套审批卡片）| inherit（不下发 flag，沿用用户 settings 判 bridge）。与 codexDriver 不同：本字段允许放宽到最高权限（产品决策：手机 = 对本机 agent 的全权遥控）。非法权限值、未知键或错放字段拒绝启动，不会回落到最高权限。",
   "claudeDriver": {

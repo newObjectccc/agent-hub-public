@@ -33,6 +33,8 @@ Beta.2 起会自动查找 PATH、macOS Tailscale App 内置 CLI 和 Windows 默�
 
 说明：[官方 Serve 指南](https://tailscale.com/docs/features/tailscale-serve)；本项目使用 Serve 的 tailnet 内访问，不需要公开端口或开启 Funnel。
 
+默认执行权限：pi 直接执行工具，Claude 默认 `bypassPermissions`，Codex 两种通道默认 `never` + `danger-full-access`。均以当前系统账号能力为界；权限配置见 README。已有配置中的显式继承/收紧选择会保留。
+
 ## 3. 手机验证
 
 1. 手机 Tailscale 保持连接，在浏览器打开电脑打印的 HTTPS 地址，确认工作台加载完成。

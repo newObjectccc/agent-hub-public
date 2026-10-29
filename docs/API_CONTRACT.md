@@ -1238,6 +1238,6 @@ chat 输入区上传文件/图片：base64 JSON 落盘到会话 `cwd/.agent-hub-
 ### Codex 权限与实时对账补充（2026-10-21）
 
 - `attach_state` 的 Codex 事件可附带 `source: "codex"` 与可选 `effectivePolicy`；老事件缺字段时按未知处理。退出接管清理旧策略。
-- 显式权限覆盖先比较继承设置，确认只收紧；无法确认、目标放宽或最终回显不符返回 400 `INVALID_REQUEST`，不发起 turn。更严覆盖需释放探测进程再建立实际驱动，准备/释放期仍阻止平行发送。
+- Codex 平行与接管共用 `codexDriver.approvalPolicy` / `sandbox`，默认 `never` / `danger-full-access`，也允许显式收紧或 inherit。接管先取得基线，再释放探测进程、以新进程应用不同的策略；最终回显必须符合申请，未申请覆盖的维度不得随之放宽。缺少/不符的回显返回 400 `INVALID_REQUEST`，不发起 turn；准备/释放期仍阻止平行发送。
 - `bypass` 只取决于 approval=never；不能把 danger-full-access 沙箱等同于无审批。
 - 前端 GET 对账以请求开始时的本地事件版本保护随后到达的消息，消息 timestamp 只用于排序，不充当删除依据。压缩后的下一次 GET 重新建立基线。

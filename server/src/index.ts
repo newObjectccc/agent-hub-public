@@ -23,6 +23,7 @@ import { CodexAdapter } from "./adapters/codex.js";
 import { CodexDriverHub } from "./adapters/codex-driver.js";
 import { inspectCodexRuntime, formatCodexRuntimeDiagnostics } from "../../cli/lib/codex-runtime.js";
 import { findClaudeSessionFiles } from "./adapters/claude-transcript.js";
+import { configuredCodexPolicy } from "./adapters/codex-policy.js";
 import { PiAdapter } from "./adapters/pi.js";
 import { SessionRegistry } from "./adapters/registry.js";
 import { loadHubConfig, isAllowedCrossOrigin, isSameOrigin, type HubConfig } from "./config.js";
@@ -490,14 +491,14 @@ export async function startHub(): Promise<StartedHub> {
   const codexSessionsDir = join(codexHome, "sessions");
   const codexArchivedDir = join(codexHome, "archived_sessions");
   const codexSessionIndexFile = join(codexHome, "session_index.jsonl");
+  const codexPolicy = configuredCodexPolicy(config.codexDriver);
   const codexDriver: CodexDriverHub | null = config.codexDriver.enabled ? new CodexDriverHub({
     emit,
     codexBin: config.codexBin,
     maxConcurrent: config.codexDriver.maxConcurrent,
     idleDetachMs: config.codexDriver.idleDetachMs,
     externalQuietMs: config.codexDriver.externalQuietMs,
-    approvalPolicy: config.codexDriver.approvalPolicy === "inherit" ? undefined : config.codexDriver.approvalPolicy,
-    sandbox: config.codexDriver.sandbox === "inherit" ? undefined : config.codexDriver.sandbox,
+    ...codexPolicy,
     parallelBusy: (id) => codexAdapter.isLive(id),
   }) : null;
   const codexAdapter: CodexAdapter = new CodexAdapter({
@@ -506,6 +507,7 @@ export async function startHub(): Promise<StartedHub> {
     sessionIndexFile: codexSessionIndexFile,
     emit,
     codexBin: config.codexBin,
+    ...codexPolicy,
     driverBusy: (id) => codexDriver?.isBusy(id) ?? false,
     driverStatus: (id) => codexDriver?.runStatusFor(id) ?? null,
   });

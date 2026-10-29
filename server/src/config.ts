@@ -58,30 +58,18 @@ export interface CodexDriverConfig {
   idleDetachMs: number;
   maxConcurrent: number;
   externalQuietMs: number;
-  /**
-   * 审批策略覆盖，**只允许收紧**（adapters/codex.ts 文件头硬规则 2）：
-   * `inherit` = 不下发覆盖、沿用用户 ~/.codex/config.toml（默认）；`untrusted` / `on-request`
-   * 在接管时依据协议回显核验，无法证明更严则拒绝。`never`（完全不审批）已从可配集中移除——hub 绝不把 Codex
-   * 放到比用户在终端里跑更宽松的档位。
-   */
-  approvalPolicy: "inherit" | "untrusted" | "on-request";
-  /** 沙箱覆盖，同样只允许收紧：`inherit` 沿用用户配置；`danger-full-access` 已移除。 */
-  sandbox: "inherit" | "read-only" | "workspace-write";
+  /** Hub 驱动两条通道的审批策略；默认 never（免审批），inherit 才沿用本机配置。 */
+  approvalPolicy: "inherit" | "never" | "untrusted" | "on-request";
+  /** 默认完整文件/网络访问；可显式收紧或沿用本机设置。 */
+  sandbox: "inherit" | "danger-full-access" | "read-only" | "workspace-write";
 }
 
-/**
- * 可配的审批策略档位（收紧集）。刻意不做「读用户 config.toml 再比较」的守卫：
- * 读 ~/.codex/config.toml 有碰到凭据相关配置的风险（硬规则 1），白名单仅限制目标值，实际收紧校验由 codex-policy.ts 比较协议回显完成。
- */
-export const CODEX_APPROVAL_POLICIES = ["inherit", "untrusted", "on-request"] as const;
-/** 可配的沙箱档位（收紧集，理由同 CODEX_APPROVAL_POLICIES） */
-export const CODEX_SANDBOXES = ["inherit", "read-only", "workspace-write"] as const;
-/** 历史版本可配、现已移除的「放宽」档位：老配置命中 → 告警并回落 inherit（不中断启动） */
-export const CODEX_RELAXED_TIERS: readonly string[] = ["never", "danger-full-access"];
+export const CODEX_APPROVAL_POLICIES = ["inherit", "never", "untrusted", "on-request"] as const;
+export const CODEX_SANDBOXES = ["inherit", "danger-full-access", "read-only", "workspace-write"] as const;
 
 /**
  * claude 权限档位（对齐 CLI `--permission-mode` 字面量 + `inherit` 逃生口）。
- * 与 CODEX_* 的收紧集不同：本白名单是**双向**档位旋钮——默认 `bypassPermissions`（最高权限，
+ * 与 Codex 一样允许显式选择档位——默认 `bypassPermissions`（最高权限，
  * 产品决策），也可显式收紧到 manual 等需确认档位。白名单只限制拼写，不表达安全方向。
  */
 export const CLAUDE_PERMISSION_MODES = [
@@ -100,8 +88,8 @@ export const DEFAULT_CODEX_DRIVER_CONFIG: CodexDriverConfig = {
   idleDetachMs: 30 * 60_000,
   maxConcurrent: 3,
   externalQuietMs: 3_000,
-  approvalPolicy: "inherit",
-  sandbox: "inherit",
+  approvalPolicy: "never",
+  sandbox: "danger-full-access",
 };
 
 export const DEFAULT_CLAUDE_DRIVER_CONFIG: ClaudeDriverConfig = {
@@ -405,6 +393,7 @@ export function loadHubConfig(configDir: string, home = homedir()): LoadedConfig
   if (raw.codexDriver !== undefined) {
     if (raw.codexDriver && typeof raw.codexDriver === "object" && !Array.isArray(raw.codexDriver)) {
       const d = raw.codexDriver as Record<string, unknown>;
+      assertKnownConfigKeys(d, ["enabled", "defaultPolicy", "idleDetachMs", "maxConcurrent", "externalQuietMs", "approvalPolicy", "sandbox"], "codexDriver ");
       const defaults = DEFAULT_CODEX_DRIVER_CONFIG;
       const enumValue = <T extends string>(key: string, values: readonly T[], fallback: T): T => {
         if (d[key] === undefined) return fallback;
@@ -412,20 +401,10 @@ export function loadHubConfig(configDir: string, home = homedir()): LoadedConfig
         warnings.push(`hub.config.json 的 codexDriver.${key} 非法，使用 ${fallback}`);
         return fallback;
       };
-      /**
-       * 权限档位（P1-1）：只接受收紧集。命中已移除的放宽档位（never / danger-full-access）
-       * 走仓库既有的「非法值 warn + 回默认」路径，但文案要说清为什么被忽略——否则用户以为
-       * 配置生效了，实际手机端却拿不到任何审批（Codex 继承用户 config.toml）。
-       */
       const policyValue = <T extends string>(key: string, values: readonly T[], fallback: T): T => {
-        const value: unknown = d[key];
-        if (typeof value === "string" && CODEX_RELAXED_TIERS.includes(value)) {
-          warnings.push(
-            `hub.config.json 的 codexDriver.${key}="${value}" 会把 Codex 放到比你自己 ~/.codex/config.toml 更宽松的权限，已忽略（使用 ${fallback}）`,
-          );
-          return fallback;
-        }
-        return enumValue(key, values, fallback);
+        if (d[key] === undefined) return fallback;
+        if (typeof d[key] === "string" && values.includes(d[key] as T)) return d[key] as T;
+        throw invalidConfig(`的 codexDriver.${key} 非法；拒绝回落默认权限`);
       };
       const numberValue = (key: string, min: number, fallback: number): number => {
         if (d[key] === undefined) return fallback;
@@ -433,7 +412,7 @@ export function loadHubConfig(configDir: string, home = homedir()): LoadedConfig
         warnings.push(`hub.config.json 的 codexDriver.${key} 非法，使用 ${fallback}`);
         return fallback;
       };
-      if (d.enabled !== undefined && typeof d.enabled !== "boolean") warnings.push("codexDriver.enabled 非法，使用 true");
+      if (d.enabled !== undefined && typeof d.enabled !== "boolean") throw invalidConfig("的 codexDriver.enabled 必须是布尔值");
       config.codexDriver = {
         enabled: d.enabled !== false,
         defaultPolicy: enumValue("defaultPolicy", ["never", "active-only", "always"], defaults.defaultPolicy),
@@ -443,7 +422,7 @@ export function loadHubConfig(configDir: string, home = homedir()): LoadedConfig
         approvalPolicy: policyValue("approvalPolicy", CODEX_APPROVAL_POLICIES, defaults.approvalPolicy),
         sandbox: policyValue("sandbox", CODEX_SANDBOXES, defaults.sandbox),
       };
-    } else warnings.push("hub.config.json 的 codexDriver 必须是对象，已使用默认配置");
+    } else throw invalidConfig("的 codexDriver 必须是对象；拒绝回落默认权限");
   }
 
   // sessionDir / workspaceRoot 统一展开 `~`（默认值同样处理）
