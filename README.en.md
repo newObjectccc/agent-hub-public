@@ -2,7 +2,7 @@
 
 English | [简体中文](README.md)
 
-![CI](https://github.com/newObjectccc/agent-hub/actions/workflows/ci.yml/badge.svg) ![License: MIT](https://img.shields.io/badge/license-MIT-blue) ![Node.js ≥ 22.19](https://img.shields.io/badge/node-%3E%3D22.19-brightgreen) ![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen) ![PWA](https://img.shields.io/badge/PWA-ready-orange)
+![CI](https://github.com/newObjectccc/agent-hub-public/actions/workflows/ci.yml/badge.svg) ![License: MIT](https://img.shields.io/badge/license-MIT-blue) ![Node.js ≥ 22.19](https://img.shields.io/badge/node-%3E%3D22.19-brightgreen) ![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen) ![PWA](https://img.shields.io/badge/PWA-ready-orange)
 
 > Your phone is a remote control **and** a standalone workstation for your computer — a **self-hosted**, cross-platform (macOS / Linux / Windows) **session hub for pi / Claude Code / Codex**. Your data never leaves your machine.
 
@@ -99,8 +99,8 @@ For autostart, stop the foreground process with Ctrl+C, then run `agent-hub setu
 Source development requires Git and pnpm 10. Choose one startup mode:
 
 ```bash
-git clone https://github.com/newObjectccc/agent-hub.git
-cd agent-hub
+git clone https://github.com/newObjectccc/agent-hub-public.git
+cd agent-hub-public
 npm install -g pnpm@10
 pnpm install --frozen-lockfile
 node cli/setup.js

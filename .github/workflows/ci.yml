@@ -26,30 +26,71 @@ jobs:
 
       - uses: pnpm/action-setup@v4
         with:
-          version: 10
+          version: 10.34.9
 
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node-version }}
           cache: pnpm
 
+      # 固定发布工具，保证发布打包使用一致的 CLI 版本。
+      # npm 11.18.0 支持 Node >=22.9；不改变用户安装产物的 Node 最低版本。
+      - name: pinned packaging CLI / 固定打包工具
+        run: npm install --global npm@11.18.0 --registry=https://registry.npmjs.org/ --ignore-scripts --no-audit --no-fund
+
       - run: pnpm install --frozen-lockfile
       - run: pnpm -r build
 
       # 发布物冒烟：npm pack 清单 + 根依赖断言（缺文件/缺依赖要到用户安装才发现，这里先挡；
-      # 打包清单与平台无关，仅 ubuntu 跑一次即可）
+      # 打包清单与平台无关，macOS 生成；Linux 单独安装同一份 tgz 验证）
       - name: pack smoke / 发布物冒烟
-        if: matrix.os == 'ubuntu-latest'
-        run: node scripts/pack-smoke.mjs
+        if: matrix.os == 'macos-latest'
+        run: |
+          if node scripts/pack-smoke.mjs; then exit 0; fi
+          # 仅本步骤的 npm pack 日志；CI 无 npm 凭据，保留底层打包错误以便定位。
+          for log in "$HOME"/.npm/_logs/*-debug-0.log; do
+            if [ -f "$log" ]; then tail -n 100 "$log"; fi
+          done
+          exit 1
 
       - run: pnpm -r lint
       - run: pnpm test
 
       - name: installed package smoke / 真实 npm 安装冒烟
-        if: matrix.os == 'ubuntu-latest'
-        run: pnpm test:install
+        if: matrix.os == 'macos-latest'
+        run: |
+          mkdir -p "$RUNNER_TEMP/agent-hub-package"
+          npm pack --json --pack-destination "$RUNNER_TEMP/agent-hub-package" > /dev/null
+          node scripts/install-smoke.mjs --tarball "$RUNNER_TEMP/agent-hub-package/"*.tgz
 
       # 依赖漏洞门禁：--prod 只看运行时依赖；--audit-level=high 只挡 high/critical
       #（宽松级别防传递性 moderate 噪音卡 CI）
       - name: dependency audit / 依赖漏洞门禁
         run: pnpm audit --prod --audit-level=high --registry=https://registry.npmjs.org/
+
+      - name: upload verified package / 上传已验证产物
+        if: matrix.os == 'macos-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-package-node-22
+          path: ${{ runner.temp }}/agent-hub-package/*.tgz
+          retention-days: 1
+          compression-level: 0
+
+  install-linux:
+    name: install shared npm package (Linux, Node 22)
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          name: npm-package-node-22
+          path: ${{ runner.temp }}/agent-hub-package
+      # 不重新打包或重建；验证 macOS 生成的同一 tgz 与用户安装路径。
+      # 此脚本只依赖 Node 内置模块，无需安装源码的开发依赖。
+      - name: installed package smoke / 同一产物 Linux 安装
+        run: node scripts/install-smoke.mjs --tarball "$RUNNER_TEMP/agent-hub-package/"*.tgz

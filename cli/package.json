@@ -7,7 +7,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/newObjectccc/agent-hub.git",
+    "url": "git+https://github.com/newObjectccc/agent-hub-public.git",
     "directory": "cli"
   },
   "keywords": [

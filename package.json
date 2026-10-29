@@ -44,11 +44,11 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/newObjectccc/agent-hub.git"
+    "url": "git+https://github.com/newObjectccc/agent-hub-public.git"
   },
-  "homepage": "https://github.com/newObjectccc/agent-hub#readme",
+  "homepage": "https://github.com/newObjectccc/agent-hub-public#readme",
   "bugs": {
-    "url": "https://github.com/newObjectccc/agent-hub/issues"
+    "url": "https://github.com/newObjectccc/agent-hub-public/issues"
   },
   "keywords": [
     "agent",
