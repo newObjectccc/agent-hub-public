@@ -143,6 +143,14 @@ else process.exitCode=1;
   const sessions = await fetch(base + '/api/sessions');
   const sessionList = await sessions.json();
   check('首次空会话 API 正常且没有继承个人历史', sessions.ok && Array.isArray(sessionList.sessions) && sessionList.sessions.length === 0);
+  const modelsResponse = await fetch(base + '/api/pi/models?cwd=' + encodeURIComponent(workspace));
+  const models = await modelsResponse.json();
+  check('安装包可读取仅含标识与名称的 pi 模型目录', modelsResponse.ok && Array.isArray(models.models)
+    && models.models.every(model => Object.keys(model).sort().join(',') === 'id,name,provider') && models.currentModel === null);
+  const invalidModel = await fetch(base + '/api/sessions', { method: 'POST',
+    headers: { 'content-type': 'application/json', origin: base },
+    body: JSON.stringify({ cwd: workspace, source: 'pi', model: { provider: 'hub-install-fixture-missing', id: 'unavailable' } }) });
+  check('安装包拒绝未知模型且不静默回退', invalidModel.status === 400 && (await invalidModel.json()).error?.code === 'MODEL_UNAVAILABLE');
   const requireInstalled = createRequire(join(first, 'package.json'));
   const { WebSocket } = requireInstalled('ws');
   await new Promise((done, reject) => {
@@ -154,6 +162,8 @@ else process.exitCode=1;
   check('已安装包 WebSocket 可建立连接', true);
   const configured = await fetch(base + '/api/app-lock/setup', { method: 'POST', headers: { 'content-type': 'application/json', origin: base }, body: JSON.stringify({ secret: '367892' }) });
   check('自有测试用户可设置应用锁', configured.status === 201);
+  const lockedModels = await fetch(base + '/api/pi/models?cwd=' + encodeURIComponent(workspace));
+  check('安装包的模型目录遵守应用锁', lockedModels.status === 423);
   const tailCalls = (await readFile(tailLog, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
   check('remote 正确装配 tailnet HTTPS Serve 参数', tailCalls.some(a => JSON.stringify(a) === JSON.stringify(['serve', '--bg', '--https=443', base])));
   check('包安装后 remote 不要求现场构建', !output.includes('vite build') && !output.includes('tsc）'));

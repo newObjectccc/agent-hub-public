@@ -23,6 +23,8 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("../api/client", () => ({
   api: {
+    getSessionModels: vi.fn(async () => ({ models: [], currentModel: null, defaultModel: null, warning: null })),
+    getPiModels: vi.fn(async () => ({ models: [], currentModel: null, defaultModel: null, warning: null })),
     listSessions: mocks.listSessions,
     getDashboardStats: mocks.getDashboardStats,
     getUsage: mocks.getUsage,

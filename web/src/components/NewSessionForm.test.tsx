@@ -11,6 +11,8 @@ import { isAbsoluteCwd, NewSessionForm } from "./NewSessionForm";
 
 vi.mock("../api/client", () => ({
   api: {
+    getSessionModels: vi.fn(async () => ({ models: [], currentModel: null, defaultModel: null, warning: null })),
+    getPiModels: vi.fn(async () => ({ models: [], currentModel: null, defaultModel: null, warning: null })),
     createSession: vi.fn(async (cwd: string, name?: string, source?: SessionSource) => ({
       session: {
         id: "new-1",

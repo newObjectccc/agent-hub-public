@@ -7,6 +7,15 @@ export type SessionStatus = "idle" | "running" | "error";
 /** 会话来源：pi（~/.pi/agent/sessions）、claude（~/.claude/projects）或 codex（~/.codex/sessions） */
 export type SessionSource = "pi" | "claude" | "codex";
 
+export interface PiModelRef { provider: string; id: string }
+export interface PiModelOption extends PiModelRef { name: string }
+export interface PiModelCatalog {
+  models: PiModelOption[];
+  defaultModel: PiModelRef | null;
+  currentModel: PiModelRef | null;
+  warning: string | null;
+}
+
 export interface SessionSummary {
   id: string;
   /** 会话来源徽章（pi | claude） */

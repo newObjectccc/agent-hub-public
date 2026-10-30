@@ -66,6 +66,23 @@ agent-hub setup --autostart
 
 ## 5. 常见问题
 
+### pi 模型与 403 排查
+
+Beta.3 提供新建 pi 会话的模型选择，以及聊天输入框上方的当前模型与“切换模型”。例如本机可用 `grok-4.5 [xai]`，选择 `xai / grok-4.5` 即可；已有失败会话也可切换，历史上下文会保留，失败消息需本人手动重试。
+
+- 终端 `/model` 中 Enter 仅影响当前会话；Ctrl+S 才保存新会话默认值。Hub 未显式选择时沿用 pi 的已保存默认值及项目设置，不继承另一个终端的临时选择。规则见 [pi 官方模型文档](https://pi.dev/docs/latest/models)。
+- 模型列表只显示 Hub 当前用户和运行环境里已配置的 provider/model；不会上传或接受 API key、认证文件、网关地址。内置 SDK 的模型目录、项目配置和扩展可能与另装的 pi CLI 不同，不能仅凭 CLI 版本号判断兼容性。
+- 若模型缺失，先确认同一用户、`PI_CODING_AGENT_DIR`（若设置）、工作目录、pi 登录和自定义 `models.json`。只在交互 shell 配置的环境变量不一定被自启动服务继承；在相同环境完成配置后刷新模型列表，必要时重启 Hub。不要发送凭据文件。
+- 模型列表不是服务连通性测试。选对模型后仍报 provider 的 `403 Request not allowed`，需检查该 provider 的账号、额度、网关权限或代理策略；Hub 不自动换 provider 或重试产生调用。
+- 模型切换仅作用于当前 pi 会话，不改全局默认值；运行中、终端仍在线/近期写入或接管中会拒绝切换。结束当前轮、退出电脑上的同一会话并切回平行模式后再试；没有扩展信号时需等待约一分钟静默窗。
+
+升级后按当前平台的自启动方式重启 Hub，或停止自己原先的前台实例再运行 `agent-hub remote`，并刷新手机 PWA：
+
+```bash
+npm install -g @newobjectcccddd/agent-hub@beta --registry=https://registry.npmjs.org/
+agent-hub --version
+```
+
 | 现象 | 检查 |
 |---|---|
 | npm 404 | 包名应包含完整小写作用域及 `@beta`；确认此试用版本已发布 |

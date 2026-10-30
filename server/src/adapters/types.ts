@@ -9,7 +9,7 @@
  */
 import type { PromptResult } from "../sessions/hub.js";
 import type { PromptImageAttachment, SearchResultDto, SessionTreeDto } from "../types.js";
-import type { MessageDto, SessionListItem, SessionSource, SessionStatus } from "../types.js";
+import type { MessageDto, PiModelCatalog, PiModelRef, SessionListItem, SessionSource, SessionStatus } from "../types.js";
 
 export type { PromptResult };
 export type { SessionSource };
@@ -26,7 +26,9 @@ export interface SessionAdapter {
   prompt(id: string, text: unknown, modeRaw: unknown, images?: PromptImageAttachment[]): Promise<PromptResult>;
   abort(id: string): Promise<void>;
   /** 新建会话（pi：JSONL header 落盘；claude：空白 transcript 会话文件） */
-  createSession?(cwd: string, name?: string): Promise<SessionListItem>;
+  createSession?(cwd: string, name?: string, model?: PiModelRef): Promise<SessionListItem>;
+  getModels?(cwd: string, id?: string): Promise<PiModelCatalog>;
+  setModel?(id: string, model: PiModelRef): Promise<PiModelRef>;
   /** 复制会话（fork）：基于完整上下文生成独立新会话文件，原会话只读不受影响 */
   forkSession(id: string): Promise<SessionListItem>;
   /** 重命名会话（pi：session_info entry；claude：ai-title 行）；不支持的源不实现，registry 报 400 */

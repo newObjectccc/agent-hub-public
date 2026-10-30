@@ -50,6 +50,7 @@ import { UploadButton } from "../components/UploadButton";
 import { SendModeMenu } from "../components/SendModeMenu";
 import { SessionActionsMenu } from "../components/SessionActionsMenu";
 import { RenameSessionSheet } from "../components/RenameSessionSheet";
+import { PiModelControl } from "../components/PiModels";
 import { SlashCommandPanel } from "../components/SlashCommandPanel";
 import { QuickCommandPanel } from "../components/QuickCommandPanel";
 import { StatusBadge } from "../components/StatusBadge";
@@ -1999,6 +2000,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
       )}
 
       <footer className="chat-input">
+        {session?.source === "pi" && <PiModelControl sessionId={sessionId} status={status} attached={attachMode === "attach" || attachBusy} />}
         {quote && (
           <div className="quote-bar" role="status" aria-label="引用消息">
             <span className="quote-label">引用</span>

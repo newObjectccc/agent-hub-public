@@ -140,6 +140,7 @@ pi 的**余额耗尽 / 网络中断 / 上下文溢出 / 主动中止**都不抛�
 
 - `source` 缺省/空 → `"pi"`；非法值 → 400 `INVALID_REQUEST`。registry 按 source 分发到对应适配器。
 - `source: "pi"`：落盘 session-format v3 JSONL header（原 v0 行为）。
+- Beta.3 起可额外传 `"model": { "provider": "xai", "id": "grok-4.5" }`，仅 pi 支持。省略时沿用 pi 已保存默认值；显式选择仅接受本机已配置模型，写入当前会话的 `model_change`，即使尚无消息也在首次 SDK 启动时恢复。其他来源传 model、非 provider/id 字段、空值或非法标识均返回 400 `INVALID_REQUEST`；未知/未配置模型返回 400 `MODEL_UNAVAILABLE`，不创建会话。
 - `source: "claude"`：**创建空白 transcript 会话文件**（新 UUID，`~/.claude/projects/<encoded-cwd>/<uuid>.jsonl`，
   含一条 `isMeta` 占位行 + 可选 `ai-title` 行；解析后消息数 0，chat 显示空会话）。
   首条消息走既有 `claude -p --resume <id>` 流程。
@@ -148,6 +149,16 @@ pi 的**余额耗尽 / 网络中断 / 上下文溢出 / 主动中止**都不抛�
 - `source: "codex"`：写最小 rollout 文件（仅 `session_meta` 行），后续 prompt 走
   `codex exec resume <id> --json` 本地 spawn 驱动。
 - `cwd` 必须是绝对路径（否则 400 `INVALID_CWD`），且必须存在（否则 400 `INVALID_CWD`）。
+
+### pi 模型目录与会话模型（Beta.3）
+
+- `GET /api/pi/models?cwd=<绝对路径>`：列出 Hub 运行环境中的已配置模型；省略 cwd 用 `workspaceRoot`，目录不存在/不是目录返回 400 `INVALID_CWD`。
+- `GET /api/sessions/:id/model`：读取当前 pi 会话的模型与本机目录。当前模型来自驻留 SDK，或 JSONL **active branch** 的最近 `model_change`（保留 virtual selection），无该条目才回退 assistant 模型。读取不打开/迁移会话、不启动任务、不改文件。
+- 两个 GET 均直接返回 `{ "models": [{ "provider": "xai", "id": "grok-4.5", "name": "Grok 4.5" }], "defaultModel": { "provider": "anthropic", "id": "..." } | null, "currentModel": { "provider": "xai", "id": "grok-4.5" } | null, "warning": "提示" | null }`。新建目录的 currentModel 为 null；默认值与会话当前值独立。列表不调用模型服务验证权限或余额；只返回标识/名称，不返回 headers、API key、baseUrl 或认证记录。
+- `POST /api/sessions/:id/model`：body 为 `{ "provider": "xai", "id": "grok-4.5" }`（不是嵌套 model）；响应 200 `{ "model": { "provider": "xai", "id": "grok-4.5" } }`。只切当前会话：驻留实例调用 SDK `setModel(..., {persist:false})`，未加载实例在当前分支追加模型条目，旧格式先通过 SDK 迁移。保留历史，不改全局默认值，不自动重试消息。
+- 切换与发送/SDK 启动互斥；运行中或正在切换返回 409 `SESSION_BUSY`，外部终端持有/近期写入返回 409 `EXTERNAL_ACTIVE`，接管中返回 409 `ATTACH_ACTIVE`。会话不存在返回 404 `SESSION_NOT_FOUND`，非 pi 返回 400 `INVALID_REQUEST`，未知或当前环境未配置模型返回 400 `MODEL_UNAVAILABLE`。旧注入实现未提供模型功能时返回 501；错误信封仍为 `{error:{code,message}}`。
+- 所有入口沿用 Bearer 鉴权与应用锁；无 token 的锁屏请求返回 423，错误/过期锁令牌或缺少有效 Bearer 返回 401。模型标识仅接受非空 provider/id（各 ≤512 字符，无控制字符），不接受凭据/其他配置字段。
+- SDK 恢复已保存模型失败且拟回退到不同模型时，终止本次唤醒并报告 `MODEL_UNAVAILABLE`；不得静默把任务交给另一个 provider。由于 prompt 异步受理，启动阶段失败通过 WS `error` 发送此 code；用户选择模型后手动重试。
 
 ### POST /api/sessions/:id/fork
 复制会话（fork）：基于某会话的**完整上下文**生成独立新会话（新 id/新文件，继承 source、
@@ -191,6 +202,7 @@ abort 会取消准备中的请求及尚未消费的本地队列，已取消的�
 | code | HTTP | 含义与客户端应有行为 |
 |---|---|---|
 | `SESSION_BUSY` | 409 | 本服务自有 run 正忙且 `mode` 缺省（可用 `steer`/`followUp`） |
+| `MODEL_UNAVAILABLE` | 400 / WS | pi 所选/已保存模型在 Hub 环境不可用；在模型入口刷新并选择可用模型后手动重试，不自动切换 provider |
 | `EXTERNAL_ACTIVE` | 409 | **pi 源**：外部（电脑终端）正持有/正在写该会话，平行发送会双写分叉。message 是可直接展示的中文原因（带出路）；客户端应**常驻**展示，不得自动重发（重发也一样被拒） |
 | `PROMPT_IN_FLIGHT` | 409 | 同 `clientMessageId` 的上一次提交还在处理中（结果未出）。**不得当成成功**；客户端归入自动重试（幂等键保证不双执行） |
 | `SESSION_CORRUPT` | 409 | 会话文件损坏/已删除/工作目录失效，无法唤醒该会话。message 带中文原因 + 原始错误尾巴（此前一律被归为 500 `internal error`，手机端零出路） |

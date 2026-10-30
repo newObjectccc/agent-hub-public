@@ -3,7 +3,7 @@
  * pi 是 agent-hub 的核心来源，这里只补 source 抽象，不改动原有行为。
  */
 import type { PromptResult, SessionHub } from "../sessions/hub.js";
-import type { MessageDto, PromptImageAttachment, SessionListItem, SessionStatus } from "../types.js";
+import type { MessageDto, PiModelCatalog, PiModelRef, PromptImageAttachment, SessionListItem, SessionStatus } from "../types.js";
 import type { SessionAdapter } from "./types.js";
 
 export class PiAdapter implements SessionAdapter {
@@ -47,8 +47,16 @@ export class PiAdapter implements SessionAdapter {
     return this.hub.abort(id);
   }
 
-  createSession(cwd: string, name?: string): Promise<SessionListItem> {
-    return this.hub.createSession(cwd, name);
+  createSession(cwd: string, name?: string, model?: PiModelRef): Promise<SessionListItem> {
+    return model ? this.hub.createSession(cwd, name, model) : this.hub.createSession(cwd, name);
+  }
+
+  getModels(cwd: string, id?: string): Promise<PiModelCatalog> {
+    return this.hub.getModels(cwd, id);
+  }
+
+  setModel(id: string, model: PiModelRef): Promise<PiModelRef> {
+    return this.hub.setModel(id, model);
   }
 
   forkSession(id: string): Promise<SessionListItem> {

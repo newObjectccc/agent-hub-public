@@ -50,6 +50,7 @@ const REQUIRED_FILES = [
   "cli/lib/paths.d.ts",
   "cli/lib/process.js",
   "server/dist/index.js",
+  "server/dist/sessions/models.js",
   "server/dist/adapters/claude-driver.js",
   "server/dist/adapters/codex-driver.js",
   "server/dist/adapters/codex-host-protocol.js",

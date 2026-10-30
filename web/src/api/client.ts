@@ -13,6 +13,8 @@ import type {
   FsTree,
   NotificationListResponse,
   PromptResult,
+  PiModelCatalog,
+  PiModelRef,
   SearchResponse,
   SessionDetail,
   SessionSource,
@@ -179,11 +181,23 @@ export const api = {
     return request(`/api/sessions/${encodeURIComponent(id)}/agents`);
   },
 
-  createSession(cwd: string, name?: string, source?: SessionSource): Promise<{ session: SessionSummary }> {
+  createSession(cwd: string, name?: string, source?: SessionSource, model?: PiModelRef): Promise<{ session: SessionSummary }> {
     return request("/api/sessions", {
       method: "POST",
-      body: JSON.stringify({ cwd, name, source }),
+      body: JSON.stringify({ cwd, name, source, model }),
     });
+  },
+
+  getPiModels(cwd: string): Promise<PiModelCatalog> {
+    return request(`/api/pi/models?${new URLSearchParams({ cwd })}`);
+  },
+
+  getSessionModels(id: string): Promise<PiModelCatalog> {
+    return request(`/api/sessions/${encodeURIComponent(id)}/model`);
+  },
+
+  setPiModel(id: string, model: PiModelRef): Promise<{ model: PiModelRef }> {
+    return request(`/api/sessions/${encodeURIComponent(id)}/model`, { method: "POST", body: JSON.stringify(model) });
   },
 
   /** 复制会话（fork）：基于完整上下文生成独立新会话（契约 §1） */

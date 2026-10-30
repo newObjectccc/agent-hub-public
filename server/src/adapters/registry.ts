@@ -18,7 +18,7 @@ import type { PromptResult } from "../sessions/hub.js";
 import { loadSessionMessages } from "../sessions/scan.js";
 import { loadClaudeSessionMessages } from "./claude-transcript.js";
 import { loadCodexSessionMessages } from "./codex-rollout.js";
-import type { MessageDto, PromptImageAttachment, SessionListItem, SessionSource, SessionStatus } from "../types.js";
+import type { MessageDto, PiModelCatalog, PiModelRef, PromptImageAttachment, SessionListItem, SessionSource, SessionStatus } from "../types.js";
 import type { ClaudeAdapter } from "./claude.js";
 import type { SessionAdapter } from "./types.js";
 
@@ -196,14 +196,37 @@ export class SessionRegistry {
   }
 
   /** 新建会话按 source 分发（缺省 pi；非法 source 由 routes 层拦截）；写路径联动缓存立即可见 */
-  async createSession(cwd: string, name?: string, source: SessionSource = "pi"): Promise<SessionListItem> {
+  async createSession(cwd: string, name?: string, source: SessionSource = "pi", model?: PiModelRef): Promise<SessionListItem> {
     const adapter = source === "claude" ? this.claude : source === "codex" ? this.codex : this.pi;
     if (!adapter || !adapter.createSession) {
       throw new HubError(ErrorCodes.INVALID_REQUEST, `来源 ${source} 不支持新建会话`, 400);
     }
-    const created = await adapter.createSession(cwd, name);
+    if (model && source !== "pi") throw new HubError(ErrorCodes.INVALID_REQUEST, "创建时选择模型目前仅支持 pi");
+    const created = model ? await adapter.createSession(cwd, name, model) : await adapter.createSession(cwd, name);
     this.invalidateList({ immediate: true });
     return created;
+  }
+
+  async getPiModels(cwd: string): Promise<PiModelCatalog> {
+    if (!this.pi.getModels) throw new HubError(ErrorCodes.INVALID_REQUEST, "pi 模型目录不可用", 501);
+    return this.pi.getModels(cwd);
+  }
+
+  async getSessionModels(id: string): Promise<PiModelCatalog> {
+    const adapter = await this.resolve(id);
+    if (!adapter) throw new HubError(ErrorCodes.SESSION_NOT_FOUND, "会话不存在", 404);
+    if (adapter.source !== "pi" || !adapter.getModels) throw new HubError(ErrorCodes.INVALID_REQUEST, "此模型入口目前仅支持 pi");
+    const session = await adapter.findSession(id);
+    return adapter.getModels(session?.cwd ?? "", id);
+  }
+
+  async setPiModel(id: string, model: PiModelRef): Promise<PiModelRef> {
+    const adapter = await this.resolve(id);
+    if (!adapter) throw new HubError(ErrorCodes.SESSION_NOT_FOUND, "会话不存在", 404);
+    if (adapter.source !== "pi" || !adapter.setModel) throw new HubError(ErrorCodes.INVALID_REQUEST, "此模型入口目前仅支持 pi");
+    const changed = await adapter.setModel(id, model);
+    this.invalidateList({ immediate: true });
+    return changed;
   }
 
   /** 复制会话（fork）按 id 归属分发；写路径联动缓存立即可见 */

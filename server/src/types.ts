@@ -14,6 +14,16 @@ export type SessionDrivenBy = "panel" | "terminal";
 /** 会话来源：pi（~/.pi/agent/sessions）、claude（~/.claude/projects）或 codex（~/.codex/sessions） */
 export type SessionSource = "pi" | "claude" | "codex";
 
+/** Public model identifiers only; credentials and endpoint configuration never leave the server. */
+export interface PiModelRef { provider: string; id: string }
+export interface PiModelOption extends PiModelRef { name: string }
+export interface PiModelCatalog {
+  models: PiModelOption[];
+  defaultModel: PiModelRef | null;
+  currentModel: PiModelRef | null;
+  warning: string | null;
+}
+
 /** GET /api/sessions 列表项 */
 export interface SessionListItem {
   id: string;

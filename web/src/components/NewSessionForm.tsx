@@ -7,7 +7,8 @@
  */
 import { useMemo, useState } from "react";
 import { api } from "../api/client";
-import type { SessionSource, SessionSummary } from "../api/types";
+import type { PiModelRef, SessionSource, SessionSummary } from "../api/types";
+import { PiNewModelField } from "./PiModels";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Sheet } from "./Sheet";
@@ -35,6 +36,7 @@ export function NewSessionForm({ open, onClose, onCreated, recentCwds = [] }: Ne
   const [source, setSource] = useState<SessionSource>("pi");
   const [cwd, setCwd] = useState("");
   const [name, setName] = useState("");
+  const [piModel, setPiModel] = useState<PiModelRef | undefined>();
   const [recentOpen, setRecentOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -71,9 +73,12 @@ export function NewSessionForm({ open, onClose, onCreated, recentCwds = [] }: Ne
     setBusy(true);
     setError(null);
     try {
-      const { session } = await api.createSession(trimmed, name.trim() || undefined, source);
+      const { session } = source === "pi" && piModel
+        ? await api.createSession(trimmed, name.trim() || undefined, source, piModel)
+        : await api.createSession(trimmed, name.trim() || undefined, source);
       setCwd("");
       setName("");
+      setPiModel(undefined);
       setRecentOpen(false);
       onCreated(session);
     } catch (e) {
@@ -113,7 +118,7 @@ export function NewSessionForm({ open, onClose, onCreated, recentCwds = [] }: Ne
               role="radio"
               aria-checked={source === s.value}
               className={`segment-item${source === s.value ? " active" : ""}`}
-              onClick={() => setSource(s.value)}
+              onClick={() => { setSource(s.value); setPiModel(undefined); }}
               title={s.hint}
             >
               {s.label}
@@ -168,6 +173,8 @@ export function NewSessionForm({ open, onClose, onCreated, recentCwds = [] }: Ne
           </div>
         )}
       </div>
+
+      {source === "pi" && <PiNewModelField cwd={cwd} value={piModel} onChange={setPiModel} />}
 
       <div className="field">
         <div className="field-label">会话名称（可选）</div>

@@ -1,0 +1,9 @@
+.pi-model-strip { display:flex; align-items:center; gap:8px; margin-bottom:8px; min-width:0; }
+.pi-model-current { flex:1; min-width:0; font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.pi-model-change,.pi-model-refresh { min-height:44px; padding:6px 10px; border:2px solid var(--border); background:var(--card); color:var(--foreground); cursor:pointer; font:inherit; font-size:12px; }
+.pi-model-change:disabled,.pi-model-refresh:disabled { opacity:.55; cursor:default; }
+.pi-model-options { display:grid; gap:8px; min-width:0; }
+.pi-model-search,.pi-model-select { width:100%; min-width:0; min-height:44px; padding:8px 10px; border:2px solid var(--border); background:var(--card); color:var(--foreground); font:inherit; font-size:14px; }
+.pi-model-select { text-overflow:ellipsis; }
+.pi-model-warning { font-size:13px; line-height:1.5; margin:8px 0; overflow-wrap:anywhere; }
+.pi-model-refresh { margin-top:8px; }

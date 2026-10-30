@@ -27,6 +27,7 @@ import type { LiveIngestLike } from "./live.js";
 import { createPanelDrivenStore, drivenByOf, type PanelDrivenStoreLike } from "./panelDriven.js";
 import { dataDir } from "./paths.js";
 import type { PromptResult } from "./sessions/hub.js";
+import { parsePiModel } from "./sessions/models.js";
 import { fullPage, paginateMessages, parseLimit } from "./sessions/paginate.js";
 import { buildSubAgentActivity, buildClaudeSubAgentActivity } from "./subagents.js";
 import { loadClaudeSubAgents } from "./adapters/claude-transcript.js";
@@ -44,6 +45,8 @@ import type {
   EffectivePolicyDto,
   FsTreeDto,
   MessageDto,
+  PiModelCatalog,
+  PiModelRef,
   PromptImageAttachment,
   SearchResultDto,
   SessionListItem,
@@ -65,7 +68,10 @@ export interface SessionHubLike {
   loadMessagesFast?(id: string, sessionFile: string): Promise<MessageDto[]>;
   search(query: string, limit?: number): Promise<SearchResultDto[]>;
   loadTree(id: string): Promise<SessionTreeDto | null>;
-  createSession(cwd: string, name?: string, source?: SessionSource): Promise<SessionListItem>;
+  createSession(cwd: string, name?: string, source?: SessionSource, model?: PiModelRef): Promise<SessionListItem>;
+  getPiModels?(cwd: string): Promise<PiModelCatalog>;
+  getSessionModels?(id: string): Promise<PiModelCatalog>;
+  setPiModel?(id: string, model: PiModelRef): Promise<PiModelRef>;
   forkSession(id: string): Promise<SessionListItem>;
   /** 重命名会话（body.name 空串 = 清空名字）；实现方不支持时路由返回 501 */
   renameSession?(id: string, name: string): Promise<SessionListItem>;
@@ -283,11 +289,11 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   });
 
   /** 冲突保护：attach 接管期间拒绝 parallel 发送/压缩（防双写同一会话：pi 指令队列 / claude hub 驱动） */
-  const rejectIfAttached = (id: string): void => {
+  const rejectIfAttached = (id: string, action = "平行发送"): void => {
     if (deps.agents?.isAttached(id) || deps.claudeDriver?.isAttached(id) || deps.codexDriver?.isBusy?.(id) || deps.codexDriver?.isAttached(id) || deps.codexDriver?.isAttaching(id)) {
       throw new HubError(
         ErrorCodes.ATTACH_ACTIVE,
-        "终端接管中：消息由电脑上的会话执行，平行发送已停用（切回 📱 平行模式可恢复）",
+        `终端接管中：消息由电脑上的会话执行，${action}已停用（切回 📱 平行模式可恢复）`,
         409,
       );
     }
@@ -303,6 +309,31 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
     } catch (err) {
       return handle(reply, err);
     }
+  });
+
+  // Identifiers only: no API keys, headers, endpoint URLs or auth records in these DTOs.
+  app.get<{ Querystring: { cwd?: string } }>("/api/pi/models", async (req, reply) => {
+    try {
+      if (!hub.getPiModels) throw new HubError(ErrorCodes.INVALID_REQUEST, "pi 模型目录不可用", 501);
+      const cwd = req.query.cwd === undefined ? config.workspaceRoot : requireAbsoluteCwd({ cwd: req.query.cwd }).cwd;
+      return reply.send(await hub.getPiModels(cwd));
+    } catch (err) { return handle(reply, err); }
+  });
+
+  app.get<{ Params: { id: string } }>("/api/sessions/:id/model", async (req, reply) => {
+    try {
+      if (!hub.getSessionModels) throw new HubError(ErrorCodes.INVALID_REQUEST, "会话模型信息不可用", 501);
+      return reply.send(await hub.getSessionModels(req.params.id));
+    } catch (err) { return handle(reply, err); }
+  });
+
+  app.post<{ Params: { id: string } }>("/api/sessions/:id/model", async (req, reply) => {
+    try {
+      rejectIfAttached(req.params.id, "手机切换模型");
+      if (!hub.setPiModel) throw new HubError(ErrorCodes.INVALID_REQUEST, "会话模型切换不可用", 501);
+      const model = parsePiModel(req.body);
+      return reply.send({ model: await hub.setPiModel(req.params.id, model) });
+    } catch (err) { return handle(reply, err); }
   });
 
   // GET /api/sessions/:id（支持 ?before=<messageId>&limit=<n> 消息分页，契约 §1）
@@ -408,13 +439,15 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   app.post("/api/sessions", async (req, reply) => {
     try {
       const { cwd, name } = requireAbsoluteCwd(req.body);
-      const body = (typeof req.body === "object" && req.body !== null ? req.body : {}) as { source?: unknown };
+      const body = (typeof req.body === "object" && req.body !== null ? req.body : {}) as { source?: unknown; model?: unknown };
       const sourceRaw = body.source;
       const source = sourceRaw === undefined || sourceRaw === null || sourceRaw === "" ? "pi" : sourceRaw;
       if (source !== "pi" && source !== "claude" && source !== "codex") {
         throw new HubError(ErrorCodes.INVALID_REQUEST, "source 必须是 pi|claude|codex 之一");
       }
-      const session = await hub.createSession(cwd, name, source);
+      const model = body.model === undefined ? undefined : parsePiModel(body.model);
+      if (model && source !== "pi") throw new HubError(ErrorCodes.INVALID_REQUEST, "创建时选择模型目前仅支持 pi");
+      const session = model ? await hub.createSession(cwd, name, source, model) : await hub.createSession(cwd, name, source);
       return reply.status(201).send({ session: toSessionDto(session) });
     } catch (err) {
       return handle(reply, err);

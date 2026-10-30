@@ -1,6 +1,6 @@
 {
   "name": "@agent-hub/server",
-  "version": "0.3.0-beta.2",
+  "version": "0.3.0-beta.3",
   "private": true,
   "type": "module",
   "description": "agent-hub 后端：REST + WS、pi/claude 会话扫描与驱动、KPI 聚合、系统检测（Fastify）",

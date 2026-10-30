@@ -6,8 +6,8 @@
  * - 进程退出时 disposeAll() 回收全部实例
  */
 import { randomBytes } from "node:crypto";
-import { existsSync, writeFileSync } from "node:fs";
-import { mkdir, stat, writeFile } from "node:fs/promises";
+import { constants, existsSync, writeFileSync } from "node:fs";
+import { mkdir, open, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   createAgentSession,
@@ -17,7 +17,8 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { ErrorCodes, HubError } from "../errors.js";
 import { EventThrottle } from "../live.js";
-import type { HubActivity, MessageDto, MessageErrorDto, MessageRole, PromptImageAttachment, SearchResultDto, ServerEvent, SessionListItem, SessionStatus, SessionTreeDto, ToolCallStatus } from "../types.js";
+import type { HubActivity, MessageDto, MessageErrorDto, MessageRole, PiModelCatalog, PiModelRef, PromptImageAttachment, SearchResultDto, ServerEvent, SessionListItem, SessionStatus, SessionTreeDto, ToolCallStatus } from "../types.js";
+import { modelRef, PiModels, recordedPiModel } from "./models.js";
 import { decidePromptAction, parsePromptMode, type PromptMode } from "./prompt-policy.js";
 import { SearchService, SEARCH_DEFAULT_LIMIT } from "./search.js";
 import { inferExternalStatus, registerTailStatusSink } from "./tail.js";
@@ -36,6 +37,8 @@ import {
   summarizeToolCall,
   truncateText,
   loadSessionMessages,
+  readSessionFile,
+  parseSessionJsonl,
 } from "./scan.js";
 
 export type EmitFn = (sessionId: string, event: ServerEvent) => void;
@@ -97,6 +100,7 @@ export interface SessionHubOptions {
   externalActive?: (id: string) => boolean;
   /** 出站 delta 节流窗口（毫秒，缺省 100）；测试注入小值免等定时器 */
   throttleMs?: number;
+  models?: PiModels;
 }
 
 /**
@@ -156,6 +160,8 @@ export class SessionHub {
   private listCacheInflight: Promise<SessionListItem[]> | null = null;
   private readonly searchService: SearchService;
   private readonly createSessionFn: typeof createAgentSession;
+  private readonly models: PiModels;
+  private readonly modelChanges = new Set<string>();
   /** 终端 pi 在线探测（构造注入；缺省恒不在线 = 只靠 feed/mtime 两路信号） */
   private readonly externalActive: ((id: string) => boolean) | null;
   /** ensureLive 并发去重：per-id inflight（参照 listCacheInflight，防并发 prompt 双开 AgentSession） */
@@ -209,6 +215,7 @@ export class SessionHub {
     this.emit = (id, event) => this.throttle.push(id, event);
     this.searchService = new SearchService(sessionDir);
     this.createSessionFn = options.createAgentSession ?? createAgentSession;
+    this.models = options.models ?? new PiModels();
     this.externalActive = options.externalActive ?? null;
     // tail 的 status 事件只走 WS 广播，不回写 statuses 会让 API 返回陈旧状态（双状态源分叉）：
     // 这里回写内存状态源，getStatus/findSession 与 WS 显示同源
@@ -286,14 +293,14 @@ export class SessionHub {
    */
   sweep(now = Date.now()): void {
     for (const [id, live] of [...this.live]) {
-      if (this.isEvictable(live) && now - live.lastUsedMs > SessionHub.LIVE_IDLE_TTL_MS) {
+      if (!this.modelChanges.has(id) && this.isEvictable(live) && now - live.lastUsedMs > SessionHub.LIVE_IDLE_TTL_MS) {
         this.disposeLive(id, live);
       }
     }
     if (this.live.size > SessionHub.LIVE_MAX) {
       // LRU：最久未用的空闲实例先逐出，直到回到上限（全部运行中则容忍暂时超限）
       const idle = [...this.live.entries()]
-        .filter(([, live]) => this.isEvictable(live))
+        .filter(([id, live]) => !this.modelChanges.has(id) && this.isEvictable(live))
         .sort((a, b) => a[1].lastUsedMs - b[1].lastUsedMs);
       for (const [id, live] of idle) {
         if (this.live.size <= SessionHub.LIVE_MAX) break;
@@ -408,7 +415,7 @@ export class SessionHub {
    * 新建会话：直接落盘 JSONL header（pi 的 SessionManager 在首条 assistant
    * 消息前不写盘，这里显式写文件保证列表立即可见且与 pi CLI 互通）。
    */
-  async createSession(cwd: string, name?: string): Promise<SessionListItem> {
+  async createSession(cwd: string, name?: string, model?: PiModelRef): Promise<SessionListItem> {
     if (typeof cwd !== "string" || cwd.trim() === "") {
       throw new HubError(ErrorCodes.INVALID_CWD, "cwd 必须是非空绝对路径");
     }
@@ -421,6 +428,7 @@ export class SessionHub {
     if (!isDir) {
       throw new HubError(ErrorCodes.INVALID_CWD, `cwd 不存在或不是目录: ${cwd}`);
     }
+    if (model) await this.models.resolve(model);
 
     const sessionId = randomBytes(16).toString("hex");
     const timestamp = new Date().toISOString();
@@ -429,13 +437,15 @@ export class SessionHub {
     const file = join(dir, sessionFileName(timestamp, sessionId));
 
     const lines: string[] = [JSON.stringify({ type: "session", version: 3, id: sessionId, timestamp, cwd })];
+    const modelEntryId = model ? randomBytes(4).toString("hex") : null;
+    if (model) lines.push(JSON.stringify({ type: "model_change", id: modelEntryId, parentId: null, timestamp, provider: model.provider, modelId: model.id }));
     const trimmedName = typeof name === "string" ? name.trim() : "";
     if (trimmedName !== "") {
       lines.push(
         JSON.stringify({
           type: "session_info",
           id: randomBytes(4).toString("hex"),
-          parentId: null,
+          parentId: modelEntryId,
           timestamp,
           name: trimmedName,
         }),
@@ -463,6 +473,63 @@ export class SessionHub {
       isSubAgent: isSubAgentName(trimmedName === "" ? null : trimmedName),
       parentSessionId: null,
     };
+  }
+
+  async getModels(cwd: string, id?: string): Promise<PiModelCatalog> {
+    const found = id ? await this.findSession(id) : null;
+    if (id && !found) throw new HubError(ErrorCodes.SESSION_NOT_FOUND, "会话不存在", 404);
+    const live = id ? this.live.get(id)?.session : undefined;
+    if (id && live?.isIdle && !this.pendingRuns.has(id) && !this.modelChanges.has(id)) {
+      try { await live.modelRuntime?.refresh?.({ allowNetwork: false }); }
+      catch { throw new HubError(ErrorCodes.MODEL_UNAVAILABLE, "模型目录刷新失败，请检查本机 pi 配置后重试。", 400); }
+    }
+    const current = live ? modelRef(live.model) : found ? recordedPiModel(await readSessionFile(found.sessionFile)).model : null;
+    return this.models.catalog(found?.cwd || cwd, current, live?.modelRuntime);
+  }
+
+  /** Change one idle session only; never rewrite global pi settings or replay a failed prompt. */
+  async setModel(id: string, choice: PiModelRef): Promise<PiModelRef> {
+    if (this.modelChanges.has(id) || this.pendingRuns.has(id) || this.ensureLiveInflight.has(id) || this.live.get(id)?.session.isIdle === false) {
+      throw new HubError(ErrorCodes.SESSION_BUSY, "会话正在运行或切换模型，请结束当前任务后再切换", 409);
+    }
+    this.modelChanges.add(id);
+    try {
+      const external = await this.externalBusyReason(id);
+      if (external !== null) throw new HubError(ErrorCodes.EXTERNAL_ACTIVE, external, 409);
+      const found = await this.findSession(id);
+      if (!found) throw new HubError(ErrorCodes.SESSION_NOT_FOUND, "会话不存在", 404);
+      const live = this.live.get(id)?.session;
+      try { await live?.modelRuntime?.refresh?.({ allowNetwork: false }); }
+      catch { throw new HubError(ErrorCodes.MODEL_UNAVAILABLE, "模型目录刷新失败，请检查本机 pi 配置后重试。", 400); }
+      const { model } = await this.models.resolve(choice, live?.modelRuntime);
+      const externalAfterResolve = await this.externalBusyReason(id);
+      if (externalAfterResolve !== null) throw new HubError(ErrorCodes.EXTERNAL_ACTIVE, externalAfterResolve, 409);
+      if (live) {
+        try { await live.setModel(model, { persist: false }); }
+        catch { throw new HubError(ErrorCodes.MODEL_UNAVAILABLE, "模型切换未完成，请刷新并检查本机 pi 的 provider 配置。", 400); }
+      } else {
+        let content = await readSessionFile(found.sessionFile);
+        // Old flat sessions need the SDK's ID/parent migration before appending
+        // a tree entry, otherwise the new selection could orphan their history.
+        if ((parseSessionJsonl(content).header?.version ?? 1) < 3) {
+          try { SessionManager.open(found.sessionFile); }
+          catch (err) { throw new HubError(ErrorCodes.SESSION_CORRUPT, describeSessionOpenError(err, found), 409); }
+          content = await readSessionFile(found.sessionFile);
+        }
+        const { leafId } = recordedPiModel(content);
+        const line = JSON.stringify({ type: "model_change", id: randomBytes(4).toString("hex"), parentId: leafId,
+          timestamp: new Date().toISOString(), provider: choice.provider, modelId: choice.id });
+        const file = await open(found.sessionFile, constants.O_WRONLY | constants.O_APPEND);
+        try {
+          await file.write(`${content.length > 0 && !content.endsWith("\n") ? "\n" : ""}${line}\n`);
+        } finally { await file.close(); }
+      }
+      const after = await stat(found.sessionFile);
+      this.ownWrites.set(id, Math.ceil(after.mtimeMs));
+      this.setStatus(id, "idle");
+      this.invalidateList();
+      return { provider: choice.provider, id: choice.id };
+    } finally { this.modelChanges.delete(id); }
   }
 
   /**
@@ -568,6 +635,9 @@ export class SessionHub {
 
   /** 取得（或创建）该会话的 AgentSession 实例（per-id inflight 互斥：并发调用只创建一个） */
   async ensureLive(id: string): Promise<AgentSession> {
+    if (this.modelChanges.has(id)) {
+      throw new HubError(ErrorCodes.SESSION_BUSY, "正在切换模型，请完成后再操作", 409);
+    }
     const existing = this.live.get(id);
     if (existing) {
       this.touch(existing);
@@ -609,12 +679,24 @@ export class SessionHub {
     }
     let session: AgentSession;
     try {
+      const saved = recordedPiModel(await readSessionFile(found.sessionFile)).model;
+      // The SDK restores a saved model only after the first message. Explicitly
+      // pin an empty session's choice, rather than silently using global defaults.
+      const pinned = saved && manager.buildSessionContext().messages.length === 0
+        ? await this.models.resolve(saved) : null;
       const created = await this.createSessionFn({
         sessionManager: manager,
         cwd: found.cwd !== "" ? found.cwd : undefined,
+        ...(pinned ? { model: pinned.model, modelRuntime: pinned.runtime as AgentSession["modelRuntime"] } : {}),
       });
       session = created.session;
+      const actual = modelRef(session.model);
+      if (saved && created.modelFallbackMessage && (!actual || actual.provider !== saved.provider || actual.id !== saved.id)) {
+        session.dispose();
+        throw new HubError(ErrorCodes.MODEL_UNAVAILABLE, "原会话的模型在 Hub 环境中不可用。请在会话的模型入口选择可用模型；已阻止自动切换到其他 provider。", 400);
+      }
     } catch (err) {
+      if (err instanceof HubError) throw err;
       throw new HubError(ErrorCodes.SESSION_CORRUPT, describeSessionOpenError(err, found), 409);
     }
 
@@ -722,6 +804,10 @@ export class SessionHub {
     const externalReason = await this.externalBusyReason(id);
     if (externalReason !== null) {
       throw new HubError(ErrorCodes.EXTERNAL_ACTIVE, externalReason, 409);
+    }
+
+    if (this.modelChanges.has(id)) {
+      throw new HubError(ErrorCodes.SESSION_BUSY, "正在切换模型，请完成后再发送", 409);
     }
 
     // busy 判定**不**为它 await ensureLive：createAgentSession 实测会同步阻塞事件循环

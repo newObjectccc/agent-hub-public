@@ -1,6 +1,6 @@
 {
   "name": "@newobjectcccddd/agent-hub",
-  "version": "0.3.0-beta.2",
+  "version": "0.3.0-beta.3",
   "description": "Cross-platform pi/claude agent session hub: mobile PWA panel + chat + KPI, with Node server, pi extensions and CLI",
   "license": "MIT",
   "author": "newObjectccc",

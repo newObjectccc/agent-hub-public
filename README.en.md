@@ -62,6 +62,8 @@ Uploaded images appear as thumbnails. Claude's image dimensions/coordinate hints
 
 ## Quick Start (npm Beta)
 
+Starting with Beta.3, new pi sessions can choose a configured provider/model, and existing chats show their model above the composer. If terminal pi works with Grok but a new Hub session gets a provider 403, choose `xai / grok-4.5` when creating it, or use **Change model** in an idle chat and retry the failed message manually. Context stays intact and the saved pi default stays unchanged. In the terminal `/model` picker, **Enter changes only that session; Ctrl+S saves the default** ([pi model docs](https://pi.dev/docs/latest/models)). Finish any run and exit a terminal holding the same session before changing its model. The list reflects the Hub process's local pi configuration; provider access and quota still apply. See the [installation troubleshooting guide](docs/INSTALL.md#pi-模型与-403-排查).
+
 Prepare **Node.js ≥22.19 (includes npm)** and install/sign in to **at least one of pi, Claude Code, or Codex** on the computer. The hub reuses that agent's local authentication and model configuration; you do not need all three CLIs. Keep the computer awake, online, and the hub running.
 
 A global install is recommended for regular use and autostart. The npm package includes the frontend and backend builds: **no Git, pnpm, or on-device build is required**.

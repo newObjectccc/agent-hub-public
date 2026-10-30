@@ -1,6 +1,6 @@
 {
   "name": "@agent-hub/cli",
-  "version": "0.3.0-beta.2",
+  "version": "0.3.0-beta.3",
   "private": true,
   "type": "module",
   "description": "agent-hub 跨平台 CLI：setup / start / check(doctor) / open（零重依赖）",

@@ -1,12 +1,12 @@
 {
   "name": "@newobjectcccddd/agent-hub",
-  "version": "0.3.0-beta.2",
+  "version": "0.3.0-beta.3",
   "lockfileVersion": 3,
   "requires": true,
   "packages": {
     "": {
       "name": "@newobjectcccddd/agent-hub",
-      "version": "0.3.0-beta.2",
+      "version": "0.3.0-beta.3",
       "bundleDependencies": [
         "@earendil-works/pi-coding-agent",
         "@fastify/compress",
