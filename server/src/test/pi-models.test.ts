@@ -219,10 +219,10 @@ describe("pi models and model switching", () => {
     assert.deepEqual(recordedPiModel(await readFile(session.sessionFile, "utf8")).model, { provider: "xai", id: "grok-4.3" });
   });
 
-  it("a stale model restore cannot silently fall back to another provider", async () => {
+  it("a stale model restore cannot silently fall back, even when the SDK omits a fallback warning", async () => {
     let disposed = false;
     const fake = { model: claude, dispose: () => { disposed = true; } } as unknown as AgentSession;
-    const item = hub((async () => ({ session: fake, modelFallbackMessage: "Could not restore model" })) as unknown as typeof createAgentSession);
+    const item = hub((async () => ({ session: fake })) as unknown as typeof createAgentSession);
     const session = await item.createSession(cwd, undefined, ref);
     const initial = await readFile(session.sessionFile, "utf8");
     const leafId = recordedPiModel(initial).leafId;

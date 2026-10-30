@@ -691,7 +691,7 @@ export class SessionHub {
       });
       session = created.session;
       const actual = modelRef(session.model);
-      if (saved && created.modelFallbackMessage && (!actual || actual.provider !== saved.provider || actual.id !== saved.id)) {
+      if (saved && (!actual || actual.provider !== saved.provider || actual.id !== saved.id)) {
         session.dispose();
         throw new HubError(ErrorCodes.MODEL_UNAVAILABLE, "原会话的模型在 Hub 环境中不可用。请在会话的模型入口选择可用模型；已阻止自动切换到其他 provider。", 400);
       }

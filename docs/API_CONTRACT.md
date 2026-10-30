@@ -158,7 +158,7 @@ pi 的**余额耗尽 / 网络中断 / 上下文溢出 / 主动中止**都不抛�
 - `POST /api/sessions/:id/model`：body 为 `{ "provider": "xai", "id": "grok-4.5" }`（不是嵌套 model）；响应 200 `{ "model": { "provider": "xai", "id": "grok-4.5" } }`。只切当前会话：驻留实例调用 SDK `setModel(..., {persist:false})`，未加载实例在当前分支追加模型条目，旧格式先通过 SDK 迁移。保留历史，不改全局默认值，不自动重试消息。
 - 切换与发送/SDK 启动互斥；运行中或正在切换返回 409 `SESSION_BUSY`，外部终端持有/近期写入返回 409 `EXTERNAL_ACTIVE`，接管中返回 409 `ATTACH_ACTIVE`。会话不存在返回 404 `SESSION_NOT_FOUND`，非 pi 返回 400 `INVALID_REQUEST`，未知或当前环境未配置模型返回 400 `MODEL_UNAVAILABLE`。旧注入实现未提供模型功能时返回 501；错误信封仍为 `{error:{code,message}}`。
 - 所有入口沿用 Bearer 鉴权与应用锁；无 token 的锁屏请求返回 423，错误/过期锁令牌或缺少有效 Bearer 返回 401。模型标识仅接受非空 provider/id（各 ≤512 字符，无控制字符），不接受凭据/其他配置字段。
-- SDK 恢复已保存模型失败且拟回退到不同模型时，终止本次唤醒并报告 `MODEL_UNAVAILABLE`；不得静默把任务交给另一个 provider。由于 prompt 异步受理，启动阶段失败通过 WS `error` 发送此 code；用户选择模型后手动重试。
+- SDK 恢复后的模型与保存的选择不一致时，即使 SDK 未给出回退警告，也终止本次唤醒并报告 `MODEL_UNAVAILABLE`；不得静默把任务交给另一个 provider。由于 prompt 异步受理，启动阶段失败通过 WS `error` 发送此 code；用户选择模型后手动重试。
 
 ### POST /api/sessions/:id/fork
 复制会话（fork）：基于某会话的**完整上下文**生成独立新会话（新 id/新文件，继承 source、
