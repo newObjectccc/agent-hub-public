@@ -50,7 +50,7 @@ npm install -g @newobjectcccddd/agent-hub@beta --registry=https://registry.npmjs
 agent-hub start
 ```
 
-在电脑打开 **http://127.0.0.1:7700**，选择一条已有会话，发送一条小任务并确认回复。没有历史会话时，先在电脑的 agent CLI 中建立一条，再刷新工作台。
+在电脑打开 **[http://127.0.0.1:7700](http://127.0.0.1:7700)**，选择一条已有会话，发送一条小任务并确认回复。没有历史会话时，先在电脑的 agent CLI 中建立一条，再刷新工作台。
 
 请使用完整作用域包名；裸名 `agent-hub` 是另一个项目。临时试用可用 `npx --registry=https://registry.npmjs.org/ @newobjectcccddd/agent-hub@beta start`。上述命令只为本次安装指定 npm 官方源。
 
@@ -324,7 +324,7 @@ node cli/setup.js
 npm run dev
 ```
 
-开发入口为 **http://localhost:5173**，Vite 将 `/api` 与 `/ws` 代理到后端（默认 7700）。日常使用源码产物可改用 `npm run start`，远程用 `npm run remote`；三种方式选择一种。项目初始化用 `node cli/setup.js`，`pnpm setup` 是 pnpm 自带命令。
+开发入口为 **[http://localhost:5173](http://localhost:5173)**，Vite 将 `/api` 与 `/ws` 代理到后端（默认 7700）。日常使用源码产物可改用 `npm run start`，远程用 `npm run remote`；三种方式选择一种。项目初始化用 `node cli/setup.js`，`pnpm setup` 是 pnpm 自带命令。
 
 `server/` 提供 API、WebSocket 和 agent 适配，`web/` 是 PWA，`cli/` 管理安装与启动，`integrations/` 提供终端扩展。检查与协作约定见[贡献指南](CONTRIBUTING.md)；若此仓库正在服务手机，请在独立 worktree 中做构建验证，避免覆盖实时使用的 `web/dist`。
 

@@ -50,7 +50,7 @@ npm install -g @newobjectcccddd/agent-hub@beta --registry=https://registry.npmjs
 agent-hub start
 ```
 
-Open **http://127.0.0.1:7700** on the computer, choose an existing session, and send a small task to confirm a reply. If the list is empty, create a session in the computer's agent CLI and refresh the workbench.
+Open **[http://127.0.0.1:7700](http://127.0.0.1:7700)** on the computer, choose an existing session, and send a small task to confirm a reply. If the list is empty, create a session in the computer's agent CLI and refresh the workbench.
 
 Use the full scoped package name; the unscoped `agent-hub` belongs to another project. For a temporary trial, use `npx --registry=https://registry.npmjs.org/ @newobjectcccddd/agent-hub@beta start`. These commands select the official npm registry for this invocation only.
 
@@ -325,7 +325,7 @@ node cli/setup.js
 npm run dev
 ```
 
-The development entry is **http://localhost:5173**; Vite proxies `/api` and `/ws` to the backend (7700 by default). For regular use of source builds, choose `npm run start`, or `npm run remote` for remote access. Run only one mode at a time. Initialize this project with `node cli/setup.js`; `pnpm setup` is pnpm's own command.
+The development entry is **[http://localhost:5173](http://localhost:5173)**; Vite proxies `/api` and `/ws` to the backend (7700 by default). For regular use of source builds, choose `npm run start`, or `npm run remote` for remote access. Run only one mode at a time. Initialize this project with `node cli/setup.js`; `pnpm setup` is pnpm's own command.
 
 `server/` provides APIs, WebSocket, and agent adapters; `web/` is the PWA; `cli/` manages setup and startup; `integrations/` contains terminal extensions. See [Contributing](CONTRIBUTING.md) for checks and collaboration rules. If this checkout serves your phone, verify builds in a separate worktree so they cannot overwrite the live `web/dist`.
 
