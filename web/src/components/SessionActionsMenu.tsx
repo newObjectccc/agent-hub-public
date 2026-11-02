@@ -4,15 +4,20 @@
  * 信息零损失（顶栏不再常驻占位）。
  * 野兽派下拉：厚描边 + 硬阴影；点外部 / Esc 关闭（useDismissable，与其他弹层互斥）；触控目标 ≥44px。
  */
-import { useRef, useState } from "react";
+import { useT } from "../i18n/provider";
+import { useRef, useState, type ReactNode } from "react";
 import { useDismissable } from "../hooks/useDismissable";
 import type { SessionSummary } from "../api/types";
-import { CopyIcon, EditIcon, MoreIcon } from "./icons";
+import { CopyIcon, EditIcon, MoreIcon, GitBranchIcon, TreeIcon } from "./icons";
 import { DrivenBadge } from "./DrivenBadge";
 import { SourceBadge } from "./SourceBadge";
 
 export interface SessionActionsMenuProps {
   onFork: () => void;
+  onWorkspace?: () => void;
+  onGit?: () => void;
+  onTree?: () => void;
+  renderModeControl?: (close: () => void) => ReactNode;
   forkBusy?: boolean;
   /** 重命名入口（弹出 RenameSessionSheet 由调用方负责）；缺省不显示菜单项 */
   onRename?: () => void;
@@ -25,7 +30,8 @@ export interface SessionActionsMenuProps {
   };
 }
 
-export function SessionActionsMenu({ onFork, forkBusy = false, onRename, info }: SessionActionsMenuProps) {
+export function SessionActionsMenu({ onFork, forkBusy = false, onRename, info, onWorkspace, onGit, onTree, renderModeControl }: SessionActionsMenuProps) {
+  const t = useT();
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
@@ -80,6 +86,9 @@ export function SessionActionsMenu({ onFork, forkBusy = false, onRename, info }:
               )}
             </div>
           )}
+          {onWorkspace && <button type="button" role="menuitem" className="action-menu-item" onClick={() => { setOpen(false); triggerRef.current?.focus(); onWorkspace(); }}>{t("workspace.title")}</button>}
+          {onGit && <button type="button" role="menuitem" className="action-menu-item" data-workspace-action="git" onClick={() => { setOpen(false); triggerRef.current?.focus(); onGit(); }}><GitBranchIcon />{t("workspace.git")}</button>}
+          {onTree && <button type="button" role="menuitem" className="action-menu-item" data-workspace-action="tree" onClick={() => { setOpen(false); onTree(); }}><TreeIcon />{t("workspace.tree")}</button>}
           <button
             type="button"
             role="menuitem"
@@ -109,6 +118,7 @@ export function SessionActionsMenu({ onFork, forkBusy = false, onRename, info }:
               <span>重命名</span>
             </button>
           )}
+          {renderModeControl?.(() => { setOpen(false); triggerRef.current?.focus(); })}
           <p className="action-menu-hint">
             复制完整上下文到全新会话，手机与电脑可在各自会话中继续。两边的聊天记录分别保存，仍需留意对同一工作区文件的修改。
           </p>

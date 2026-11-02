@@ -30,6 +30,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("../api/client", () => ({
   api: {
+    getWorkspace: vi.fn(async (cwd: string) => ({ cwd, projectName: cwd.split("/").pop(), root: null, repositoryRoot: null, isWorktree: false, branch: null, head: null, detached: false, kind: "directory", revision: "1".repeat(64) })),
     getSessionModels: vi.fn(async () => ({ models: [], currentModel: null, defaultModel: null, warning: null })),
     getPiModels: vi.fn(async () => ({ models: [], currentModel: null, defaultModel: null, warning: null })),
     getSession: mocks.getSession,
@@ -308,7 +309,8 @@ describe("驱动来源标注与预期提示条", () => {
     expect(hint).not.toBeNull();
     expect(hint!.textContent).toContain("重新打开该会话，载入新增消息");
     // 顶栏 📱 面板驱动 徽章
-    expect(el.querySelector(".badge.driven-panel")).not.toBeNull();
+    click(el.querySelector(".action-menu-wrap .tool-btn"));
+    expect(el.querySelector(".action-menu-info .badge.driven-panel")).not.toBeNull();
 
     click(buttonByText(el, "复制为新会话"));
     await flush();
@@ -328,7 +330,8 @@ describe("驱动来源标注与预期提示条", () => {
     });
     const el = await render();
     expect(el.querySelector(".driver-hint")).toBeNull();
-    expect(el.querySelector(".badge.driven-terminal")).not.toBeNull();
+    click(el.querySelector(".action-menu-wrap .tool-btn"));
+    expect(el.querySelector(".action-menu-info .badge.driven-terminal")).not.toBeNull();
     expect(el.querySelector(".badge.driven-panel")).toBeNull();
   });
 
@@ -344,7 +347,8 @@ describe("驱动来源标注与预期提示条", () => {
     typeInput(el, "从面板发一条");
     click(el.querySelector(".composer-send"));
     await flush();
-    expect(el.querySelector(".badge.driven-panel")).not.toBeNull();
+    click(el.querySelector(".action-menu-wrap .tool-btn"));
+    expect(el.querySelector(".action-menu-info .badge.driven-panel")).not.toBeNull();
   });
 });
 

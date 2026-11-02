@@ -40,13 +40,14 @@ export function flushOfflineQueue(options: FlushNowOptions = {}): Promise<FlushR
       const result = await flushQueue(
         getOfflineQueue(),
         {
+          requireWorkspace: true,
           resolveSessionSource: async (id) => (await api.getSession(id, { limit: 1 })).session.source ?? null,
           uploadFile: (input, signal) => api.uploadFile(input, signal),
-          sendPrompt: (id, text, mode, images, clientMessageId, signal) =>
-            api.sendPrompt(id, text, mode, images, clientMessageId, signal),
+          sendPrompt: (id, text, mode, images, clientMessageId, signal, revision) =>
+            api.sendPrompt(id, text, mode, images, clientMessageId, signal, revision),
           sendPromptWithMode,
-          sendAttachMessage: (id, text, mode, clientMessageId, signal, images) =>
-            api.sendAttachMessage(id, text, mode, clientMessageId, signal, images),
+          sendAttachMessage: (id, text, mode, clientMessageId, signal, images, revision) =>
+            api.sendAttachMessage(id, text, mode, clientMessageId, signal, images, revision),
         },
         rest,
       );

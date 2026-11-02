@@ -4,6 +4,7 @@
  * 语义零丢失：触发器 aria-label / title 带完整模式名与说明，菜单项 icon 在文字前便于视觉区分。
  * 接管不可用（终端离线/扩展未装）时接管项灰显 + 原因。
  */
+import { useT } from "../i18n/provider";
 import { codexPolicySummary } from "../api/codexPolicy";
 import { useRef, useState } from "react";
 import type { SessionSource, TerminalAttachInfo } from "../api/types";
@@ -18,6 +19,8 @@ export interface AttachModeMenuProps {
   source?: SessionSource;
   onChange: (mode: AttachMode) => void;
   busy?: boolean;
+  inline?: boolean;
+  onDone?: () => void;
 }
 
 const PARALLEL_HINT = "手机消息由 server 里的实例继续处理（双方互不干扰）";
@@ -52,13 +55,62 @@ function ModeIcon({ mode }: { mode: AttachMode }) {
   return mode === "attach" ? <MonitorIcon /> : <PhoneIcon />;
 }
 
-export function AttachModeMenu({ mode, terminal, source, onChange, busy }: AttachModeMenuProps) {
+export function AttachModeMenu({ mode, terminal, source, onChange, busy, inline = false, onDone }: AttachModeMenuProps) {
+  const t = useT();
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const btnRef = useRef<HTMLButtonElement | null>(null);
   const { attachEnabled, attachDisabledReason } = attachAvailability(terminal, source);
 
-  useDismissable({ open, onDismiss: () => setOpen(false), rootRef: wrapRef, anchorRefs: [btnRef] });
+  useDismissable({ open: !inline && open, onDismiss: () => setOpen(false), rootRef: wrapRef, anchorRefs: [btnRef] });
+
+  const items = <>
+          <button
+            type="button"
+            role="menuitemradio"
+            aria-checked={mode === "parallel"}
+            className={`attach-menu-item${mode === "parallel" ? " active" : ""}`}
+            onClick={() => {
+              if (busy) return;
+              onChange("parallel");
+              setOpen(false);
+              onDone?.();
+              btnRef.current?.focus();
+            }}
+          >
+            <span className="attach-menu-label">
+              <span className="attach-menu-icon" aria-hidden="true">
+                <PhoneIcon />
+              </span>
+              {inline ? t("workspace.parallel") : "平行继续"}
+            </span>
+            <span className="attach-menu-hint">{inline ? t("workspace.parallelHint") : modeHint("parallel", terminal)}</span>
+          </button>
+          <button
+            type="button"
+            role="menuitemradio"
+            aria-checked={mode === "attach"}
+            className={`attach-menu-item${mode === "attach" ? " active" : ""}${attachEnabled ? "" : " disabled"}`}
+            aria-disabled={!attachEnabled || busy}
+            title={attachEnabled ? attachHint(terminal) : (attachDisabledReason ?? "")}
+            onClick={() => {
+              if (!attachEnabled || busy) return;
+              onChange("attach");
+              setOpen(false);
+              onDone?.();
+              btnRef.current?.focus();
+            }}
+          >
+            <span className="attach-menu-label">
+              <span className="attach-menu-icon" aria-hidden="true">
+                <MonitorIcon />
+              </span>
+              {inline ? t("workspace.attach") : "接管终端"}
+            </span>
+            <span className="attach-menu-hint">{inline ? t(attachEnabled ? "workspace.attachHint" : "workspace.attachUnavailable") : attachEnabled ? attachHint(terminal) : attachDisabledReason}</span>
+          </button>
+  </>;
+  if (inline) return <div className="attach-inline" role="group" aria-label="会话驱动模式">{items}</div>;
 
   return (
     <div className="attach-menu-wrap" ref={wrapRef}>
@@ -82,47 +134,7 @@ export function AttachModeMenu({ mode, terminal, source, onChange, busy }: Attac
       </button>
       {open && (
         <div className="attach-menu" role="menu" aria-label="会话驱动模式选择">
-          <button
-            type="button"
-            role="menuitemradio"
-            aria-checked={mode === "parallel"}
-            className={`attach-menu-item${mode === "parallel" ? " active" : ""}`}
-            onClick={() => {
-              onChange("parallel");
-              setOpen(false);
-              btnRef.current?.focus();
-            }}
-          >
-            <span className="attach-menu-label">
-              <span className="attach-menu-icon" aria-hidden="true">
-                <PhoneIcon />
-              </span>
-              平行继续
-            </span>
-            <span className="attach-menu-hint">{modeHint("parallel", terminal)}</span>
-          </button>
-          <button
-            type="button"
-            role="menuitemradio"
-            aria-checked={mode === "attach"}
-            className={`attach-menu-item${mode === "attach" ? " active" : ""}${attachEnabled ? "" : " disabled"}`}
-            aria-disabled={!attachEnabled}
-            title={attachEnabled ? attachHint(terminal) : (attachDisabledReason ?? "")}
-            onClick={() => {
-              if (!attachEnabled) return;
-              onChange("attach");
-              setOpen(false);
-              btnRef.current?.focus();
-            }}
-          >
-            <span className="attach-menu-label">
-              <span className="attach-menu-icon" aria-hidden="true">
-                <MonitorIcon />
-              </span>
-              接管终端
-            </span>
-            <span className="attach-menu-hint">{attachEnabled ? attachHint(terminal) : attachDisabledReason}</span>
-          </button>
+          {items}
         </div>
       )}
     </div>

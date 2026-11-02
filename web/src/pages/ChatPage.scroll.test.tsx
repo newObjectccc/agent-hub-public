@@ -29,6 +29,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("../api/client", () => ({
   api: {
+    getWorkspace: vi.fn(async (cwd: string) => ({ cwd, projectName: cwd.split("/").pop(), root: null, repositoryRoot: null, isWorktree: false, branch: null, head: null, detached: false, kind: "directory", revision: "1".repeat(64) })),
     getSessionModels: vi.fn(async () => ({ models: [], currentModel: null, defaultModel: null, warning: null })),
     getPiModels: vi.fn(async () => ({ models: [], currentModel: null, defaultModel: null, warning: null })),
     getSession: mocks.getSession,

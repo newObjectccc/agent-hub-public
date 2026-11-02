@@ -11,6 +11,7 @@
  * mock 模式参照 ChatPage.attach.test.tsx（额外 mock attachSession/detachSession 握手）。
  */
 import { act } from "react";
+import { setLocaleSetting } from "../i18n";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionSummary } from "../api/types";
@@ -39,6 +40,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("../api/client", () => ({
   api: {
+    getWorkspace: vi.fn(async (cwd: string) => ({ cwd, projectName: cwd.split("/").pop(), root: null, repositoryRoot: null, isWorktree: false, branch: null, head: null, detached: false, kind: "directory", revision: "1".repeat(64) })),
     getSessionModels: vi.fn(async () => ({ models: [], currentModel: null, defaultModel: null, warning: null })),
     getPiModels: vi.fn(async () => ({ models: [], currentModel: null, defaultModel: null, warning: null })),
     getSession: mocks.getSession,
@@ -157,12 +159,12 @@ function click(el: Element | null): void {
 
 /** 模式切换触发器（AttachModeMenu 纯图标 + aria-label） */
 function modeLabel(el: HTMLElement): string {
-  return el.querySelector(".attach-trigger")?.getAttribute("aria-label") ?? "";
+  return el.querySelector(".workspace-subtitle")?.textContent ?? "";
 }
 
 /** 打开模式菜单并点选（"平行继续" / "接管终端"） */
 async function pickMode(el: HTMLElement, label: "平行继续" | "接管终端"): Promise<void> {
-  click(el.querySelector(".attach-trigger"));
+  click(el.querySelector(".action-menu-wrap .tool-btn"));
   const item = Array.from(el.querySelectorAll(".attach-menu-item")).find((b) =>
     b.querySelector(".attach-menu-label")?.textContent?.includes(label),
   );
@@ -173,6 +175,7 @@ async function pickMode(el: HTMLElement, label: "平行继续" | "接管终端")
 }
 
 beforeEach(() => {
+  setLocaleSetting("zh");
   wsEvent = null;
   window.localStorage.clear();
   // 首次说明 sheet 全局已读：本文件只测模式默认，不弹 sheet

@@ -9,13 +9,14 @@ export interface GitStatusBadgeProps {
   cwd: string;
   /** 紧凑模式（会话卡片）：字号更小 */
   compact?: boolean;
+  hideBranch?: boolean;
   onClick?: () => void;
 }
 
-export function GitStatusBadge({ cwd, compact, onClick }: GitStatusBadgeProps) {
+export function GitStatusBadge({ cwd, compact, onClick, hideBranch }: GitStatusBadgeProps) {
   const status = useGitStatus(cwd);
   if (!status) return null;
-  const chips = gitStatusChips(status).map((chip) => (
+  const chips = gitStatusChips(status).filter((chip) => !hideBranch || chip.key !== "branch").map((chip) => (
     <span key={chip.key} className={`git-chip ${chip.tone}`}>
       {chip.label}
     </span>

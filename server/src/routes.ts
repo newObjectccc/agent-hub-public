@@ -2,6 +2,7 @@
  * REST 路由（docs/API_CONTRACT.md §1-§5）。
  * 统一错误信封：{ "error": { "code", "message" } }
  */
+import { WorkspaceService, parseWorkspaceRevision } from "./workspace.js";
 import { timingSafeEqual } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { AgentLinkLike, CommandMode } from "./agents.js";
@@ -259,6 +260,7 @@ export function isAppLockExempt(url: string): boolean {
 export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Promise<void> {
   const { hub, kpi, config, dashboard } = deps;
   const git = deps.git ?? createGitApi();
+  const workspace = new WorkspaceService();
   const commands: CommandsApi = deps.commands ?? createCommandsApi();
   const fsTree = deps.fsTree ?? { listDir: (cwd: string, options: ListDirOptions) => listDir(cwd, options) };
   /** Token 用量服务（缺省自建：pi 会话目录增量扫描） */
@@ -487,6 +489,15 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
     }
   });
 
+  // Lightweight identity; fresh=1 bypasses the 30s list cache.
+  app.get<{ Querystring: { cwd?: string; fresh?: string } }>("/api/workspace", async (req, reply) => {
+    try {
+      if (typeof req.query.cwd !== "string" || !req.query.cwd) throw new HubError(ErrorCodes.INVALID_CWD, "cwd 必须是绝对路径", 400);
+      reply.header("Cache-Control", "no-store");
+      return reply.send(await workspace.inspect(req.query.cwd, req.query.fresh === "1"));
+    } catch (error) { return handle(reply, error); }
+  });
+
   // POST /api/sessions/:id/prompt（images：上传图片相对路径数组，pi 直接附图，契约 §1/§15；
   // clientMessageId 可选幂等键：同 (sessionId, clientMessageId) 重发只执行一次，重放首次受理响应）
   app.post<{ Params: { id: string } }>("/api/sessions/:id/prompt", async (req, reply) => {
@@ -495,6 +506,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
       mode?: unknown;
       images?: unknown;
       clientMessageId?: unknown;
+      workspaceRevision?: unknown;
     };
     const clientMessageId =
       typeof body.clientMessageId === "string" && body.clientMessageId !== "" && body.clientMessageId.length <= 128
@@ -518,6 +530,12 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
     }
     try {
       rejectIfAttached(req.params.id);
+      const expectedWorkspace = parseWorkspaceRevision(body.workspaceRevision);
+      if (expectedWorkspace !== undefined) {
+        const owner = await hub.findSession(req.params.id);
+        if (!owner) throw new HubError(ErrorCodes.SESSION_NOT_FOUND, "会话不存在", 404);
+        await workspace.assert(owner.cwd, expectedWorkspace);
+      }
       const text = body.text;
       // pi slash 命令 `/compact [instructions]`：SDK prompt() 不处理内置命令（实测透传成普通消息），
       // 改走官方 SDK session.compact() 通道（契约 §8）；其余命令原样作为 prompt 文本发送
@@ -821,6 +839,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
       if (!session) throw new HubError(ErrorCodes.SESSION_NOT_FOUND, `会话不存在: ${req.params.id}`, 404);
       // P2-2：`images: null` 是老 PWA 显式表达「无附件」的写法（JSON 序列化会保留 null），
       // 一律宽容视为未传；只有非 null 的非数组才是真非法值 → 400（与 /prompt 的 images 口径一致）。
+      await workspace.assert(session.cwd, parseWorkspaceRevision(body.workspaceRevision));
       const rawImages = body.images === null ? undefined : body.images;
       if (rawImages !== undefined && !Array.isArray(rawImages)) throw new HubError(ErrorCodes.INVALID_REQUEST, "images 必须是上传图片引用数组", 400);
       const images = session.source === "codex" && rawImages !== undefined

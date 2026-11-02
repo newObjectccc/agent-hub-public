@@ -395,3 +395,23 @@ describe("getOfflineQueue 单例", () => {
     expect(b.get("shared-1")).not.toBeNull();
   });
 });
+
+describe("workspace-bound retries", () => {
+  it("persists the original identity and forwards it to takeover without replacing it on reconnect", async () => {
+    const storage = fakeStorage(); const initial = new OfflineQueueStore(storage);
+    const pending = item({ channel: "attach", workspaceRevision: "a".repeat(64), workspaceLabel: "/repo · main" });
+    initial.add(pending); const restored = new OfflineQueueStore(storage);
+    const { deps } = makeDeps({ requireWorkspace: true });
+    await flushQueue(restored, deps);
+    expect(deps.sendAttachMessage).toHaveBeenCalledWith("s1", "你好", "prompt", pending.localId, expect.anything(), undefined, "a".repeat(64));
+  });
+  it("does not automatically resend old messages without workspace identity or a refused workspace", async () => {
+    const store = new OfflineQueueStore(null); store.add(item());
+    const { deps } = makeDeps({ requireWorkspace: true });
+    await flushQueue(store, deps);
+    expect(deps.sendPromptWithMode).not.toHaveBeenCalled(); expect(store.list()[0].autoRetry).toBe(false);
+    store.patch(store.list()[0].localId, { workspaceRevision: "b".repeat(64) });
+    await flushQueue(store, deps);
+    expect(deps.sendPromptWithMode).not.toHaveBeenCalled();
+  });
+});

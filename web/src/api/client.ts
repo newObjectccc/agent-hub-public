@@ -4,6 +4,7 @@
  */
 import { currentLockHeaders } from "../utils/appLock";
 import type {
+  WorkspaceSnapshot,
   AttachMessageResult,
   AttachResult,
   HostRequestBody,
@@ -218,6 +219,10 @@ export const api = {
 
   /** 发送消息（契约 §1）；images 为上传图片引用路径（pi 直接附图，契约 §11）；
    *  clientMessageId 幂等键（乐观占位 localId，弱网重发同键由 server 去重，防同文双发）；signal 可选超时/中止 */
+  getWorkspace(cwd: string, fresh = false): Promise<WorkspaceSnapshot> {
+    return request(`/api/workspace?cwd=${encodeURIComponent(cwd)}${fresh ? "&fresh=1" : ""}`);
+  },
+
   sendPrompt(
     id: string,
     text: string,
@@ -225,12 +230,14 @@ export const api = {
     images?: string[],
     clientMessageId?: string,
     signal?: AbortSignal,
+    workspaceRevision?: string,
   ): Promise<PromptResult> {
     return request(`/api/sessions/${encodeURIComponent(id)}/prompt`, {
       method: "POST",
       body: JSON.stringify({
         text,
         mode,
+        ...(workspaceRevision ? { workspaceRevision } : {}),
         ...(images && images.length > 0 ? { images } : {}),
         ...(clientMessageId ? { clientMessageId } : {}),
       }),
@@ -290,10 +297,11 @@ export const api = {
     clientMessageId?: string,
     signal?: AbortSignal,
     images?: string[],
+    workspaceRevision?: string,
   ): Promise<AttachMessageResult> {
     return request(`/api/sessions/${encodeURIComponent(id)}/message`, {
       method: "POST",
-      body: JSON.stringify({ text, mode, ...(clientMessageId ? { clientMessageId } : {}), ...(images?.length ? { images } : {}) }),
+      body: JSON.stringify({ text, mode, ...(workspaceRevision ? { workspaceRevision } : {}), ...(clientMessageId ? { clientMessageId } : {}), ...(images?.length ? { images } : {}) }),
       signal,
     });
   },

@@ -39,6 +39,8 @@ export interface QueuedSend {
   localId: string;
   sessionId: string;
   source?: SessionSource;
+  workspaceRevision?: string;
+  workspaceLabel?: string;
   /** Codex HTTP 已受理但尚未收到原生回执，刷新后只查询状态，不重发执行。 */
   commandId?: string;
   /** 会话 cwd（附件补上传时直接用，免去 findSession 全量扫描） */
@@ -129,6 +131,8 @@ export function parseQueue(raw: string): QueuedSend[] {
         sessionId: item.sessionId,
         ...(item.source === "pi" || item.source === "claude" || item.source === "codex" ? { source: item.source } : {}),
         ...(typeof item.commandId === "string" && item.commandId.length <= 160 ? { commandId: item.commandId } : {}),
+        ...(typeof item.workspaceRevision === "string" && /^[a-f0-9]{64}$/.test(item.workspaceRevision) ? { workspaceRevision: item.workspaceRevision } : {}),
+        ...(typeof item.workspaceLabel === "string" ? { workspaceLabel: item.workspaceLabel.slice(0, 4096) } : {}),
         cwd: typeof item.cwd === "string" ? item.cwd : "",
         text: item.text,
         images,
@@ -309,6 +313,7 @@ export function getOfflineQueue(storage?: StorageLike | null): OfflineQueueStore
 /* ====================== 队列 flush（按序重发） ====================== */
 
 export interface FlushQueueDeps {
+  requireWorkspace?: boolean;
   /** 升级前的持久条目没有来源；生产发送前先补全，避免绕过 Codex 重试边界。 */
   resolveSessionSource?: (id: string) => Promise<SessionSource | null>;
   uploadFile: (
@@ -322,6 +327,7 @@ export interface FlushQueueDeps {
     images?: string[],
     clientMessageId?: string,
     signal?: AbortSignal,
+    workspaceRevision?: string,
   ) => Promise<PromptResult>;
   sendPromptWithMode: (
     id: string,
@@ -338,6 +344,7 @@ export interface FlushQueueDeps {
     clientMessageId?: string,
     signal?: AbortSignal,
     images?: string[],
+    workspaceRevision?: string,
   ) => Promise<{ accepted: boolean; commandId?: string }>;
 }
 
@@ -403,10 +410,16 @@ export async function flushQueue(
   const timeoutMs = options.timeoutMs ?? FLUSH_REQUEST_TIMEOUT_MS;
   const targets = options.only
     ? store.list().filter((i) => options.only?.includes(i.localId))
-    : store.list().filter((item) => item.source !== "codex" || item.autoRetry);
+    : store.list().filter((item) => item.autoRetry);
   const sources = new Map<string, SessionSource | null>();
   for (const stored of targets) {
     let item = stored;
+    if (deps.requireWorkspace && !item.workspaceRevision) {
+      const error = "旧消息没有记录工作区，请打开会话核对后手动重试";
+      store.patch(item.localId, { autoRetry: false, lastError: error });
+      result.failed.push({ localId: item.localId, kind: "business", error });
+      continue;
+    }
     if (item.source === undefined && deps.resolveSessionSource) {
       try {
         if (!sources.has(item.sessionId)) sources.set(item.sessionId, await withTimeout(deps.resolveSessionSource(item.sessionId), timeoutMs));
@@ -470,7 +483,7 @@ export async function flushQueue(
     const sendOnce = async (channel: "parallel" | "attach"): Promise<void> => {
       if (channel === "attach") {
         const accepted = await withTimeout(
-          deps.sendAttachMessage(item.sessionId, text, item.attachMode, item.localId, timeoutSignal(timeoutMs), item.source === "codex" ? imagePaths : undefined),
+          deps.sendAttachMessage(item.sessionId, text, item.attachMode, item.localId, timeoutSignal(timeoutMs), item.source === "codex" ? imagePaths : undefined, item.workspaceRevision),
           timeoutMs,
         );
         if (accepted && accepted.accepted === false) {
@@ -491,7 +504,7 @@ export async function flushQueue(
           item.sendMode,
           {
             sendPrompt: (id, t, mode, imgs, clientMessageId) =>
-              deps.sendPrompt(id, t, mode, imgs, clientMessageId ?? item.localId, signal),
+              deps.sendPrompt(id, t, mode, imgs, clientMessageId ?? item.localId, signal, item.workspaceRevision),
           },
           imagePaths.length > 0 ? imagePaths : undefined,
           item.localId,

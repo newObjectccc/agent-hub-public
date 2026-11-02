@@ -29,6 +29,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("../api/client", () => ({
   api: {
+    getWorkspace: vi.fn(async (cwd: string) => ({ cwd, projectName: cwd.split("/").pop(), root: null, repositoryRoot: null, isWorktree: false, branch: null, head: null, detached: false, kind: "directory", revision: "1".repeat(64) })),
     getSessionModels: vi.fn(async () => ({ models: [], currentModel: null, defaultModel: null, warning: null })),
     getPiModels: vi.fn(async () => ({ models: [], currentModel: null, defaultModel: null, warning: null })),
     getSession: mocks.getSession,
@@ -143,10 +144,10 @@ describe("ChatPage 发送防重入（快速双击只发一条）", () => {
       sendBtn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
       sendBtn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
-    expect(mocks.sendPromptWithMode).toHaveBeenCalledTimes(1);
     await act(async () => {
       await Promise.resolve();
     });
+    expect(mocks.sendPromptWithMode).toHaveBeenCalledTimes(1);
     expect(userRows(el)).toHaveLength(1);
   });
 
@@ -159,10 +160,10 @@ describe("ChatPage 发送防重入（快速双击只发一条）", () => {
       textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
       sendBtn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
-    expect(mocks.sendPromptWithMode).toHaveBeenCalledTimes(1);
     await act(async () => {
       await Promise.resolve();
     });
+    expect(mocks.sendPromptWithMode).toHaveBeenCalledTimes(1);
     expect(userRows(el)).toHaveLength(1);
   });
 });

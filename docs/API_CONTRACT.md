@@ -1253,3 +1253,11 @@ chat 输入区上传文件/图片：base64 JSON 落盘到会话 `cwd/.agent-hub-
 - Codex 平行与接管共用 `codexDriver.approvalPolicy` / `sandbox`，默认 `never` / `danger-full-access`，也允许显式收紧或 inherit。接管先取得基线，再释放探测进程、以新进程应用不同的策略；最终回显必须符合申请，未申请覆盖的维度不得随之放宽。缺少/不符的回显返回 400 `INVALID_REQUEST`，不发起 turn；准备/释放期仍阻止平行发送。
 - `bypass` 只取决于 approval=never；不能把 danger-full-access 沙箱等同于无审批。
 - 前端 GET 对账以请求开始时的本地事件版本保护随后到达的消息，消息 timestamp 只用于排序，不充当删除依据。压缩后的下一次 GET 重新建立基线。
+
+## 工作区身份（Beta.4）
+
+`GET /api/workspace?cwd=<absolute>&fresh=1` 返回 `{cwd,projectName,root,repositoryRoot,isWorktree,kind,branch,head,detached,revision}`，沿用现有鉴权、应用锁与 CORS；HTTP `Cache-Control: no-store`。`kind` 为 `git` / `directory` / `unavailable`，非仓库与无法确认分支分开表达。`root` 是当前工作树根，`repositoryRoot` 是所属仓库根；`head` 仅游离 HEAD 时返回完整提交哈希，其余为 null。`revision` 是目录与分支身份的 SHA-256，不是凭据；无法确认时为 null。普通分支内的新提交与脏文件不改变身份，游离 HEAD 的提交变化会改变身份。列表可用不带 fresh 的 30 秒缓存；`fresh=1` 和发送时核对均绕过该缓存。
+
+`POST /api/sessions/:id/prompt` 与 `POST /api/sessions/:id/message` 可携带 `workspaceRevision`（64 位小写十六进制）。服务器按会话实际 cwd 在受理前重新核对；变化返回 409 `WORKSPACE_CHANGED`，无法确认返回 409 `WORKSPACE_UNAVAILABLE`，两者均不执行或自动切换通道。旧客户端省略字段时保持原行为；新 PWA 的离线队列保存该标识，缺失旧标识须人工确认后重试。已完成 prompt 幂等重放仍优先返回原受理结果，不会重新执行。
+
+这是消息受理边界的检查，不是 Git 分支锁。已接受的排队消息，以及与其他终端在检查后并发发生的 checkout，仍需使用者协调；工作区提示也不会移动目录或执行 checkout。

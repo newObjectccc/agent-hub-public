@@ -29,6 +29,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("../api/client", () => ({
   api: {
+    getWorkspace: vi.fn(async (cwd: string) => ({ cwd, projectName: cwd.split("/").pop(), root: null, repositoryRoot: null, isWorktree: false, branch: null, head: null, detached: false, kind: "directory", revision: "1".repeat(64) })),
     getSessionModels: vi.fn(async () => ({ models: [], currentModel: null, defaultModel: null, warning: null })),
     getPiModels: vi.fn(async () => ({ models: [], currentModel: null, defaultModel: null, warning: null })),
     getSession: mocks.getSession,
@@ -169,7 +170,8 @@ describe("i1 头部收纳（顶栏一行 + git 并入 + ⋯ 菜单信息）", ()
     const el = await render();
     // git 状态行移除（原 54px 常驻行），入口并入顶栏图标按钮
     expect(el.querySelector(".chat-subbar")).toBeNull();
-    expect(el.querySelector(".chat-git-btn")).not.toBeNull();
+    expect(el.querySelector(".chat-workspace")).not.toBeNull();
+    expect(el.querySelector(".chat-git-btn")).toBeNull();
     // 子代理标记不再常驻顶栏（换行挤压根因），收进 ⋯ 菜单
     expect(el.querySelector(".chat-header .badge.subagent")).toBeNull();
     // ⋯ 菜单打开后信息齐全
@@ -181,7 +183,7 @@ describe("i1 头部收纳（顶栏一行 + git 并入 + ⋯ 菜单信息）", ()
     expect(info!.querySelector(".badge.driven-terminal")).not.toBeNull();
     expect(info!.querySelector(".badge.subagent")).not.toBeNull();
     // 操作入口仍在
-    expect(el.querySelector(".action-menu-item")!.textContent).toContain("复制为新会话");
+    expect([...el.querySelectorAll(".action-menu-item")].some((item) => item.textContent?.includes("复制为新会话"))).toBe(true);
   });
 
   it("发送模式入口移入输入按钮行；空闲态 modebar 零占位", async () => {
@@ -316,12 +318,14 @@ describe("J1 顶栏图标按钮统一规范（Redmi K90 实测反馈）", () => 
       expect(btn!.getAttribute("aria-label"), sel).toContain(aria);
     };
     expectIconBtn(".chat-header .back", "返回列表");
-    expectIconBtn(".chat-header .chat-tree-btn", "查看会话分支树");
-    expectIconBtn(".chat-header .chat-git-btn", "git");
-    expectIconBtn(".chat-header .attach-trigger", "会话驱动模式");
+    expect(el.querySelector(".chat-header .chat-workspace")).not.toBeNull();
+    expect(el.querySelector(".chat-header .attach-trigger")).toBeNull();
     expectIconBtn(".action-menu-wrap .tool-btn", "会话操作");
     // 树按钮纯图标（可见文字为零，语义在 aria-label/title）
-    expect(el.querySelector(".chat-tree-btn")!.textContent!.trim()).toBe("");
+    click(el.querySelector(".action-menu-wrap .tool-btn"));
+    expect(el.querySelector('[data-workspace-action="tree"]')).not.toBeNull();
+    expect(el.querySelector('[data-workspace-action="git"]')).not.toBeNull();
+    expect(el.querySelectorAll(".attach-inline .attach-menu-item")).toHaveLength(2);
   });
 
   it("running 态顶栏无「运行中」文字徽章（信息冗余），模式区分图标保留", async () => {
@@ -334,7 +338,7 @@ describe("J1 顶栏图标按钮统一规范（Redmi K90 实测反馈）", () => 
     expect(header.textContent).not.toContain("运行中");
     expect(header.textContent).not.toContain("空闲");
     // 模式区分本身保留（纯图标触发器仍在）
-    expect(header.querySelector(".attach-trigger")).not.toBeNull();
+    expect(header.querySelector(".workspace-subtitle")).not.toBeNull();
   });
 
   it("状态单源：header 不重复展示会话状态（底部输入区可看出），错误唯一例外常驻", async () => {

@@ -611,3 +611,18 @@ export interface FileContentResult {
   truncated: boolean;
   content: string;
 }
+
+/** Live identity of the working directory used by Hub; never inferred from old chat text. */
+export interface WorkspaceSnapshot {
+  cwd: string;
+  projectName: string;
+  root: string | null;
+  repositoryRoot: string | null;
+  isWorktree: boolean;
+  kind: "git" | "directory" | "unavailable";
+  branch: string | null;
+  head: string | null;
+  detached: boolean;
+  /** Identity of directory + branch (detached HEAD includes commit); null if unverified. */
+  revision: string | null;
+}

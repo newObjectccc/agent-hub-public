@@ -11,6 +11,7 @@
  * bash/edit/write 会在电脑上真实执行且无人批准，用户完全不知情。
  */
 import { act } from "react";
+import { setLocaleSetting } from "../i18n";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../api/client";
@@ -40,6 +41,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("../api/client", () => ({
   api: {
+    getWorkspace: vi.fn(async (cwd: string) => ({ cwd, projectName: cwd.split("/").pop(), root: null, repositoryRoot: null, isWorktree: false, branch: null, head: null, detached: false, kind: "directory", revision: "1".repeat(64) })),
     getSessionModels: vi.fn(async () => ({ models: [], currentModel: null, defaultModel: null, warning: null })),
     getPiModels: vi.fn(async () => ({ models: [], currentModel: null, defaultModel: null, warning: null })),
     getSession: mocks.getSession,
@@ -136,7 +138,7 @@ function click(el: Element | null): void {
   });
 }
 
-const modeLabel = (el: HTMLElement) => el.querySelector(".attach-trigger")?.getAttribute("aria-label") ?? "";
+const modeLabel = (el: HTMLElement) => el.querySelector(".workspace-subtitle")?.textContent ?? "";
 
 async function sendAttach(el: HTMLElement, text: string): Promise<void> {
   typeInput(el, text);
@@ -147,6 +149,7 @@ async function sendAttach(el: HTMLElement, text: string): Promise<void> {
 }
 
 beforeEach(() => {
+  setLocaleSetting("zh");
   wsEvent = null;
   localStorage.removeItem(MODE_KEY);
   localStorage.removeItem(PINNED_KEY);

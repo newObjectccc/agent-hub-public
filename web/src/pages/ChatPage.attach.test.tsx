@@ -8,6 +8,7 @@
  * 4. sendPrompt 幂等键：请求带 clientMessageId（= 乐观占位 localId），重发同键
  */
 import { act } from "react";
+import { setLocaleSetting } from "../i18n";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionSummary } from "../api/types";
@@ -33,6 +34,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("../api/client", () => ({
   api: {
+    getWorkspace: vi.fn(async (cwd: string) => ({ cwd, projectName: cwd.split("/").pop(), root: null, repositoryRoot: null, isWorktree: false, branch: null, head: null, detached: false, kind: "directory", revision: "1".repeat(64) })),
     getSessionModels: vi.fn(async () => ({ models: [], currentModel: null, defaultModel: null, warning: null })),
     getPiModels: vi.fn(async () => ({ models: [], currentModel: null, defaultModel: null, warning: null })),
     getSession: mocks.getSession,
@@ -124,10 +126,11 @@ function click(el: Element | null): void {
 
 /** 模式切换触发器（AttachModeMenu 纯图标 + aria-label） */
 function modeLabel(el: HTMLElement): string {
-  return el.querySelector(".attach-trigger")?.getAttribute("aria-label") ?? "";
+  return el.querySelector(".workspace-subtitle")?.textContent ?? "";
 }
 
 beforeEach(() => {
+  setLocaleSetting("zh");
   wsEvent = null;
   // 模式/pin 残留清零（用例间隔离：上一用例自愈写入的生效模式/手动 pin 不影响下一用例）
   localStorage.removeItem(MODE_KEY);

@@ -4,11 +4,12 @@ import type { SessionSummary, UsageTotals } from "../api/types";
 import { useFirstSeen } from "../hooks/useFirstSeen";
 import { useIsMobile } from "../hooks/useIsMobile";
 import { useNowTicker } from "../hooks/useNowTicker";
-import { sessionTitle, shortPath } from "../utils/display";
+import { sessionTitle } from "../utils/display";
 import { elapsedMinutesLabel, relativeTime } from "../utils/relativeTime";
 import { groupSessions, loadExpanded, saveExpanded } from "../utils/sessionTree";
 import { formatTokens } from "../utils/usage";
 import { DrivenBadge } from "./DrivenBadge";
+import { SessionWorkspaceLabel } from "./WorkspaceIdentity";
 import { GitStatusBadge } from "./GitStatusBadge";
 import { AttachBadge } from "./AttachBadge";
 import { SourceBadge } from "./SourceBadge";
@@ -161,6 +162,7 @@ function SessionRow({ session: s, index, isNew, now, runningSince, usage, onSele
         style={isNew ? { animationDelay: `${Math.min(index, 6) * 30}ms` } : undefined}
         onClick={() => onSelect(s)}
       >
+        <SessionWorkspaceLabel cwd={s.cwd} />
         <div className="session-head">
           <span className="session-name" title={s.name && s.name.trim() !== "" ? s.name : s.cwd}>
             {sessionTitle(s)}
@@ -192,11 +194,8 @@ function SessionRow({ session: s, index, isNew, now, runningSince, usage, onSele
           )}
           <span className="session-time">{relativeTime(s.updatedAt, now)}</span>
         </div>
-        <div className="session-cwd" title={s.cwd}>
-          {shortPath(s.cwd)}
-        </div>
         {/* git 状态条：🌿 分支 · ↑2 ↓0 · ⚠3 files（非 git 仓库自动隐藏） */}
-        <GitStatusBadge cwd={s.cwd} compact />
+        <GitStatusBadge cwd={s.cwd} compact hideBranch />
         <div className="session-summary">{summaryOf(s)}</div>
       </Button>
     </div>

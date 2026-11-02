@@ -27,6 +27,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("../api/client", () => ({
   api: {
+    getWorkspace: vi.fn(async (cwd: string) => ({ cwd, projectName: cwd.split("/").pop(), root: null, repositoryRoot: null, isWorktree: false, branch: null, head: null, detached: false, kind: "directory", revision: "1".repeat(64) })),
     getSessionModels: vi.fn(async () => ({ models: [], currentModel: null, defaultModel: null, warning: null })),
     getPiModels: vi.fn(async () => ({ models: [], currentModel: null, defaultModel: null, warning: null })),
     getSession: mocks.getSession,
@@ -117,7 +118,7 @@ describe("ChatPage 会话改名（⋯ 菜单 → 重命名）", () => {
     }));
 
     const el = await render();
-    expect(el.querySelector(".chat-title .name")!.textContent).toBe("旧名字");
+    expect(el.querySelector(".workspace-subtitle")!.getAttribute("title")).toBe("旧名字");
 
     // ⋯ 菜单 → 「重命名」
     click(el.querySelector('button[aria-label="会话操作"]'));
@@ -141,7 +142,7 @@ describe("ChatPage 会话改名（⋯ 菜单 → 重命名）", () => {
       await Promise.resolve();
     });
     expect(mocks.renameSession).toHaveBeenCalledWith("s1", "新名字");
-    expect(el.querySelector(".chat-title .name")!.textContent).toBe("新名字");
+    expect(el.querySelector(".workspace-subtitle")!.getAttribute("title")).toBe("新名字");
     // 弹层关闭
     expect(el.querySelector('input[aria-label="会话名称"]')).toBeNull();
   });

@@ -71,8 +71,8 @@ describe("SessionList 渲染", () => {
 
     expect(text).toContain("pi-alpha");
     expect(text).toContain("pi-beta");
-    expect(text).toContain("~/Workspace/demo"); // 路径缩写显示（完整路径在 title 提示）
-    expect(text).toContain("~/Workspace/beta");
+    expect(el.querySelector(".workspace-project")?.textContent).toBe("demo"); // 路径缩写显示（完整路径在 title 提示）
+    expect(text).toContain("beta");
     // 状态徽章中文标签
     expect(el.querySelectorAll(".badge.running")).toHaveLength(1);
     expect(el.querySelectorAll(".badge.error")).toHaveLength(1);

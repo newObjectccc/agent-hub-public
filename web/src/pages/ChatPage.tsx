@@ -26,6 +26,9 @@ import { DeltaBatcher } from "../chat/deltaBatcher";
 import { computeMessageWindow, MESSAGE_GAP_PX, paddingTopFor, pruneDetachedRowEls } from "../chat/messageWindow";
 import { estimateJumpTop, NAV_MIN_MESSAGES } from "../chat/navTicks";
 import { isSubAgentActivityUpdate, mergeSubAgentActivity } from "../chat/subAgents";
+import { useT } from "../i18n/provider";
+import { useWorkspace } from "../hooks/useWorkspace";
+import { ChatWorkspaceIdentity, WorkspaceDetails, workspaceLabel } from "../components/WorkspaceIdentity";
 import { useGitStatus } from "../hooks/useGitStatus";
 import { useVisualViewportInset } from "../hooks/useVisualViewportInset";
 import { OLDER_PAGE_LIMIT, mergeOlderMessages, oldestMessageId, shouldLoadOlder, TAIL_MESSAGE_LIMIT } from "../chat/history";
@@ -39,7 +42,6 @@ import { FileTreePanel } from "../components/FileTreePanel";
 import { MessageBubble } from "../components/MessageBubble";
 import { ConversationNav } from "../components/ConversationNav";
 import { SubAgentPanel } from "../components/SubAgentPanel";
-import { DrivenBadge } from "../components/DrivenBadge";
 import { WaitStageBar } from "../components/WaitStageBar";
 import { AttachmentStrip } from "../components/AttachmentStrip";
 import { AttachIntroSheet } from "../components/AttachIntroSheet";
@@ -55,7 +57,7 @@ import { SlashCommandPanel } from "../components/SlashCommandPanel";
 import { QuickCommandPanel } from "../components/QuickCommandPanel";
 import { StatusBadge } from "../components/StatusBadge";
 import { VoiceInputButton } from "../components/VoiceInputButton";
-import { BackIcon, GitBranchIcon, StopIcon, TreeIcon } from "../components/icons";
+import { BackIcon, StopIcon } from "../components/icons";
 import { PullToRefresh } from "../components/PullToRefresh";
 import { Button } from "../components/ui/button";
 import { Textarea } from "../components/ui/textarea";
@@ -121,6 +123,9 @@ function autoGrowTextarea(el: HTMLTextAreaElement): void {
 }
 
 export function ChatPage({ sessionId }: { sessionId: string }) {
+  const t = useT();
+  const [workspaceOpen, setWorkspaceOpen] = useState(false);
+  const [workspaceRetry, setWorkspaceRetry] = useState<string | null>(null);
   const [session, setSession] = useState<SessionSummary | null>(null);
   const [messages, setMessages] = useState<SessionMessage[]>([]);
   const [status, setStatus] = useState<SessionStatus>("idle");
@@ -262,7 +267,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
    * 回执失败时必须能把文本原样退回离线队列——command_ack 事件里只有 commandId，
    * 不记这份映射就只能显示一行小字，而输入框已清空，用户得重打（实测踩坑）。
    */
-  const attachInflightRef = useRef(new Map<string, { localId: string; text: string; atts: Attachment[] }>());
+  const attachInflightRef = useRef(new Map<string, { localId: string; text: string; atts: Attachment[]; workspaceRevision: string; workspaceLabel?: string }>());
   const [attachBusy, setAttachBusy] = useState(false);
   // 首次进入可双模式会话的轻量说明 sheet（一次性，用完即走）
   const [introOpen, setIntroOpen] = useState(false);
@@ -325,6 +330,10 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
 
   // git 状态（chat 顶栏状态条 + 文件弹层“看 diff”判定）
   const gitStatus = useGitStatus(session?.cwd);
+  const workspace = useWorkspace(session?.cwd, true, sessionId);
+  const modeLabel = t(attachMode === "attach" ? "workspace.attach" : "workspace.parallel");
+  useEffect(() => { if (connected) void workspace.refresh(true).catch(() => {}); }, [connected, workspace.refresh]);
+  useEffect(() => { setWorkspaceOpen(false); setWorkspaceRetry(null); }, [sessionId]);
 
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -1272,6 +1281,8 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
                 retryChannel,
                 false,
                 error ?? "终端未执行这条消息",
+                inflight.workspaceRevision,
+                inflight.workspaceLabel,
               );
               notifyError(retryChannel === "attach" ? `Codex 未确认接收：${error ?? "请核对会话后手动重试"}。消息已保留。` : `🖥 终端没有执行这条消息${error ? `（${error}）` : ""}。已切回 📱 平行继续：消息保留在气泡上，点「重试」即可发出，不用重打。`);
             }
@@ -1309,10 +1320,13 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
     channel: "parallel" | "attach",
     autoRetry: boolean,
     error: string,
+    workspaceRevision?: string,
+    expectedLabel?: string,
   ) => {
     const item: QueuedSend = {
       localId,
       sessionId,
+      ...(workspaceRevision ? { workspaceRevision, workspaceLabel: expectedLabel ?? (workspace.snapshot ? workspaceLabel(workspace.snapshot) : undefined) } : {}),
       source: sourceRef.current,
       cwd: session?.cwd ?? "",
       text,
@@ -1358,7 +1372,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
   };
 
   /** 发送主链路（首发）：成功 → 思考中阶段 + 触觉反馈；失败 → 入离线队列（持久，可重试） */
-  const performSend = async (localId: string, text: string, sent: Attachment[]) => {
+  const performSend = async (localId: string, text: string, sent: Attachment[], workspaceRevision: string) => {
     const statusVersion = statusVersionRef.current;
     clearPendingIdle();
     beginWait("sending");
@@ -1390,9 +1404,9 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
       );
       if (channel === "attach") {
         // attach（E3 双模式）：消息入终端指令队列（终端 pi 实时显示并执行；回执经 WS command_ack 回流）
-        const queued = await api.sendAttachMessage(sessionId, hintedText, mapAttachSendMode(sendMode), localId, undefined, session?.source === "codex" ? imagePaths : undefined);
+        const queued = await api.sendAttachMessage(sessionId, hintedText, mapAttachSendMode(sendMode), localId, undefined, session?.source === "codex" ? imagePaths : undefined, workspaceRevision);
         // 记下在途指令 → 回执失败时能原样退回离线队列（不丢文本）
-        attachInflightRef.current.set(queued.commandId, { localId, text, atts });
+        attachInflightRef.current.set(queued.commandId, { localId, text, atts, workspaceRevision, workspaceLabel: workspace.snapshot ? workspaceLabel(workspace.snapshot) : undefined });
         // 时序保护：回执可能先于发送响应到达（长轮询秒级投递），已回执则直接展示终态
         const ack = ackedRef.current.get(queued.commandId);
         const driver = terminal?.driver;
@@ -1409,7 +1423,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
           if (!ack.ok) {
             const retryChannel = session?.source === "codex" ? "attach" : "parallel";
             if (retryChannel === "parallel") applyAttachMode("parallel");
-            enqueueFailedSend(localId, text, atts, retryChannel, false, ack.error ?? "未确认接收这条消息");
+            enqueueFailedSend(localId, text, atts, retryChannel, false, ack.error ?? "未确认接收这条消息", workspaceRevision);
             notifyError(
               retryChannel === "attach" ? `Codex 未确认接收：${ack.error ?? "请核对会话后重试"}。消息已保留。` : `🖥 终端没有执行这条消息${ack.error ? `（${ack.error}）` : ""}。已切回 📱 平行继续：消息保留在气泡上，点「重试」即可发出，不用重打。`,
             );
@@ -1418,7 +1432,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
           if (session?.source === "codex") {
             // 202 只表示指令入队；等原生 command_ack 后才移除持久原文。
             const store = getOfflineQueue();
-            store.add({ localId, sessionId, source: "codex", cwd: session.cwd, text, images: queuedImagesOf(atts), sendMode, attachMode: mapAttachSendMode(sendMode), channel: "attach", queuedAt: Date.now(), attempts: 0, autoRetry: false, lastError: null });
+            store.add({ localId, sessionId, workspaceRevision, workspaceLabel: workspace.snapshot ? workspaceLabel(workspace.snapshot) : undefined, source: "codex", cwd: session.cwd, text, images: queuedImagesOf(atts), sendMode, attachMode: mapAttachSendMode(sendMode), channel: "attach", queuedAt: Date.now(), attempts: 0, autoRetry: false, lastError: null });
             store.trackAttachCommand(localId, queued.commandId);
           }
           setEcho({ channel: "attach", phase: "sent", commandId: queued.commandId, driver, source: terminal?.source });
@@ -1448,7 +1462,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
         hintedText,
         sendMode,
         {
-          sendPrompt: api.sendPrompt,
+          sendPrompt: (id, body, mode, images, key, signal) => api.sendPrompt(id, body, mode, images, key, signal, workspaceRevision),
           onNotice: setNotice,
         },
         imagePaths.length > 0 ? imagePaths : undefined,
@@ -1456,7 +1470,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
         localId,
       );
       if (!outcome.result.accepted) {
-        enqueueFailedSend(localId, text, atts, channel, false, "消息未被接受，请稍后重试");
+        enqueueFailedSend(localId, text, atts, channel, false, "消息未被接受，请稍后重试", workspaceRevision);
         endWait();
         notifyError("消息未被接受，请稍后重试");
       } else {
@@ -1472,10 +1486,14 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
       // duck-type 读错误码（测试 mock 的 client 模块未必导出 ApiError 类）
       const rawCode = (e as { code?: unknown } | null)?.code;
       const code = typeof rawCode === "string" ? rawCode : null;
+      if (code === "WORKSPACE_CHANGED" || code === "WORKSPACE_UNAVAILABLE") {
+        enqueueFailedSend(localId, text, atts, channel, false, t("workspace.changed"), workspaceRevision);
+        endWait(); void workspace.refresh(true).catch(() => {}); setWorkspaceRetry(localId); setWorkspaceOpen(true); return;
+      }
       // Codex 接管恢复/写者冲突时保留原通道，须显式重试；不得悄悄改用 exec 再执行。
       if (session?.source === "codex" && (channel === "attach" || code === "ATTACH_ACTIVE")) {
         const message = e instanceof Error ? e.message : "Codex 未确认接收，请检查会话后重试";
-        enqueueFailedSend(localId, text, atts, channel, false, message);
+        enqueueFailedSend(localId, text, atts, channel, false, message, workspaceRevision);
         endWait();
         notifyError(message);
         return;
@@ -1498,6 +1516,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
             : code === "ATTACH_REQUIRED"
               ? "终端未接管，消息已改由 server 处理"
               : "终端未响应，消息已改由 server 处理",
+          workspaceRevision,
         );
         notifyError(
           code === "ATTACH_ACTIVE"
@@ -1512,11 +1531,14 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
       }
       // 网络错误 / 5xx → 自动重试；4xx 业务拒绝 → 手动重试（均持久化，刷新不丢）
       const message = e instanceof Error ? e.message : "发送失败";
-      enqueueFailedSend(localId, text, atts, channel, classifySendError(e) === "network", message);
+      enqueueFailedSend(localId, text, atts, channel, classifySendError(e) === "network", message, workspaceRevision);
       endWait();
       notifyError(message);
     }
   };
+
+  const sendDraftRef = useRef({ attachments, quote, sessionId });
+  sendDraftRef.current = { attachments, quote, sessionId };
 
   const doSend = async () => {
     // 同步防重入：React state 未 flush 的极速双击/多通道触发也只发一条（快速双击 bug）
@@ -1527,6 +1549,15 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
     const text = quote ? withQuote(quote.text, base) : base;
     if (!text) return;
     sendingRef.current = true;
+    setSending(true);
+    const draftBeforeCheck = inputRef.current;
+    const workspaceRevision = await workspace.verify();
+    if (!workspaceRevision) {
+      sendingRef.current = false; setSending(false); setWorkspaceOpen(true); return;
+    }
+    if (inputRef.current !== draftBeforeCheck || sendDraftRef.current.attachments !== attachments || sendDraftRef.current.quote !== quote || sendDraftRef.current.sessionId !== sessionId) {
+      sendingRef.current = false; setSending(false); return;
+    }
     forceScrollRef.current = true; // 发送即强制回底：用户必须看到自己刚发的消息
     const sent = attachments;
     setSending(true);
@@ -1551,7 +1582,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
     setAttachments([]);
     setQuote(null);
     try {
-      await performSend(localId, text, sent);
+      await performSend(localId, text, sent, workspaceRevision);
     } finally {
       sendingRef.current = false;
       setSending(false);
@@ -1574,6 +1605,10 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
         await reconcileAttachReceipts(sessionId);
         if (!getOfflineQueue().get(localId)) { endWait(); return; }
         if (getOfflineQueue().get(localId)?.commandId) { setNotice("Codex 仍在等待处理这条消息，请等待回执"); endWait(); return; }
+      }
+      const revision = await workspace.verify();
+      if (!revision || revision !== item.workspaceRevision) {
+        setWorkspaceRetry(localId); setWorkspaceOpen(true); endWait(); return;
       }
       const result = await flushOfflineQueue({ only: [localId] });
       const failure = result?.failed.find((f) => f.localId === localId);
@@ -1829,7 +1864,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
 
   return (
     <div className="chat-page" style={{ "--kb-inset": `${kbInset}px` } as CSSProperties}>
-      <header className="chat-header">
+      <header className="chat-header workspace-header">
         {/* J1 统一图标按钮规范（.icon-btn）：返回/树/git/⋯/模式切换/中止同一套盒子 */}
         <button
           type="button"
@@ -1840,51 +1875,15 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
         >
           <BackIcon />
         </button>
-        <div className="chat-title">
-          <div className="name">{session?.name ?? sessionId}</div>
-          <div className="cwd">{session?.cwd ?? ""}</div>
-        </div>
-        {/* i1 头部收纳：git 状态并入顶栏图标按钮（完整 chips 进 Git 面板），不再占一行 subbar */}
-        {session && (
-          <button
-            type="button"
-            className="icon-btn chat-git-btn"
-            onClick={() => { setGitFile(null); setGitOpen(true); }}
-            aria-label="查看 git 变更"
-            title="仓库状态与变更"
-          >
-            <GitBranchIcon />
-            <span className={`chat-git-dot${(gitStatus?.dirty.length ?? 0) > 0 ? " dirty" : ""}`} aria-hidden="true" />
-          </button>
-        )}
-        <button
-          type="button"
-          className="icon-btn chat-tree-btn"
-          onClick={() => navigate(treePath(sessionId))}
-          aria-label="查看会话分支树"
-          title="查看会话分支树"
-        >
-          <TreeIcon />
-        </button>
-        {/* 右侧徽章簇（一行不换行）：状态/驱动/模式/⋯；次要信息（cwd/来源/子代理）收进 ⋯ 菜单 */}
+        {session ? <ChatWorkspaceIdentity value={workspace.snapshot} session={session} mode={modeLabel} onOpen={() => setWorkspaceOpen(true)} />
+          : <div className="chat-title"><div className="name">{sessionId}</div></div>}
         <div className="chat-badges">
-          {/* 子代理来源标记：信息收进 ⋯ 菜单（i1），避免顶栏换行挤压消息区 */}
-          <DrivenBadge drivenBy={drivenBy} />
-          {/* J1 去「运行中」：running 态顶栏不再显示文字徽章（WaitStageBar 阶段状态已表达运行态，
-              信息冗余）；空闲/错误保留，模式区分图标（AttachModeMenu）保留 */}
-          {/* 状态单源原则：会话状态只在底部输入区表达（阶段条/回执条），header 横向空间留给导航与操作，
-              不重复展示（用户定调：底部看得出的状态 header 再放一份既占地又双源）。
-              例外：错误徽章保留——会话级出错时阶段条已消失，header 是唯一常驻可见面 */}
           {status === "error" && <StatusBadge status={status} />}
-          {/* 双模式切换（E3）：顶栏一个紧凑徽章，弹出小菜单二选一，零额外常驻占位 */}
-          <AttachModeMenu
-            mode={attachMode}
-            terminal={terminal}
-            source={session?.source}
-            busy={attachBusy}
-            onChange={(m) => void changeAttachMode(m)}
-          />
           <SessionActionsMenu
+            onWorkspace={() => setWorkspaceOpen(true)}
+            onGit={() => { setGitFile(null); setGitOpen(true); }}
+            onTree={() => navigate(treePath(sessionId))}
+            renderModeControl={(close) => <AttachModeMenu mode={attachMode} terminal={terminal} source={session?.source} busy={attachBusy} inline onDone={close} onChange={(m) => void changeAttachMode(m)} />}
             onFork={() => void doFork()}
             forkBusy={forkBusy}
             onRename={() => setRenameOpen(true)}
@@ -2000,6 +1999,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
       )}
 
       <footer className="chat-input">
+        {workspace.changed && <div className="workspace-change-banner" role="status"><span>{t("workspace.changed")}</span><button type="button" onClick={() => setWorkspaceOpen(true)}>{t("workspace.review")}</button></div>}
         {session?.source === "pi" && <PiModelControl sessionId={sessionId} status={status} attached={attachMode === "attach" || attachBusy} />}
         {quote && (
           <div className="quote-bar" role="status" aria-label="引用消息">
@@ -2261,7 +2261,7 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
                 type="button"
                 className={`composer-send${hasContent ? " ready" : ""}`}
                 onClick={() => void doSend()}
-                disabled={sending || !hasContent}
+                disabled={sending || !hasContent || workspace.changed}
                 aria-label="发送"
               >
                 {sending ? (
@@ -2282,6 +2282,17 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
           </div>
         </div>
       </footer>
+
+      {workspaceOpen && session && <WorkspaceDetails value={workspace.snapshot} previous={workspace.previous} session={session} mode={modeLabel} loading={workspace.loading}
+        queuedTarget={workspaceRetry ? queuedById.get(workspaceRetry)?.workspaceLabel ?? "" : undefined}
+        onRefresh={() => void workspace.refresh(true).catch(() => {})}
+        onConfirm={() => void workspace.confirm().then((ok) => {
+          if (!ok) return;
+          if (workspaceRetry && workspace.snapshot?.revision) getOfflineQueue().patch(workspaceRetry, { workspaceRevision: workspace.snapshot.revision, workspaceLabel: workspaceLabel(workspace.snapshot), autoRetry: false });
+          setWorkspaceRetry(null); setWorkspaceOpen(false);
+        })}
+        onGit={() => { setWorkspaceOpen(false); setGitFile(null); setGitOpen(true); }}
+        onClose={() => { setWorkspaceOpen(false); setWorkspaceRetry(null); }} />}
 
       {/* 重命名会话：保存后 setSession 刷新页头名字（列表页重挂载时拉到新名） */}
       <RenameSessionSheet

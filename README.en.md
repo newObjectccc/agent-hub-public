@@ -43,6 +43,8 @@ This Claude example shows image previews, tool cards, and phone approval with a 
 
 ## Quick start
 
+Starting with Beta.4, the mobile chat header keeps the project and Git branch visible. Tap it for the full path and linked worktree identity. A changed workspace preserves your draft and requires review before you send again. Git changes, chat branches and drive modes are in the more menu. See [workspace identity](docs/WORKSPACE.md#english).
+
 On the computer, prepare **Node.js ≥22.19** and **at least one of pi, Claude Code, or Codex**, already installed, signed in, and able to chat. The npm package includes frontend and backend builds; Git, pnpm, and a local build are unnecessary.
 
 ```bash
