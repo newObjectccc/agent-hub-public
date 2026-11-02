@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="320" viewBox="0 0 1200 320" role="img" aria-labelledby="title desc">
+  <title id="title">Agent Hub — 电脑上的 agent，手机上接着聊。</title>
+  <desc id="desc">电脑上的 pi、Claude Code、Codex 会话通过 Agent Hub 连接到手机工作台的概念示意。米白、黄、蓝与黑色来自产品界面。</desc>
+  <rect x="2" y="2" width="1196" height="316" fill="#fff7e8" stroke="#000000" stroke-width="4"/>
+  <g id="identity" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, PingFang SC, Microsoft YaHei, sans-serif" fill="#000000">
+    <rect x="40" y="34" width="412" height="38" fill="#ffdc58"/>
+    <text x="54" y="60" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="20" font-weight="700">SELF-HOSTED / MOBILE WORKSPACE</text>
+    <text x="40" y="185" font-size="114" font-weight="900" letter-spacing="-5">Agent Hub<tspan fill="#57503f">_</tspan></text>
+    <text x="44" y="253" font-size="36" font-weight="650">电脑上的 agent，手机上接着聊。</text>
+  </g>
+  <g id="local-sessions" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="24" font-weight="700" fill="#000000">
+    <rect x="768" y="55" width="235" height="194" fill="#000000"/>
+    <rect x="760" y="47" width="235" height="194" fill="#ffffff" stroke="#000000" stroke-width="3"/>
+    <path d="M760 87H995" stroke="#000000" stroke-width="3"/>
+    <rect x="778" y="61" width="12" height="12" fill="#000000"/>
+    <path d="M802 67H850" stroke="#000000" stroke-width="3"/>
+    <text x="780" y="122">&gt; pi</text>
+    <text x="780" y="166">&gt; Claude Code</text>
+    <text x="780" y="210">&gt; Codex</text>
+  </g>
+  <g id="connection" fill="none" stroke="#000000" stroke-width="3">
+    <path d="M995 145H1054"/>
+    <path d="m1044 135 10 10-10 10"/>
+    <path d="M995 172H1054"/>
+    <path d="m1005 162-10 10 10 10"/>
+  </g>
+  <g id="mobile-workspace" stroke="#000000" stroke-width="3">
+    <rect x="1063" y="71" width="94" height="198" fill="#000000"/>
+    <rect x="1055" y="63" width="94" height="198" fill="#fff7e8"/>
+    <path d="M1055 101H1149"/>
+    <path d="M1083 82H1120"/>
+    <rect x="1069" y="117" width="66" height="42" fill="#ffdc58"/>
+    <path d="M1079 130H1125M1079 142H1110"/>
+    <rect x="1069" y="170" width="66" height="59" fill="#7ec4ff"/>
+    <path d="M1079 184H1125M1079 196H1117M1079 208H1106"/>
+    <path d="M1088 245H1116"/>
+  </g>
+</svg>
