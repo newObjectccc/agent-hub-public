@@ -75,6 +75,7 @@ describe("workspace admission routes", () => {
       loadMessages: async () => [], loadTree: async () => null, search: async () => [], createSession: async () => session, forkSession: async () => session,
       prompt: async () => { prompts++; return { accepted: true, mode: "prompt" }; }, abort: async () => {}, compact: async () => {} };
     const app = await createApp({ hub, kpi: { getCards: () => [] }, dashboard: makeFakeDashboard(), config: DEFAULT_CONFIG,
+      panelDriven: { has: () => false, mark: async () => {} },
       systemInfo: async () => ({} as SystemInfo), webRoot: null,
       appLock: { ...fakeUnlockedAppLock(), status: () => ({ configured: locked, webauthn: false, expiresAt: null }) },
     });

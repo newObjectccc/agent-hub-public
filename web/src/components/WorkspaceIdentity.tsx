@@ -16,21 +16,46 @@ export function workspaceLabel(value: WorkspaceSnapshot): string {
   return `${value.cwd} · ${value.branch ?? value.head?.slice(0, 8) ?? value.kind}`;
 }
 
-/** CSS supplies the available width; only presentation is shortened, never the identity. */
+let textMetrics: CanvasRenderingContext2D | null = null;
+
+/** Measure the actual monospace font, including its wider ellipsis glyph. */
 function BranchName({ name, preserveStart }: { name: string; preserveStart: boolean }) {
   const ref = useRef<HTMLSpanElement>(null);
-  const [width, setWidth] = useState(0);
+  const [metrics, setMetrics] = useState({ width: 0, font: "", spacing: 0 });
   useLayoutEffect(() => {
     if (!ref.current || typeof ResizeObserver === "undefined") return;
-    const measure = () => setWidth(ref.current?.clientWidth ?? 0);
+    let alive = true;
+    const measure = () => {
+      if (!alive || !ref.current) return;
+      const style = getComputedStyle(ref.current);
+      setMetrics({ width: ref.current.clientWidth, font: `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`, spacing: Number.parseFloat(style.letterSpacing) || 0 });
+    };
     const observer = new ResizeObserver(measure); observer.observe(ref.current); measure();
-    return () => observer.disconnect();
+    void document.fonts?.ready.then(measure);
+    document.fonts?.addEventListener("loadingdone", measure);
+    return () => { alive = false; observer.disconnect(); document.fonts?.removeEventListener("loadingdone", measure); };
   }, []);
-  const chars = Array.from(name);
-  const budget = width > 0 ? Math.max(5, Math.floor(width / 7.3)) : chars.length;
-  const prefix = name.includes("/") ? name.slice(0, name.indexOf("/") + 1) : "";
-  const text = chars.length <= budget ? name : preserveStart ? `${chars.slice(0, budget - 1).join("")}…`
-    : prefix.length + 6 < budget ? `${prefix}…${chars.slice(-(budget - prefix.length - 1)).join("")}` : `…${chars.slice(-(budget - 1)).join("")}`;
+  let text = name;
+  if (metrics.width > 0) {
+    textMetrics ??= document.createElement("canvas").getContext("2d");
+    if (textMetrics) {
+      textMetrics.font = metrics.font;
+      const width = (value: string) => textMetrics!.measureText(value).width + Math.max(0, Array.from(value).length - 1) * metrics.spacing;
+      const available = metrics.width - 1;
+      if (width(name) > available) {
+        const chars = Array.from(name);
+        if (preserveStart) {
+          while (chars.length && width(`${chars.join("")}…`) > available) chars.pop();
+          text = `${chars.join("")}…`;
+        } else {
+          const prefix = name.includes("/") ? name.slice(0, name.indexOf("/") + 1) : "";
+          const leading = width(`${prefix}…${chars.slice(-4).join("")}`) <= available ? prefix : "";
+          while (chars.length && width(`${leading}…${chars.join("")}`) > available) chars.shift();
+          text = `${leading}…${chars.join("")}`;
+        }
+      }
+    }
+  }
   return <span className="workspace-branch-text" ref={ref} title={name}>{text}</span>;
 }
 
