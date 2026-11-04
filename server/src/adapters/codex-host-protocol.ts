@@ -488,6 +488,17 @@ function basenameOf(path: string): string {
   return parts[parts.length - 1] ?? "";
 }
 
+/**
+ * 写者互斥的文本特征：thread 已被其它客户端（桌面 ChatGPT / Codex app 等）持有写锁。
+ * RPC 场景以 -32600 错误码为准（codex-driver 的 isWriterConflict），本正则兜底
+ * 旧版本/改措辞，以及平行通道 exec 的 stderr（CLI 只打文案，无错误码可判）。
+ */
+const WRITER_CONFLICT_RE = /active writer|already.*writer|writer.*(?:held|active|busy)|thread.*already.*(?:active|running)|thread[- ]store conflict/i;
+
+export function isWriterConflictText(text: string): boolean {
+  return WRITER_CONFLICT_RE.test(text);
+}
+
 /** 错误、命令参数和权限摘要中的常见凭据格式先脱敏再展示。 */
 export function safePreview(value: string, limit = 1_000): string {
   return value

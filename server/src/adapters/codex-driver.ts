@@ -11,7 +11,7 @@ import type { EffectivePolicyDto, HostRequestDto, HostRequestOutcome, HostUserQu
 import {
   APPROVAL_METHODS, approvalItemPreview, buildApprovalResult, buildDriverArgs, buildElicitationAccept, buildResumeParams, buildTurnInput,
   buildUserInputResult, codexMessageId, declinedRpcReply, hostRequestPreview, parseDriverMode, parseEffectivePolicy,
-  parseElicitationQuestions, parseUserInputQuestions, questionCardPreview, safePreview, serverRequestKind, snapshotRequestedPermissions,
+  parseElicitationQuestions, parseUserInputQuestions, questionCardPreview, isWriterConflictText, safePreview, serverRequestKind, snapshotRequestedPermissions,
   unansweredRpcReply, validateQuestionAnswers,
   type CodexApprovalItemPreview, type CodexApprovalPolicy, type CodexApprovalType, type CodexDriverMode, type CodexRpcReply, type CodexSandbox, type CodexUserInput,
   type ElicitationValueType, type HostRequestKind,
@@ -1104,13 +1104,12 @@ function errorText(value: unknown): string | null {
 function isWriterConflict(error: unknown): boolean {
   return error instanceof CodexRpcError && error.code === RPC_INVALID_REQUEST;
 }
-const WRITER_CONFLICT_RE = /active writer|already.*writer|writer.*(?:held|active|busy)|thread.*already.*(?:active|running)/i;
 function attachError(error: unknown): HubError {
   if (error instanceof HubError) return error;
   const message = safePreview(asError(error).message);
   // 先判错误码（-32600 = invalid request，codex 用它表达线程已被其它客户端持有），
-  // 文案正则只作旧版本/改措辞时的兜底。
-  if (isWriterConflict(error) || WRITER_CONFLICT_RE.test(message)) {
+  // 文案正则只作旧版本/改措辞时的兜底（正则与平行通道 stderr 判定共用，见 codex-host-protocol）。
+  if (isWriterConflict(error) || isWriterConflictText(message)) {
     return new HubError(ErrorCodes.SESSION_BUSY, `Codex 会话正由其他客户端占用：${message}`, 409);
   }
   return unavailable(`Codex 接管不可用：${message}`);

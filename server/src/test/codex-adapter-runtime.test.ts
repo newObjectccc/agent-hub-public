@@ -180,6 +180,43 @@ it("Codex closing time covers final rollout writes after the earlier turn termin
   } finally { await f.cleanup(); }
 });
 
+it("Codex 写者冲突换成可行动文案，而不是把 stderr 日志墙推到手机", async () => {
+  const f = await fixture();
+  try {
+    await f.adapter.prompt(f.session.id, "hello", undefined);
+    const child = f.children[0];
+    child.stderr.emit("data", "2026-11-03T07:33:23Z ERROR codex_core::session: failed to initialize thread persistence: thread-store conflict: thread 01a1533a-91af-7092-9902-20f9e12eaeb9 already has an active writer\nError: thread/resume: thread/resume failed: thread 01a1533a-91af-7092-9902-20f9e12eaeb9 already has an active writer (code -32600)\n");
+    child.emit("close", 1);
+    const failure = f.events.find((event) => event.type === "error");
+    assert.equal(failure?.type === "error" ? failure.code : null, ErrorCodes.SESSION_BUSY);
+    const message = failure?.type === "error" ? failure.message : "";
+    assert.match(message, /其他客户端占用/);
+    assert.match(message, /退出该会话后重试/);
+    assert.match(message, /复制为新会话/);
+    assert.match(message, /01a1533a/); // 首行细节保留（thread id 可排查）
+    assert.ok(!message.includes("thread/resume failed"), "不再透传整段 stderr 墙");
+  } finally { await f.cleanup(); }
+});
+
+it("Codex 失败预览保留首行与尾窗，且凭据照常脱敏", async () => {
+  const f = await fixture();
+  try {
+    await f.adapter.prompt(f.session.id, "hello", undefined);
+    const child = f.children[0];
+    child.stderr.emit("data", "first line: real cause OPENAI_API_KEY=sk-secret123\n");
+    child.stderr.emit("data", "x".repeat(5_000));
+    child.stderr.emit("data", "\nfinal line");
+    child.emit("close", 1);
+    const failure = f.events.find((event) => event.type === "error");
+    const message = failure?.type === "error" ? failure.message : "";
+    assert.match(message, /first line: real cause/);
+    assert.match(message, /final line/);
+    assert.match(message, /…/); // 中间超长才省略
+    assert.ok(!message.includes("sk-secret123"), "首段同样走脱敏");
+    assert.ok(message.length < 1_200, `预览应有界，实得 ${message.length}`);
+  } finally { await f.cleanup(); }
+});
+
 for (const [name, config, expected] of [
   ["默认最高权限", DEFAULT_CODEX_DRIVER_CONFIG, ["-c", 'approval_policy="never"', "-c", 'sandbox_mode="danger-full-access"']],
   ["沿用本机配置", { approvalPolicy: "inherit", sandbox: "inherit" }, []],
@@ -189,7 +226,7 @@ for (const [name, config, expected] of [
     const f = await fixture(configuredCodexPolicy(config));
     try {
       await f.adapter.prompt(f.session.id, "show status", undefined);
-      assert.deepEqual(f.calls[0].args, [...expected, "exec", "resume", "--json", "--skip-git-repo-check", f.session.id, "show status"]);
+      assert.deepEqual(f.calls[0].args, [...expected, "exec", "resume", "--json", "--skip-git-repo-check", "--", f.session.id, "show status"]);
       assert.ok(!f.calls[0].args.some(value => value.startsWith("--dangerously-")));
     } finally { await f.cleanup(); }
   });

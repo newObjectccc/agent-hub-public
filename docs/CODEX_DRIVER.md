@@ -58,7 +58,7 @@ Hub 的 `codexDriver.approvalPolicy` / `sandbox` 同时控制平行和接管，�
 
 ### 生命周期与互斥
 
-- 写者互斥判定以错误码为准（`-32600`，`isWriterConflict()`），文案正则仅作旧版本兜底；能力探测仍只凭版本号推断 writerLock，未真观测锁本身。
+- 写者互斥判定以错误码为准（`-32600`，`isWriterConflict()`），文案正则仅作旧版本兜底；能力探测仍只凭版本号推断 writerLock，未真观测锁本身。平行通道（`codex exec`）拿不到错误码，按同一份文案正则（`isWriterConflictText`，与 RPC 判定共用）识别 stderr 冲突并换「退出桌面会话 / 复制为新会话」指引，不透传日志墙；失败预览保留首行 + 尾窗，凭据照常脱敏。
 - mtime 静默窗（`externalQuietMs`，默认 3s）只作附加线索，不能代替锁；会话文件近期被写入时拒绝接管（「电脑端正在写入该会话」），文件不可核对时保守拒绝。
 - detach 关闭子进程释放自身 writer；unsubscribe 可能存在宽限期，不能把应答视作 writer 已释放。
 - 归档会话需先在 Codex 中恢复再接管。

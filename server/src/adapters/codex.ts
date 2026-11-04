@@ -33,7 +33,7 @@ import { decidePromptAction, parsePromptMode } from "../sessions/prompt-policy.j
 import { inferExternalStatus, registerTailStatusSink } from "../sessions/tail.js";
 import type { MessageDto, PromptImageAttachment, ServerEvent, SessionListItem, SessionStatus } from "../types.js";
 import { CodexStreamTranslator } from "./codex-stream.js";
-import { safePreview } from "./codex-host-protocol.js";
+import { isWriterConflictText, safePreview } from "./codex-host-protocol.js";
 import { buildExecPolicyArgs, type PolicyOverrides } from "./codex-policy.js";
 import { JsonlReader } from "./jsonl-reader.js";
 import {
@@ -82,8 +82,10 @@ export interface CodexAdapterOptions extends PolicyOverrides {
   metaTtlMs?: number;
 }
 
-/** stderr 预览上限（错误提示用） */
+/** stderr 预览尾窗上限（错误提示用；首段另存，防止大输出把关键首行截掉） */
 const STDERR_PREVIEW_LIMIT = 500;
+/** stderr 预览首段上限：错误类别与首行细节（写者冲突的 thread id 等）在这里 */
+const STDERR_HEAD_LIMIT = 240;
 /** abort 后 SIGTERM → SIGKILL 宽限时间 */
 const KILL_GRACE_MS = 2_000;
 /** fileCache LRU 上限（audit P2-4）：数百个 rollout 文件快照不无上界驻留 */
@@ -125,7 +127,11 @@ export class LruMap<K, V> extends Map<K, V> {
 interface RunningRun {
   child: ChildProcess;
   translator: CodexStreamTranslator;
+  /** stderr 首段（错误类别所在）与尾窗分头保留；全量不驻留（见文件头安全约束 3） */
+  stderrHead: string;
   stderrTail: string;
+  /** stderr 累计字符数：预览拼接时判断首段与尾窗是否重叠 */
+  stderrLen: number;
   sessionFile: string;
   /** abort 后不再发 agent_settled 兜底（abort 已发过） */
   aborted: boolean;
@@ -605,10 +611,11 @@ export class CodexAdapter implements SessionAdapter {
       throw new HubError(ErrorCodes.INTERNAL, "server 正在关闭", 503);
     }
     // spawn 参数固定安全集：不传 --dangerously-bypass-approvals-and-sandbox 等危险 flag
-    // （见文件头安全约束）；prompt 作位置参数（resume help：PROMPT 位置参数或 stdin 二选一）。
+    // （见文件头安全约束）；prompt 作位置参数（resume help：PROMPT 位置参数或 stdin 二选一），
+    // `--` 之后固定 <id> <text> 两个位置参数：消息以「-」开头也不会被当成 flag 拒收（退出 2）。
     // --skip-git-repo-check：豁免 cwd 的 git/信任目录入口检查（安全约束 2 的唯一例外），
     // 否则非 git 会话的平行消息 100% 被拒收（手机端只剩「发送即报错」）。
-    const args = [...buildExecPolicyArgs(this.policy), "exec", "resume", "--json", "--skip-git-repo-check", session.id, text];
+    const args = [...buildExecPolicyArgs(this.policy), "exec", "resume", "--json", "--skip-git-repo-check", "--", session.id, text];
     const child = this.spawnFn(this.codexBin, args, {
       cwd: session.cwd !== "" ? session.cwd : undefined,
       stdio: ["ignore", "pipe", "pipe"],
@@ -617,7 +624,7 @@ export class CodexAdapter implements SessionAdapter {
       windowsHide: true,
     });
     const translator = new CodexStreamTranslator();
-    const run: RunningRun = { child, translator, stderrTail: "", sessionFile: session.sessionFile, aborted: false };
+    const run: RunningRun = { child, translator, stderrHead: "", stderrTail: "", stderrLen: 0, sessionFile: session.sessionFile, aborted: false };
     this.running.set(session.id, run);
     this.setStatus(session.id, "running");
     this.onLive?.(session.id);
@@ -632,7 +639,10 @@ export class CodexAdapter implements SessionAdapter {
       if (isActive()) reader.write(chunk);
     });
     child.stderr?.on("data", (chunk: Buffer | string) => {
-      run.stderrTail = (run.stderrTail + String(chunk)).slice(-STDERR_PREVIEW_LIMIT);
+      const text = String(chunk);
+      if (run.stderrHead.length < STDERR_HEAD_LIMIT) run.stderrHead = (run.stderrHead + text).slice(0, STDERR_HEAD_LIMIT);
+      run.stderrTail = (run.stderrTail + text).slice(-STDERR_PREVIEW_LIMIT);
+      run.stderrLen += text.length;
     });
 
     const finish = (errored: boolean): void => {
@@ -684,18 +694,39 @@ export class CodexAdapter implements SessionAdapter {
       if (isActive()) reader.end();
       const failed = !run.aborted && (processErrored || (code !== 0 && code !== null && !translator.finished));
       if (failed && !processErrored) {
-        // stderr 尾部会随错误事件推到手机，必须先脱敏：codex 失败输出里常带命令行原文
+        // stderr 会随错误事件推到手机，必须先脱敏：codex 失败输出里常带命令行原文
         // （含 OPENAI_API_KEY / Bearer / 私钥块等），与接管通道（codex-driver 的 attachError）
         // 同口径走 safePreview，避免平行模式成为凭据外泄的旁路。
-        const tail = safePreview(run.stderrTail.trim());
-        const detail = tail !== "" ? tail : `codex 退出码 ${code}`;
-        this.emit(session.id, {
-          type: "error",
-          code: ErrorCodes.PROMPT_FAILED,
-          message: `codex 运行失败: ${detail}`,
-        });
+        const preview = safePreview(previewStderr(run.stderrHead, run.stderrTail, run.stderrLen).trim());
+        // 写者互斥（thread 已被桌面 ChatGPT / Codex app 等占住写锁）不是笼统失败：
+        // exec resume 抢不到写者必拒（-32600），日志墙对手机没有意义，换可行动文案（同接管通道口径）。
+        if (isWriterConflictText(preview)) {
+          const firstLine = preview.split(/\r?\n/, 1)[0] ?? preview;
+          this.emit(session.id, {
+            type: "error",
+            code: ErrorCodes.SESSION_BUSY,
+            message: `Codex 会话正由其他客户端占用（多为 ChatGPT / Codex 桌面应用打开了该会话），请先在电脑端退出该会话后重试；或在手机上「复制为新会话」继续：${firstLine}`,
+          });
+        } else {
+          const detail = preview !== "" ? preview : `codex 退出码 ${code}`;
+          this.emit(session.id, {
+            type: "error",
+            code: ErrorCodes.PROMPT_FAILED,
+            message: `codex 运行失败: ${detail}`,
+          });
+        }
       }
       finish(failed);
     });
   }
+}
+
+/** stderr 错误预览：保留首段（错误类别/首行）+ 尾窗（退出上下文），中间超长才省略。 */
+function previewStderr(head: string, tail: string, total: number): string {
+  if (total <= tail.length) return tail; // 全量都在尾窗内（含空 stderr）
+  if (total <= head.length + tail.length) {
+    // 首段与尾窗有重叠：拼出未重叠的余段，不丢字
+    return head + tail.slice(tail.length - (total - head.length));
+  }
+  return `${head}\n…\n${tail}`;
 }
