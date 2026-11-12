@@ -316,12 +316,9 @@ export class ClaudeDriverHub {
     this.drivers.set(id, entry);
     this.bindChild(entry);
     this.touchIdle(entry);
-    // 投屏（D7）：异步拉起 tmux pane，失败静默降级 mirror:false（不影响接管本身）
-    this.startMirrorFn(id, opts.sessionFile)
-      .then((ok) => {
-        entry.mirror = ok;
-      })
-      .catch(() => undefined);
+    // 投屏（D7）：拉起 tmux pane，失败静默降级 mirror:false（不影响接管本身）。
+    // await 结果再回（修 mirror 竞态：旧实现未决就 return，attach 响应恒 mirror:false）
+    entry.mirror = await this.startMirrorFn(id, opts.sessionFile).catch(() => false);
     this.emit(id, { type: "attach_state", attached: true, terminalOnline: true });
     return { attached: true, driver: "hub", mirror: entry.mirror };
   }

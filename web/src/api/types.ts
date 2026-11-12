@@ -64,8 +64,8 @@ export interface TerminalAttachInfo {
   effectivePolicy?: EffectivePolicyDto;
   online: boolean;
   attached: boolean;
-  /** 驱动形态：queue=pi 扩展指令队列；hub=server 持有 claude -p 长驻进程 */
-  driver?: "queue" | "hub";
+  /** 驱动形态：queue=pi 扩展指令队列；hub=server 持有 claude -p 长驻进程；inject=终端注入（消息像打字一样进电脑原 TUI） */
+  driver?: "queue" | "hub" | "inject";
   source?: "claude" | "codex";
   /** 投屏（tmux 镜像）就绪（仅 hub 形态） */
   mirror?: boolean;
@@ -349,9 +349,11 @@ export interface AttachResult {
     pid?: number | null;
     cwd: string;
     online: boolean;
-    /** hub 驱动形态（claude）附带 */
-    driver?: "queue" | "hub";
+    /** 驱动形态：queue=pi 指令队列；hub=claude 后台驱动；inject=终端注入（原窗口实时显示） */
+    driver?: "queue" | "hub" | "inject";
     mirror?: boolean;
+    /** inject 形态：pid↔sessionId 多候选不确定（透传做预期管理） */
+    ambiguous?: boolean;
   } | null;
 }
 

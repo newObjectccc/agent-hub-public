@@ -116,13 +116,16 @@ export function attachBadge(
 ): AttachBadgeInfo | null {
   if (!terminal) return null;
   const hub = terminal.driver === "hub";
+  const inject = terminal.driver === "inject";
   const codex = terminal.source === "codex";
   if (terminal.attached) {
     return {
       icon: "🖥⚡",
-      label: "已接管",
-      title: codex ? `🖥⚡ 已接管：${codexPolicySummary(terminal.effectivePolicy)}；退出接管后可在电脑继续` : hub
-        ? "🖥⚡ 已接管：消息由 hub 驱动 claude 执行并写回同一会话（电脑终端投屏实时显示）"
+      label: inject ? "已接管·注入" : "已接管",
+      title: inject
+        ? "🖥⚡ 已接管·终端注入：消息像打字一样进电脑原窗口，实时显示执行"
+        : codex ? `🖥⚡ 已接管：${codexPolicySummary(terminal.effectivePolicy)}；退出接管后可在电脑继续` : hub
+        ? "🖥⚡ 已接管·后台驱动：消息由 hub 在电脑后台执行并写回同一会话（原终端窗口不会刷新；电脑可用 tmux attach 投屏观看）"
         : "🖥⚡ 已接管：消息发往电脑终端 pi 进程执行",
       variant: "attached",
     };
@@ -233,8 +236,8 @@ export interface ChannelEchoState {
   detail?: string | null;
   /** 关联指令 id（旧指令的迟到回执不覆盖当前状态） */
   commandId?: string;
-  /** 驱动形态（hub=claude 驱动文案分支） */
-  driver?: "queue" | "hub";
+  /** 驱动形态（hub=claude 后台驱动；inject=终端注入原窗口） */
+  driver?: "queue" | "hub" | "inject";
   source?: "claude" | "codex";
   effectivePolicy?: EffectivePolicyDto;
 }
@@ -242,13 +245,14 @@ export interface ChannelEchoState {
 export function echoText(echo: ChannelEchoState): string {
   if (echo.channel === "attach") {
     const hub = echo.driver === "hub";
+    const inject = echo.driver === "inject";
     switch (echo.phase) {
       case "sent":
-        return echo.source === "codex" ? "🖥 已发往 Codex 驱动，等待接收确认…" : hub ? "🖥 已发往 claude 驱动，等待接收确认…" : "🖥 已发往终端，等待接收确认…";
+        return inject ? "🖥 已打往电脑原窗口，等待接收确认…" : echo.source === "codex" ? "🖥 已发往 Codex 驱动，等待接收确认…" : hub ? "🖥 已发往 claude 驱动，等待接收确认…" : "🖥 已发往终端，等待接收确认…";
       case "acked":
-        return echo.source === "codex" ? `🖥 Codex 已接收 ✓ ${codexPolicySummary(echo.effectivePolicy)}` : hub ? "🖥 驱动已接收 ✓ 消息将在电脑的 claude 会话执行" : "🖥 终端已接收 ✓ 消息将在终端 pi 执行";
+        return inject ? "🖥 终端已接收 ✓ 消息像打字一样在电脑原窗口执行" : echo.source === "codex" ? `🖥 Codex 已接收 ✓ ${codexPolicySummary(echo.effectivePolicy)}` : hub ? "🖥 驱动已接收 ✓ 消息将在电脑的 claude 会话执行" : "🖥 终端已接收 ✓ 消息将在终端 pi 执行";
       case "failed":
-        return `🖥 ${hub ? "注入驱动" : "终端注入"}失败${echo.detail ? `：${echo.detail}` : ""}`;
+        return `🖥 ${inject ? "终端注入" : hub ? "注入驱动" : "终端注入"}失败${echo.detail ? `：${echo.detail}` : ""}`;
       default:
         return "🖥 接管模式";
     }

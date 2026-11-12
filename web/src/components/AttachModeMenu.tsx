@@ -29,11 +29,14 @@ const PARALLEL_HINT = "手机消息由 server 里的实例继续处理（双方�
 const PARALLEL_HINT_HUB =
   "手机消息由 server 里的 claude 实例继续处理（双方互不干扰）。历史会话默认此模式；想让 hub 接管执行可切换 🖥 接管终端";
 
-/** attach hint 按驱动形态分支（D9）：pi=注入终端 TUI；claude=hub 驱动 + 投屏 */
+/** attach hint 按驱动形态分支（D9）：inject=终端注入；pi=注入终端 TUI；claude=hub 后台驱动 */
 function attachHint(terminal: TerminalAttachInfo | null | undefined): string {
+  if (terminal?.driver === "inject") {
+    return "手机消息像打字一样进电脑原窗口（tmux/kitty/wezterm），实时显示执行；两端可同时输入、先后排队。会话不在窗口时自动转后台执行";
+  }
   if (terminal?.source === "codex") return `由电脑上的 Codex 驱动继续同一会话。${codexPolicySummary(terminal.effectivePolicy)}。电脑正在占用会话时需先退出原会话；退出接管后可在电脑继续。`;
   if (terminal?.driver === "hub") {
-    return "手机消息由 hub 直接驱动 claude 执行并写回同一会话，电脑终端投屏实时显示。接管期间请勿在电脑原窗口继续输入；退出接管后可 claude --resume 无缝接回";
+    return "手机消息由 hub 在电脑后台执行并写回同一会话（原终端窗口不会刷新；电脑可用 tmux attach -t hub-<id> 投屏观看）。退出接管后可 claude --resume 无缝接回";
   }
   return "手机消息发往电脑终端 pi 进程，终端实时显示并执行";
 }

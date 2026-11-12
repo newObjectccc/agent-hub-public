@@ -18,6 +18,7 @@ import { VERSION } from "@earendil-works/pi-coding-agent";
 import { AgentCommandHub } from "./agents.js";
 import { ClaudeAdapter } from "./adapters/claude.js";
 import { ClaudeDriverHub } from "./adapters/claude-driver.js";
+import { InjectHub } from "./adapters/inject-hub.js";
 import { HostRequestRegistry } from "./adapters/host-request-registry.js";
 import { CodexAdapter } from "./adapters/codex.js";
 import { CodexDriverHub } from "./adapters/codex-driver.js";
@@ -290,6 +291,7 @@ export async function createApp(options: CreateAppOptions): Promise<FastifyInsta
     agents: options.agents,
     claudeDriver: options.claudeDriver,
     codexDriver: options.codexDriver,
+    injectHub: options.injectHub,
     appLock: options.appLock,
     terminal: options.terminal,
     terminalUnlocked: options.terminalUnlocked,  });
@@ -345,6 +347,8 @@ export interface AttachSessionWsOptions {
   /** claude hub 驱动 attach 接管检测 + 中止 turn（并集；config.claudeDriver.enabled=false 装配时缺省） */
   claudeDriver?: { isAttached(sessionId: string): boolean; abortTurn(sessionId: string): void } | null;
   codexDriver?: { isAttached(sessionId: string): boolean; isAttaching(sessionId: string): boolean; isBusy?(sessionId: string): boolean; abortTurn(sessionId: string): void } | null;
+  /** 终端注入接管检测（ATTACH_ACTIVE 冲突保护并集） */
+  injectHub?: { isAttached(sessionId: string): boolean } | null;
 }
 
 /**
@@ -355,7 +359,7 @@ export interface AttachSessionWsOptions {
  * （server/src/test/ws-auth-wiring.test.ts）。
  */
 export function attachSessionWs(server: HttpServer, hub: WsSessionHub, options: AttachSessionWsOptions): void {
-  const { wshub, config, tails, appLock, agents, claudeDriver, codexDriver } = options;
+  const { wshub, config, tails, appLock, agents, claudeDriver, codexDriver, injectHub } = options;
   // Origin 跨站闸：与 HTTP CORS 闸共用 crossOriginAllowed（同源/白名单/Host 信任派生单一事实源）
   const originGate = { allowOrigins: config.allowOrigins ?? [], hostTrust: hostTrustOptionsFor(config) };
   /** 应用锁门禁（与 promptGuard 锁分支同判据）：已配置锁且令牌无效 = 锁屏 */
@@ -366,7 +370,7 @@ export function attachSessionWs(server: HttpServer, hub: WsSessionHub, options: 
     promptGuard: (id, lockToken) =>
       appLocked(lockToken)
         ? { code: ErrorCodes.APP_LOCKED, message: "应用已锁定：请先解锁" }
-        : agents?.isAttached(id) || claudeDriver?.isAttached(id) || codexDriver?.isBusy?.(id) || codexDriver?.isAttached(id) || codexDriver?.isAttaching(id)
+        : agents?.isAttached(id) || injectHub?.isAttached(id) || claudeDriver?.isAttached(id) || codexDriver?.isBusy?.(id) || codexDriver?.isAttached(id) || codexDriver?.isAttaching(id)
           ? { code: ErrorCodes.ATTACH_ACTIVE, message: "终端接管中：平行发送已停用（切回 📱 平行模式可恢复）" }
           : null,
     // WS abort 门禁 + 分发（修复：abort 绕过 promptGuard，锁屏/接管期可中止 turn）——镜像 HTTP
@@ -467,6 +471,10 @@ export async function startHub(): Promise<StartedHub> {
         parallelActive: (id): boolean => claudeAdapter.hasActiveRun(id),
       })
     : null;
+  // 终端注入接管（docs/TERMINAL_INJECT.md）：TUI 在场（tmux/kitty/wezterm 宿主）→ 手机消息
+  // 像打字一样进真 TUI（执行/显示都在原窗口）；不在场 → 路由回落 driver 后台接管。
+  // 不持进程：detach 仅清登记，TUI 原样留给电脑继续用。
+  const injectHub = new InjectHub({ emit });
   // Claude Code 会话来源：~/.claude/projects/<encoded-cwd>/<uuid>.jsonl + history.jsonl
   const claudeProjectsDir = join(homedir(), ".claude", "projects");
   const claudeHistoryFile = join(homedir(), ".claude", "history.jsonl");
@@ -558,6 +566,7 @@ export async function startHub(): Promise<StartedHub> {
     agents,
     claudeDriver: claudeDriver ?? undefined,
     codexDriver: codexDriver ?? undefined,
+    injectHub,
     webRoot: webDistDir,
     logger: true,
     // ttyd Web 终端（F2）：按需拉起 + 同源反代（POSIX；win32 自动降级为提示）
@@ -604,6 +613,7 @@ export async function startHub(): Promise<StartedHub> {
     agents,
     claudeDriver,
     codexDriver,
+    injectHub,
   });
   // 全局存在感知：任一会话文件（pi / claude）变化 → 广播 sessions_changed + 搜索索引失效（fs.watch 事件驱动）
   const presence = new PresenceWatcher(

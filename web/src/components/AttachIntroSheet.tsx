@@ -10,7 +10,7 @@ export interface AttachIntroSheetProps {
   onPick: (mode: AttachMode) => void;
   onClose: () => void;
   /** 驱动形态（hub=claude 文案分支） */
-  driver?: "queue" | "hub";
+  driver?: "queue" | "hub" | "inject";
   /** 会话来源：平行模式的权限语义按源不同，不能给错信息 */
   source?: SessionSource;
 }
@@ -36,10 +36,12 @@ function parallelDesc(source: SessionSource | undefined): string {
 
 export function AttachIntroSheet({ onPick, onClose, driver, source }: AttachIntroSheetProps) {
   const attachDesc =
-    source === "codex"
+    driver === "inject"
+      ? "手机消息像打字一样进电脑原窗口（tmux/kitty/wezterm），电脑实时显示执行——人在电脑前，手机当遥控器；两端可同时输入、先后排队。会话不在窗口时自动转 hub 后台执行（原窗口不刷新）。"
+      : source === "codex"
       ? "由电脑上的 Codex 驱动继续同一会话，回复同步到手机，是否询问审批取决于实际设置，接管后会显示。电脑正在占用会话时请先退出原会话；退出接管后可在电脑继续。两种模式共用 Hub 权限配置，默认免操作审批、完整文件访问；接管后显示实际生效策略。"
       : driver === "hub"
-      ? "手机消息由 hub 直接驱动 claude 执行并写回同一会话，电脑终端投屏实时显示；退出接管后可 claude --resume 无缝接回。权限档位与平行模式同源（默认自动执行、无人工批准；需确认档位走手机审批卡片）。"
+      ? "手机消息由 hub 在电脑后台执行并写回同一会话（原终端窗口不会刷新；电脑可用 tmux attach -t hub-<id> 投屏观看）；退出接管后可 claude --resume 无缝接回。权限档位与平行模式同源（默认自动执行、无人工批准；需确认档位走手机审批卡片）。"
       : "手机消息发往电脑终端 pi 进程，终端实时显示并执行——人在电脑前，手机当遥控器。";
   return (
     <Sheet

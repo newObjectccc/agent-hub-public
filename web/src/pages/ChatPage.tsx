@@ -401,8 +401,10 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
         applyAttachMode("attach");
         if (autoDefault) {
           setNotice(
-            source === "codex" ? codexAttachNotice(normalizeCodexPolicy(result.effectivePolicy)) : result.agent?.driver === "hub"
-              ? "会话活跃，已默认接管（hub 驱动 claude 执行）"
+            source === "codex" ? codexAttachNotice(normalizeCodexPolicy(result.effectivePolicy)) : result.agent?.driver === "inject"
+              ? "会话活跃，已默认接管（终端注入：像在电脑上打字一样）"
+              : result.agent?.driver === "hub"
+              ? "会话活跃，已默认接管（后台驱动：电脑原窗口不刷新）"
               : "终端在线，已默认接管终端",
           );
         }
@@ -474,8 +476,10 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
           if (attachModeRef.current !== "attach") void ensureAttached(true, detail.session.source);
           else if (modeBefore !== "attach") {
             setNotice(
-              detail.session.source === "codex" ? codexAttachNotice(detail.session.terminal?.effectivePolicy) : detail.session.terminal?.driver === "hub"
-                ? "会话活跃，已默认接管（hub 驱动 claude 执行）"
+              detail.session.source === "codex" ? codexAttachNotice(detail.session.terminal?.effectivePolicy) : detail.session.terminal?.driver === "inject"
+                ? "会话活跃，已默认接管（终端注入：像在电脑上打字一样）"
+                : detail.session.terminal?.driver === "hub"
+                ? "会话活跃，已默认接管（后台驱动：电脑原窗口不刷新）"
                 : "终端在线，已默认接管终端",
             );
           }

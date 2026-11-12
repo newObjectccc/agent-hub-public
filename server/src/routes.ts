@@ -8,6 +8,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { AgentLinkLike, CommandMode } from "./agents.js";
 import type { ClaudeDriverLinkLike } from "./adapters/claude-driver.js";
 import type { CodexDriverLinkLike } from "./adapters/codex-driver.js";
+import type { InjectHubLike } from "./adapters/inject-hub.js";
 import { mergeCodexSnapshot } from "./adapters/codex-snapshot.js";
 import { parseBridgeHostRequestBody } from "./adapters/claude-host-protocol.js";
 import {
@@ -106,6 +107,12 @@ export interface RouteDeps {
   /** claude hub 驱动接管（可注入 mock，缺省 claude 接管路由回 400/503） */
   claudeDriver?: ClaudeDriverLinkLike;
   codexDriver?: CodexDriverLinkLike;
+  /**
+   * 终端注入接管（docs/TERMINAL_INJECT.md；可注入 mock，缺省跳过注入探测直接走 driver）：
+   * attach 时探测在场——TUI+可注入宿主 → 注入接管（像打字一样进真 TUI）；
+   * 无 TUI → 落 driver 后台接管；TUI 无通道 → 409（防双写）。
+   */
+  injectHub?: InjectHubLike;
   /** 应用锁（F1；可注入 mock/临时目录，缺省持久化到 data/app-lock.json） */
   appLock?: AppLockStoreLike;
   /** ttyd Web 终端服务（F2；可注入 mock，缺省时 /api/terminal/* 返回 503） */
@@ -135,21 +142,29 @@ function stampTerminal(
   claudeDriver?: ClaudeDriverLinkLike,
   defaultPolicy?: TerminalAttachInfo["defaultPolicy"],
   codexDriver?: CodexDriverLinkLike,
+  injectHub?: InjectHubLike,
 ): SessionDto {
   const withPolicy = (info: TerminalAttachInfo): TerminalAttachInfo =>
     defaultPolicy === undefined ? info : { ...info, defaultPolicy };
+  // 终端注入接管生效时盖 driver 形态（inject 优先于 driver 状态；两形态互斥，此处是事实源校正）
+  const merged = (info: TerminalAttachInfo): TerminalAttachInfo =>
+    injectHub?.isAttached(session.id) ? { ...info, online: true, attached: true, driver: "inject" } : info;
   if (session.source === "pi" && agents) {
     return toSessionDto({ ...session, terminal: withPolicy(agents.statusFor(session.id)) });
   }
   if (session.source === "claude" && claudeDriver) {
-    return toSessionDto({ ...session, terminal: withPolicy(claudeDriver.statusFor(session.id)) });
+    return toSessionDto({ ...session, terminal: withPolicy(merged(claudeDriver.statusFor(session.id))) });
   }
   if (session.source === "codex" && codexDriver && !session.archived) {
     // Codex 产品规则（2026-10-23 用户明确）：进入会话默认 📱 平行，defaultPolicy 恒 "never" 下发——
     // 接管有「须先退出桌面 ChatGPT app 对应会话」的写者互斥前提，默认接管几乎必失败；
     // 与 pi/claude（active-only：电脑活跃 → 默认接管）刻意区分。codexDriver.defaultPolicy 配置不再影响默认通道，
     // 手动切换 / pin 仍可接管。
-    return toSessionDto({ ...session, status: codexDriver.runStatusFor(session.id) ?? session.status, terminal: { ...codexDriver.statusFor(session.id), source: "codex", defaultPolicy: "never" } });
+    return toSessionDto({ ...session, status: codexDriver.runStatusFor(session.id) ?? session.status, terminal: { ...merged(codexDriver.statusFor(session.id)), source: "codex", defaultPolicy: "never" } });
+  }
+  // inject 兜底：driver 未装配但注入接管生效（如 claudeDriver.enabled=false 时仍可终端注入）
+  if (injectHub?.isAttached(session.id) && (session.source === "claude" || session.source === "codex")) {
+    return toSessionDto({ ...session, terminal: withPolicy({ online: true, attached: true, driver: "inject" }) });
   }
   return toSessionDto(session);
 }
@@ -290,9 +305,9 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
     handle(reply, err);
   });
 
-  /** 冲突保护：attach 接管期间拒绝 parallel 发送/压缩（防双写同一会话：pi 指令队列 / claude hub 驱动） */
+  /** 冲突保护：attach 接管期间拒绝 parallel 发送/压缩（防双写同一会话：pi 指令队列 / claude hub 驱动 / 终端注入） */
   const rejectIfAttached = (id: string, action = "平行发送"): void => {
-    if (deps.agents?.isAttached(id) || deps.claudeDriver?.isAttached(id) || deps.codexDriver?.isBusy?.(id) || deps.codexDriver?.isAttached(id) || deps.codexDriver?.isAttaching(id)) {
+    if (deps.agents?.isAttached(id) || deps.injectHub?.isAttached(id) || deps.claudeDriver?.isAttached(id) || deps.codexDriver?.isBusy?.(id) || deps.codexDriver?.isAttached(id) || deps.codexDriver?.isAttaching(id)) {
       throw new HubError(
         ErrorCodes.ATTACH_ACTIVE,
         `终端接管中：消息由电脑上的会话执行，${action}已停用（切回 📱 平行模式可恢复）`,
@@ -306,7 +321,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
     try {
       const sessions = (await hub.listSessions()).map(decorateSession);
       return reply.send({
-        sessions: sessions.map((s) => stampTerminal(s, deps.agents, deps.claudeDriver, deps.config.claudeDriver.defaultPolicy, deps.codexDriver)),
+        sessions: sessions.map((s) => stampTerminal(s, deps.agents, deps.claudeDriver, deps.config.claudeDriver.defaultPolicy, deps.codexDriver, deps.injectHub)),
       });
     } catch (err) {
       return handle(reply, err);
@@ -363,7 +378,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
         // 不带分页查询：保持 v0 全量行为（hasMore=false / nextBefore=null）
         const page = limit === undefined && before === undefined ? fullPage(all) : paginateMessages(all, { before, limit });
         return reply.send({
-          session: stampTerminal(session, deps.agents, deps.claudeDriver, deps.config.claudeDriver.defaultPolicy, deps.codexDriver),
+          session: stampTerminal(session, deps.agents, deps.claudeDriver, deps.config.claudeDriver.defaultPolicy, deps.codexDriver, deps.injectHub),
           messages: page.messages,
           hasMore: page.hasMore,
           nextBefore: page.nextBefore,
@@ -783,6 +798,51 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
       }
       if (session.source === "claude" || session.source === "codex") {
         if (session.archived) throw new HubError(ErrorCodes.INVALID_REQUEST, "归档会话请先在 Codex 恢复后再接管", 400);
+        // 终端注入接管优先（docs/TERMINAL_INJECT.md）：TUI 在场且宿主可注入 → 像打字一样进真 TUI；
+        // 无 TUI（probe=none）→ 落 driver 后台接管；TUI 在场但无注入通道 → 409（防与真人 TUI 双写）。
+        const injectHub = deps.injectHub;
+        if (injectHub) {
+          const agentCmd = session.source === "codex" ? ("codex" as const) : ("claude" as const);
+          const probe = await injectHub.probe(req.params.id, {
+            cwd: session.cwd,
+            sessionFile: session.sessionFile,
+            agent: agentCmd,
+          });
+          if (probe.kind === "no-host") {
+            throw new HubError(
+              ErrorCodes.ATTACH_UNAVAILABLE,
+              "会话正在终端里运行，但该终端没有注入通道（tmux/kitty/wezterm 之外暂不支持接管注入）。请用 📱 平行模式，或先在电脑结束该会话再接管（转后台执行）",
+              409,
+            );
+          }
+          if (probe.kind === "inject") {
+            // 形态互斥：切到注入接管前清后台 driver 登记（防双持双写）
+            if (session.source === "codex") deps.codexDriver?.detach(req.params.id);
+            else deps.claudeDriver?.detach(req.params.id);
+            const result = await injectHub.tryAttach(
+              req.params.id,
+              {
+                cwd: session.cwd,
+                sessionFile: session.sessionFile,
+                agent: agentCmd,
+              },
+              probe,
+            );
+            return reply.status(202).send({
+              attached: true,
+              agent: {
+                sessionId: req.params.id,
+                cwd: session.cwd,
+                online: true,
+                driver: "inject" as const,
+                mirror: false,
+                ambiguous: result.ambiguous,
+              },
+            });
+          }
+          // probe=none：落 driver 后台接管前清注入登记（形态互斥）
+          injectHub.detach(req.params.id);
+        }
         const driver = session.source === "codex" ? requireCodexDriver() : requireClaudeDriver();
         const result = await driver.attach(req.params.id, {
           cwd: session.cwd,
@@ -790,7 +850,7 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
         });
         const payload: {
           attached: true;
-          agent: { sessionId: string; cwd: string; online: boolean; driver?: "queue" | "hub"; mirror: boolean };
+          agent: { sessionId: string; cwd: string; online: boolean; driver?: "queue" | "hub" | "inject"; mirror: boolean; ambiguous?: boolean };
           effectivePolicy?: EffectivePolicyDto;
         } = {
           attached: true,
@@ -814,7 +874,8 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
   app.post<{ Params: { id: string } }>("/api/sessions/:id/detach", async (req, reply) => {
     try {
       const session = await hub.findSession(req.params.id);
-      // 按接管形态分流（未知会话双向容错清理，保持幂等）
+      // 按接管形态分流（未知会话双向容错清理，保持幂等；注入登记无条件清一次）
+      deps.injectHub?.detach(req.params.id);
       if (session?.source === "codex" || (!session && (deps.codexDriver?.isAttached(req.params.id) || deps.codexDriver?.isAttaching(req.params.id)))) {
         deps.codexDriver?.detach(req.params.id);
       } else if (session?.source === "claude" || (!session && deps.claudeDriver?.isAttached(req.params.id))) {
@@ -849,12 +910,30 @@ export async function registerRoutes(app: FastifyInstance, deps: RouteDeps): Pro
         mode: body.mode as CommandMode | undefined,
         clientMessageId: body.clientMessageId,
       };
-      const command =
-        session.source === "codex"
-          ? requireCodexDriver().send(req.params.id, { ...input, images })
-          : session.source === "claude"
-          ? requireClaudeDriver().send(req.params.id, input)
-          : requireAgents().enqueue(req.params.id, input);
+      let command;
+      const injectHub = deps.injectHub;
+      if ((session.source === "claude" || session.source === "codex") && injectHub?.isAttached(req.params.id)) {
+        // 注入形态：图片无法当按键打进去（v1 限制），明确报错而不是静默丢
+        if (images && images.length > 0) {
+          throw new HubError(ErrorCodes.INVALID_REQUEST, "终端注入模式暂不支持发送图片；请退出接管后用 📱 平行模式发送", 400);
+        }
+        const sent = await injectHub.send(req.params.id, input);
+        if ("command" in sent) {
+          command = sent.command;
+        } else {
+          // 窗口已关 → 「不在窗口就后台运行」：自动降级 hub 后台驱动接管并发出本条
+          const driver = session.source === "codex" ? requireCodexDriver() : requireClaudeDriver();
+          await driver.attach(req.params.id, { cwd: session.cwd, sessionFile: session.sessionFile });
+          command = driver.send(req.params.id, input);
+        }
+      } else {
+        command =
+          session.source === "codex"
+            ? requireCodexDriver().send(req.params.id, { ...input, images })
+            : session.source === "claude"
+            ? requireClaudeDriver().send(req.params.id, input)
+            : requireAgents().enqueue(req.params.id, input);
+      }
       return reply.status(202).send({
         accepted: true,
         channel: "attach",

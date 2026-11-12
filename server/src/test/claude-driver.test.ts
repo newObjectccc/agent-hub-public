@@ -54,6 +54,8 @@ function makeHub(overrides: Partial<ConstructorParameters<typeof ClaudeDriverHub
     spawnFn,
     readSettings: async () => null,
     hostRequestTtlMs: 50,
+    // 投屏默认注入 fake：测试不拉真 tmux；attach 响应 mirror 断言确定性（见 statusFor 用例）
+    startMirror: async () => false,
     ...overrides,
   });
   return {
@@ -483,6 +485,17 @@ describe("statusFor / 空闲 detach", () => {
     assert.deepEqual(t.hub.statusFor("s1"), { online: true, attached: false, driver: "hub", mirror: false });
     await t.hub.attach("s1", sessionOpts);
     assert.deepEqual(t.hub.statusFor("s1"), { online: true, attached: true, driver: "hub", mirror: false });
+  });
+
+  it("attach 响应带真实投屏状态（修 mirror 竞态：startMirror 完成后才回）", async () => {
+    const t = makeHub({ startMirror: async () => true });
+    const result = await t.hub.attach("s1", sessionOpts);
+    assert.equal(result.mirror, true);
+    assert.deepEqual(t.hub.statusFor("s1"), { online: true, attached: true, driver: "hub", mirror: true });
+    // 失败静默降级 mirror:false（不影响接管）
+    const t2 = makeHub({ startMirror: async () => { throw new Error("no tmux"); } });
+    const result2 = await t2.hub.attach("s2", sessionOpts);
+    assert.equal(result2.mirror, false);
   });
 
   it("idleDetachMs 到期自动 detach", async () => {

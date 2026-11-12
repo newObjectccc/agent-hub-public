@@ -72,8 +72,11 @@ export interface SessionListItem {
 export interface TerminalAttachInfo {
   online: boolean;
   attached: boolean;
-  /** 驱动形态：queue=pi 扩展指令队列；hub=server 持有 claude -p 长驻进程（缺省按 queue 容错） */
-  driver?: "queue" | "hub";
+  /**
+   * 驱动形态：queue=pi 扩展指令队列；hub=server 持有 claude -p 长驻进程；
+   * inject=终端注入（消息像打字一样进电脑原 TUI，docs/TERMINAL_INJECT.md）。缺省按 queue 容错。
+   */
+  driver?: "queue" | "hub" | "inject";
   /** hub 驱动来源；缺省兼容旧版 Claude 驱动。 */
   source?: "claude" | "codex";
   /** 投屏（tmux 镜像）就绪（仅 hub 形态） */

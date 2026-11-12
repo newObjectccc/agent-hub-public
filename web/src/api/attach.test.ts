@@ -166,7 +166,16 @@ describe("attach: 徽章文案与接管可用性", () => {
     });
     expect(attachBadge({ online: true, attached: false, driver: "hub" }, "running")?.label).toBe("可接管");
     expect(attachBadge({ online: true, attached: false, driver: "hub" }, "idle")).toBeNull();
-    expect(attachBadge({ online: true, attached: true, driver: "hub" })?.title).toMatch(/hub 驱动 claude/);
+    // 文案如实描述后台驱动（原窗口不刷新 + 投屏观看方式；不再说「电脑终端投屏实时显示」误导原窗口会动）
+    const hubAttached = attachBadge({ online: true, attached: true, driver: "hub" });
+    expect(hubAttached?.title).toMatch(/后台驱动/);
+    expect(hubAttached?.title).toMatch(/原终端窗口不会刷新/);
+  });
+
+  it("inject 形态徽章：已接管·注入 + 像打字一样进原窗口", () => {
+    const badge = attachBadge({ online: true, attached: true, driver: "inject" });
+    expect(badge?.label).toBe("已接管·注入");
+    expect(badge?.title).toMatch(/像打字一样进电脑原窗口/);
   });
 });
 
