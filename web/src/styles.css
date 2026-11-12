@@ -1172,16 +1172,106 @@ button.syschip.terminal-entry:hover {
   box-shadow: none;
 }
 
+/* 脚部行：时间 + 复制/更多按钮（整条复制 1 步直达，不靠长按）。
+ * user-select/touch-callout 禁选：UI 装饰件，选字只发生在气泡正文里 */
+.msg-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 5px;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.msg-row.user .msg-foot {
+  justify-content: flex-end;
+}
+
 .msg-time {
   font-size: 10.5px;
   color: var(--muted-foreground);
-  margin-top: 5px;
   font-variant-numeric: tabular-nums;
   font-weight: 600;
 }
 
-.msg-row.user .msg-time {
-  text-align: right;
+.msg-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  /* 触屏：低对比常显（opacity 0.55，不打扰阅读）；桌面 hover/:focus-within 显现 */
+  opacity: 0.55;
+}
+
+@media (pointer: fine) {
+  .msg-actions {
+    opacity: 0;
+    transition: opacity 120ms ease-out;
+  }
+
+  .msg-row:hover .msg-actions,
+  .msg-actions:focus-within {
+    opacity: 1;
+  }
+}
+
+/* 触屏笔记本（主指针是鼠标 pointer:fine，但带触屏）：不能隐藏——
+ * opacity:0 的按钮仍是命中目标，会出现隐形可点区；有触屏就保持可见 */
+@media (any-pointer: coarse) {
+  .msg-actions {
+    opacity: 0.55;
+    transition: none;
+  }
+}
+
+.msg-copy-btn,
+.msg-more-btn {
+  position: relative; /* ::after 44px 热区锚点 */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+
+.msg-copy-btn:active,
+.msg-more-btn:active {
+  color: var(--foreground);
+}
+
+/* 触控热区 44px（视觉盒 28px 不撑高）：向下方偏置，不抢气泡底缘最后一行链接的点击；
+ * 水平方向各自向外侧偏置（copy 向左、more 向右）——两热区互不重叠：
+ * 居中 44px 外扩会重叠 14px，more 在 DOM 靠后压在上层，copy 右缘 6-7px 被抢（点复制弹菜单） */
+.msg-copy-btn::after {
+  content: "";
+  position: absolute;
+  top: 58%;
+  left: -16px;
+  width: 44px;
+  height: 44px;
+  transform: translateY(-50%);
+}
+
+.msg-more-btn::after {
+  content: "";
+  position: absolute;
+  top: 58%;
+  left: 0;
+  width: 44px;
+  height: 44px;
+  transform: translateY(-50%);
+}
+
+/* 320 紧凑屏：⋯ 收进长按（脚部行长按仍开菜单），只留复制图标，脚部行不换行 */
+@media (max-width: 340px) {
+  .msg-more-btn {
+    display: none;
+  }
 }
 
 /* markdown 内容 */
@@ -3507,13 +3597,14 @@ button.git-bar:active {  transform: translate(2px, 2px);
 }
 
 .msg-menu {
+  /* left/top 由 MessageBubble 按按压点 + 视口 clamp 定位（utils/menuPosition），
+   * 不再居中于 .msg-body（旧的 50% 居中规则会让长消息的菜单飞出屏幕） */
   position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
   z-index: 40;
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
+  max-width: calc(100vw - 16px);
   padding: 6px;
   background: var(--card);
   color: var(--card-foreground);

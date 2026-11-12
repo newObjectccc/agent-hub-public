@@ -69,7 +69,56 @@ describe("styles.css 布局/滚动/滑块契约", () => {
   });
 
   it("长按菜单遮罩不吞纵向拖动（chat 消息区拖动兑底）", () => {
-    expect(blockOf(".msg-menu-backdrop {")).toContain("touch-action: pan-y");
+    const backdrop = blockOf(".msg-menu-backdrop {");
+    // 块内锚定正则（toContain 子串可被注释/其他声明误命中）
+    expect(backdrop).toMatch(/(^|\n)\s*touch-action:\s*pan-y\s*;/);
+    expect(backdrop).toMatch(/(^|\n)\s*pointer-events:\s*none\s*;/);
+  });
+
+  it("消息脚部行禁选（选字只发生在气泡正文，脚部是 UI 装饰件）", () => {
+    const foot = blockOf(".msg-foot {");
+    expect(foot).toMatch(/(^|\n)\s*user-select:\s*none\s*;/);
+    expect(foot).toMatch(/(^|\n)\s*-webkit-touch-callout:\s*none\s*;/);
+  });
+
+  it("复制/更多按钮 44px 触控热区（::after 外扩 + position:relative 锚点）", () => {
+    const btn = blockOf(".msg-copy-btn,\n.msg-more-btn {");
+    expect(btn).toMatch(/(^|\n)\s*position:\s*relative\s*;/);
+    for (const sel of [".msg-copy-btn::after {", ".msg-more-btn::after {"]) {
+      const hot = blockOf(sel);
+      expect(hot, sel).toMatch(/(^|\n)\s*width:\s*44px\s*;/);
+      expect(hot, sel).toMatch(/(^|\n)\s*height:\s*44px\s*;/);
+      expect(hot, sel).toMatch(/(^|\n)\s*content:\s*""\s*;/);
+      expect(hot, sel).toMatch(/(^|\n)\s*position:\s*absolute\s*;/);
+    }
+  });
+
+  it("复制/更多热区水平互不重叠（各自向外偏置，more 不抢 copy 右缘）", () => {
+    // copy 热区向左偏（left 为负）、more 热区自左缘起（left: 0）——44px 宽互不相交
+    const copy = blockOf(".msg-copy-btn::after {");
+    expect(copy).toMatch(/(^|\n)\s*left:\s*-\d+px\s*;/);
+    const more = blockOf(".msg-more-btn::after {");
+    expect(more).toMatch(/(^|\n)\s*left:\s*0\s*;/);
+  });
+
+  it("长按菜单不超屏（max-width + wrap，旧居中定位改 JS 锚定按压点）", () => {
+    const menu = blockOf(".msg-menu {");
+    expect(menu).toMatch(/(^|\n)\s*max-width:\s*calc\(100vw - 16px\)\s*;/);
+    expect(menu).toMatch(/(^|\n)\s*flex-wrap:\s*wrap\s*;/);
+    // 负向：不得恢复旧的居中定位（长消息菜单飞出屏幕的根因）
+    expect(menu).not.toMatch(/top:\s*50%/);
+    expect(menu).not.toMatch(/left:\s*50%/);
+  });
+
+  it("气泡正文不禁选（部分文字复制的前提；负向契约）", () => {
+    const bubble = blockOf(".bubble {");
+    expect(bubble).not.toMatch(/user-select/);
+    expect(bubble).not.toMatch(/touch-callout/);
+  });
+
+  it("消息图片不加选择/指针拦截（长按交还系统菜单；负向契约）", () => {
+    const img = blockOf(".msg-img {");
+    expect(img).not.toMatch(/user-select|touch-callout|pointer-events|touch-action/);
   });
 });
 

@@ -24,6 +24,7 @@ import { applyWsEvent, reconcileMessages, type WsEvent } from "../chat/messageSt
 import { waitPhaseAfterEvent, type WaitPhase } from "../chat/waitPhase";
 import { DeltaBatcher } from "../chat/deltaBatcher";
 import { computeMessageWindow, MESSAGE_GAP_PX, paddingTopFor, pruneDetachedRowEls } from "../chat/messageWindow";
+import { hasActiveSelectionIn } from "../utils/selection";
 import { estimateJumpTop, NAV_MIN_MESSAGES } from "../chat/navTicks";
 import { isSubAgentActivityUpdate, mergeSubAgentActivity } from "../chat/subAgents";
 import { useT } from "../i18n/provider";
@@ -916,7 +917,9 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
       heights.push(h);
     }
     // 搜索定位（?q= / ?m=）：命中消息必须挂载，禁用窗口化
-    const locating = locate.q != null || locate.messageId != null;
+    // 选区锁：消息列表内有活动选区时同样禁用——虚拟裁剪会把选区所在行整块卸载，
+    // 选中的文字跟着消失（手机上"复制消息里的部分文字"就废了）
+    const locating = locate.q != null || locate.messageId != null || hasActiveSelectionIn(listEl);
     const win = locating
       ? { virtualized: false, start: 0, paddingTop: 0 }
       : computeMessageWindow({
@@ -1026,6 +1029,23 @@ export function ChatPage({ sessionId }: { sessionId: string }) {
     },
     [],
   );
+
+  // 选区锁触发器：选区出现/消失都要重算窗口（recomputeWindow 里 hasActiveSelectionIn 判定）。
+  // 只读 passive 监听，不吞 pointer 流（不得干扰滚动/系统选字手势）。
+  // selectionchange 在 Safari <17.4 非可编辑区不触发 → pointerdown/pointerup 轮询兜底解锁，
+  // 否则选区消失后窗口化永不恢复（长会话 DOM 占用驻留）。兜底挂 document 级：
+  // 列表外点按（header ⋯ / 底部空白等非可编辑区）也会清除选区，挂滚动容器会漏掉这些路径。
+  useEffect(() => {
+    const onPointer = () => scheduleWindowUpdate();
+    document.addEventListener("pointerup", onPointer, { capture: true, passive: true });
+    document.addEventListener("pointerdown", onPointer, { capture: true, passive: true });
+    document.addEventListener("selectionchange", onPointer);
+    return () => {
+      document.removeEventListener("pointerup", onPointer, { capture: true });
+      document.removeEventListener("pointerdown", onPointer, { capture: true });
+      document.removeEventListener("selectionchange", onPointer);
+    };
+  }, [scheduleWindowUpdate]);
 
   useLayoutEffect(() => {
     const tailId = messages.length > 0 ? messages[messages.length - 1].id : null;
